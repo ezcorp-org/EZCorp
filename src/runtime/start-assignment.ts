@@ -234,7 +234,8 @@ export async function startAssignment(opts: StartAssignmentOpts): Promise<StartA
 
     let unsubComplete: () => void = () => {};
     let unsubError: () => void = () => {};
-    const cleanup = () => { unsubComplete(); unsubError(); };
+    let unsubCancel: () => void = () => {};
+    const cleanup = () => { unsubComplete(); unsubError(); unsubCancel(); };
 
     unsubComplete = bus.on("run:complete", (data) => {
       if (data.run.id !== runId) return;
@@ -286,6 +287,33 @@ export async function startAssignment(opts: StartAssignmentOpts): Promise<StartA
       assignment.failedAt = new Date().toISOString();
       const errorMsg = typeof data.error === "string" ? data.error : String(data.error ?? "Unknown error");
       assignment.resultPreview = errorMsg.slice(0, 200);
+
+      emitTaskSnapshot(bus, snapshot);
+      emitAssignmentUpdate(bus, conversationId, taskId, assignment);
+    });
+
+    // Cancellation lifecycle. `executor.cancelRun` AND streamChat's own
+    // AbortError branch both emit `run:cancel` (never `run:error`) — so
+    // without this listener a cancelled sub-agent leaves the assignment
+    // stuck in "running" forever. That's the "agent is stuck" bug in
+    // the task panel: watchdog kills → run:error (handled); anything
+    // else aborts → run:cancel (was unhandled).
+    //
+    // Idempotency: the task panel's Stop endpoint (/stop/+server.ts)
+    // and task_stop tool both mutate the assignment DIRECTLY to
+    // "assigned" before calling cancelRun. If the status is no longer
+    // "running" by the time this listener fires, an earlier handler
+    // already transitioned it — leave it alone to preserve the
+    // resumable state.
+    unsubCancel = bus.on("run:cancel", (data) => {
+      if (data.run.id !== runId) return;
+      cleanup();
+
+      if (assignment.status !== "running") return;
+
+      assignment.status = "failed";
+      assignment.failedAt = new Date().toISOString();
+      assignment.resultPreview = "Run was cancelled";
 
       emitTaskSnapshot(bus, snapshot);
       emitAssignmentUpdate(bus, conversationId, taskId, assignment);

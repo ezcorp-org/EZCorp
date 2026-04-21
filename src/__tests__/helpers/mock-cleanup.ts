@@ -166,6 +166,17 @@ const SERVER_ALIAS_PREFIXES = [
   "observability/",
 ];
 
+/** `$server/*` alias paths skipped by restoreModuleMocks' auto-
+ *  restoration. scratchpad-e2e.test.ts registers an async factory for
+ *  `$server/db/connection` whose behavior conflicts with the lazy
+ *  `() => require(...)` form this function uses, causing bun-test to
+ *  hang at process exit after scratchpad-bundled-install's afterAll
+ *  runs this function. We skip those aliases — each test file that
+ *  needs them registers them itself via its own mock.module call. */
+const SKIP_SERVER_ALIAS_RESTORE = new Set<string>([
+  "db/connection",
+]);
+
 export function restoreModuleMocks() {
   for (const [path, exports] of snapshots) {
     try {
@@ -174,25 +185,33 @@ export function restoreModuleMocks() {
       // Ignore errors
     }
 
-    // `$server/*` aliases are intentionally NOT re-registered here —
-    // doing so cross-contaminates `oauth-api.test.ts`'s load (see the
-    // comment on SERVER_ALIAS_PREFIXES above). Every test file that
-    // needs a `$server/*` alias calls `mockServerAlias()` (or a sibling
-    // helper) at its own module load, so the leak-prevention story is
-    // still intact.
-    void SERVER_ALIAS_PREFIXES;
-
-    // Restore `$lib/*` aliases too. Those resolve to `web/src/lib/*`
-    // at runtime; in MODULE_PATHS they're listed with the
-    // `../../../web/src/lib/` prefix form. Strip it to rebuild the
-    // `$lib/` alias key for re-registration.
-    const WEB_LIB_PREFIX = "../../../web/src/lib/";
-    if (path.startsWith(WEB_LIB_PREFIX)) {
-      const rel = path.slice(WEB_LIB_PREFIX.length);
-      try {
-        mock.module(`$lib/${rel}`, () => exports);
-      } catch {
-        // Ignore errors
+    // Restore `$server/*` aliases so a prior test file's
+    // `mockServerAlias()` registrations don't leak into subsequent
+    // files (which would shadow their own mocks). The lazy
+    // `require(path)` factory form is critical: with a baked-in
+    // `exports` snapshot, Bun's mock.module quirk prevents later test
+    // files from re-mocking the underlying relative path. The lazy
+    // factory re-dispatches at each resolution, letting the next test
+    // file's own `mock.module("../../X", ...)` override the alias.
+    //
+    // $server/db/connection is skipped because scratchpad-e2e registers
+    // an async factory there whose promise-resolution interacts badly
+    // with the lazy require pattern and hangs bun-test at exit.
+    //
+    // oauth-api.test.ts's `mock.module(alias, () => require("../../X"))`
+    // pattern is handled by preload.ts's string-keyed fallback for the
+    // specific broken specifiers it consumes.
+    if (path.startsWith("../../")) {
+      const rel = path.slice("../../".length);
+      if (
+        SERVER_ALIAS_PREFIXES.some((p) => rel.startsWith(p)) &&
+        !SKIP_SERVER_ALIAS_RESTORE.has(rel)
+      ) {
+        try {
+          mock.module(`$server/${rel}`, () => require(path));
+        } catch {
+          // Ignore errors
+        }
       }
     }
   }

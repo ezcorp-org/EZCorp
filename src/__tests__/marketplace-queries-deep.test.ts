@@ -27,7 +27,7 @@ import {
   listFlags,
 } from "../db/queries/marketplace-ratings";
 import { getDb } from "../db/connection";
-import { users, marketplaceListings } from "../db/schema";
+import { users, marketplaceListings, marketplaceVersions } from "../db/schema";
 import { eq } from "drizzle-orm";
 import type { ExtensionManifestV2 } from "../extensions/types";
 
@@ -509,9 +509,23 @@ describe("Versions", () => {
     });
   });
 
+  /**
+   * Force a specific createdAt on a freshly-inserted version row so the
+   * "newest by created_at" ordering tests (31/33) are deterministic.
+   * PGlite's `default now()` rounds to the same millisecond on back-to-
+   * back inserts, making `ORDER BY created_at DESC` unstable across runs.
+   */
+  async function stampCreatedAt(versionId: string, createdAt: Date): Promise<void> {
+    await getDb()
+      .update(marketplaceVersions)
+      .set({ createdAt })
+      .where(eq(marketplaceVersions.id, versionId));
+  }
+
   test("26. createVersion links to listing and updates listing.latestVersion", async () => {
     const manifest = makeManifest({ version: "1.0.0" });
     const ver = await createVersion(versionListing.id, "1.0.0", manifest);
+    await stampCreatedAt(ver.id, new Date("2025-01-01T00:00:00Z"));
 
     expect(ver.listingId).toBe(versionListing.id);
     expect(ver.version).toBe("1.0.0");
@@ -524,6 +538,7 @@ describe("Versions", () => {
   test("27. createVersion with changelog stores it", async () => {
     const manifest = makeManifest({ version: "1.1.0" });
     const ver = await createVersion(versionListing.id, "1.1.0", manifest, "Added new features");
+    await stampCreatedAt(ver.id, new Date("2025-01-02T00:00:00Z"));
 
     expect(ver.changelog).toBe("Added new features");
   });
@@ -531,6 +546,7 @@ describe("Versions", () => {
   test("28. createVersion without changelog stores null", async () => {
     const manifest = makeManifest({ version: "1.2.0" });
     const ver = await createVersion(versionListing.id, "1.2.0", manifest);
+    await stampCreatedAt(ver.id, new Date("2025-01-03T00:00:00Z"));
 
     expect(ver.changelog).toBeNull();
   });

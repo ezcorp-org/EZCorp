@@ -1,16 +1,21 @@
 /**
- * Metadata for remaining built-in tools (orchestration).
- * Used by the /api/tools endpoint to include built-in tools alongside
- * extension tools, and by the mention search / tool-invoke APIs.
+ * Metadata for remaining built-in tools.
  *
- * After Phase 4 commit-5 `invoke_agent` moved to the bundled
- * `orchestration` extension — the only remaining built-in is
- * `ask_human` (pending its own extension port in Phase 5).
- * (Scratchpad moved to a bundled extension in Phase 1; task-tracking
- * moved to a bundled extension in Phase 3 commit-5.)
+ * After Phase 5 the built-in registry is empty; every tool lives in a
+ * bundled extension. File retained for API shape; delete in a follow-up
+ * soak cycle. Phase 1 moved `scratchpad`, Phase 3 commit-5 moved
+ * `task-tracking`, Phase 4 commit-5 moved `invoke_agent`, and Phase 5
+ * commit 4 moved `ask_human` — the `src/runtime/tools/` directory now
+ * has zero residents.
+ *
+ * The `/api/tools` endpoint, the mention-search API, and the
+ * tool-invoke APIs still call into `getBuiltInToolMetadata()` and
+ * `getBuiltInCategories()` — those receive an empty list, and every
+ * downstream caller handles that case naturally. When the soak window
+ * closes, delete this module and remove the call sites.
  */
 
-export type BuiltInCategory = "orchestration";
+export type BuiltInCategory = string;
 
 export interface BuiltInToolMeta {
   name: string;
@@ -21,13 +26,9 @@ export interface BuiltInToolMeta {
   mentionable?: boolean;
 }
 
-/** Build the full tool list. */
+/** Build the full tool list. Empty after Phase 5 commit 4. */
 function buildToolList(): BuiltInToolMeta[] {
-  return [
-    // Orchestration (1) — ask_human stays as a built-in pending Phase 5.
-    // invoke_agent moved to the `orchestration` bundled extension in Phase 4.
-    { name: "ask_human", description: "Pause execution and ask the user a question. The agent will wait for the user's response before continuing.", category: "orchestration", mentionable: false },
-  ];
+  return [];
 }
 
 let _cachedTools: BuiltInToolMeta[] | undefined;
@@ -42,10 +43,9 @@ export function getBuiltInToolMetadata(): BuiltInToolMeta[] {
 
 /** Category descriptions for mention search results. */
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
-  // Task-tracking category removed in Phase 3 commit-5 — the bundled
-  // extension now surfaces in the mention picker via the standard
-  // extensions-table path in web/src/routes/api/mentions/search/+server.ts.
-  // Scratchpad category was removed the same way in Phase 1.
+  // Empty after Phase 5 — every mentionable category now lives in an
+  // installed extension and is surfaced through the normal extensions
+  // path at web/src/routes/api/mentions/search/+server.ts.
 };
 
 /** Get mentionable built-in categories for the mention search API. */
@@ -61,8 +61,8 @@ export function getBuiltInCategories(): Array<{ name: string; description: strin
 }
 
 /** Get tool definitions (with schemas) for a built-in category. */
-export function getBuiltInToolsByCategory(category: string): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+export function getBuiltInToolsByCategory(_category: string): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
   return getTools()
-    .filter(t => t.category === category && t.inputSchema)
+    .filter(t => t.category === _category && t.inputSchema)
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema! }));
 }

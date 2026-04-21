@@ -816,9 +816,13 @@ export class AgentExecutor {
                 (run as any)._teamToolScope = resolvedTeamToolScope;
               }
 
-              // Inject ask_human for orchestration
-              const { createAskHumanTool } = await import("./tools/ask-human");
-              agentTools.push(createAskHumanTool({ bus: this.bus, runId: run.id, conversationId }));
+              // Phase 5 commit 4: ask_human is now wired alongside
+              // invoke_agent inside `wireOrchestrationToolsForTurn`
+              // above — the legacy ask-human built-in factory was
+              // deleted with this commit. See
+              // `src/runtime/orchestration-host.ts` for the injection
+              // and `docs/extensions/examples/orchestration/` for the
+              // handler + subscription.
 
               // Auto-wire the bundled `scratchpad` extension for this
               // conversation. Fail-closed on three independent gates (S7):

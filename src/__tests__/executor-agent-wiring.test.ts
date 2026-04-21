@@ -118,12 +118,14 @@ mock.module("../extensions/tool-executor", () => ({
 // Orchestration host — Phase 4 commit-5 replaced the in-process
 // invoke-agent tool injection with a wire-on-first-use helper that
 // resolves the bundled `orchestration` extension from the DB.
-// The test fixture doesn't install that extension, so we stub the
-// helpers: `ensureOrchestrationWired` is a no-op success, and
-// `wireOrchestrationToolsForTurn` appends a minimal AgentTool with
-// `name: "invoke_agent"` so the rest of the executor path (auto-
+// Phase 5 commit 4 extended the same helper to also inject `ask_human`
+// (the last former built-in — see src/runtime/orchestration-host.ts).
+// The test fixture doesn't install the extension for real, so we stub
+// the helpers: `ensureOrchestrationWired` is a no-op success, and
+// `wireOrchestrationToolsForTurn` appends BOTH `invoke_agent` and
+// `ask_human` AgentTools so the rest of the executor path (auto-
 // spin-up, filter preservation, depth-gate, event suppression)
-// behaves identically to the legacy built-in injection.
+// behaves identically to the extension-wired production path.
 // Mutable throw-trigger for the wire-failure coverage test below.
 // When set to a non-null string, `wireOrchestrationToolsForTurn` will throw
 // with that message — lets us drive the try/catch in executor.ts:810-814.
@@ -143,6 +145,18 @@ mock.module("../runtime/orchestration-host", () => ({
       parameters: { type: "object", properties: {}, required: [] },
       execute: async () => ({
         content: [{ type: "text" as const, text: "(stub invoke_agent response)" }],
+        details: {},
+      }),
+    });
+    // Phase 5 commit 4 — ask_human rides in the same wire call.
+    params.agentTools.push({
+      name: "ask_human",
+      label: "Ask Human",
+      description:
+        "Pause execution and ask the user a question. The agent will wait for the user's response before continuing.",
+      parameters: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
+      execute: async () => ({
+        content: [{ type: "text" as const, text: "(stub ask_human response)" }],
         details: {},
       }),
     });
@@ -299,12 +313,13 @@ describe("executor agent wiring", () => {
     expect(capturedAgentOpts).not.toBeNull();
     const tools: any[] = capturedAgentOpts.initialState.tools;
     expect(Array.isArray(tools)).toBe(true);
-    // ask_human is appended AFTER the orchestration wire try/catch, so
-    // the turn still carries a usable orchestration surface even when the
-    // invoke_agent wire throws. That proves the catch didn't short-circuit
-    // the rest of the turn setup.
-    expect(tools.find((t: any) => t.name === "ask_human")).toBeDefined();
-    // invoke_agent should NOT be present — the wire threw before pushing.
+    // Phase 5 commit 4: ask_human now lives INSIDE the orchestration
+    // wire (alongside invoke_agent) — the deleted built-in was the last
+    // outside-the-wire injection. When the wire throws, NEITHER tool
+    // lands in the toolset. The catch still swallows, so the rest of
+    // the turn setup (scratchpad auto-wire etc.) still runs — proven
+    // by Array.isArray(tools) above.
+    expect(tools.find((t: any) => t.name === "ask_human")).toBeUndefined();
     expect(tools.find((t: any) => t.name === "invoke_agent")).toBeUndefined();
 
     // The warn log line emitted by the catch branch must be present.

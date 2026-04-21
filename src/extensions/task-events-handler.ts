@@ -285,6 +285,14 @@ export async function handleEmitTaskEventRpc(
       );
     }
     const p = payload as { runId: string; question: string; requestId: string };
+    // Record the host-side `requestId → conversationId` shadow mapping
+    // BEFORE emitting. The POST endpoint at
+    // `/api/orchestrator/human-input` reads this back to populate the
+    // `conversationId` on the `orchestrator:human_response` event it
+    // emits. Phase 5 commit 4 replaced the built-in ask-human's internal
+    // pending-gate accessor with this host-owned shadow map.
+    const { registerPendingHumanInput } = await import("../runtime/ask-human-registry");
+    registerPendingHumanInput(p.requestId, ctx.conversationId);
     // conversationId is FORCED — never read from params. Same security
     // posture as snapshot / assignment_update above.
     ctx.bus?.emit("orchestrator:human_input", {

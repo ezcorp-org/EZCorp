@@ -67,7 +67,31 @@
 	}
 
 	function findAssignment(assignmentId: string): TaskAssignment | undefined {
-		return task.assignments?.find(a => a.id === assignmentId);
+		// Look at both task-level and subtask-level assignments — the
+		// backend /messages endpoint collects from both, so the lookup
+		// has to match.
+		const top = task.assignments?.find(a => a.id === assignmentId);
+		if (top) return top;
+		for (const s of task.subtasks ?? []) {
+			const hit = s.assignments?.find(a => a.id === assignmentId);
+			if (hit) return hit;
+		}
+		return undefined;
+	}
+
+	/**
+	 * Live status for a stream. The initial /messages fetch stamps a
+	 * snapshot of `status` onto each stream, but that value goes stale
+	 * the moment the agent finishes because nothing re-fetches. The
+	 * task prop, however, is reactive — it comes from the store's
+	 * taskSnapshots map which is kept current by the `task:snapshot` +
+	 * `task:assignment_update` bus events. Prefer the live assignment
+	 * status; fall back to the stream's captured status only if the
+	 * assignment was removed (shouldn't happen in practice).
+	 */
+	function liveStatus(stream: AssignmentStream): string {
+		const live = findAssignment(stream.assignmentId);
+		return live?.status ?? stream.status;
 	}
 
 	async function loadMessages() {
@@ -193,7 +217,8 @@
 			{:else}
 				{#each streams as stream (stream.assignmentId)}
 					{@const color = agentColor(stream.agentName)}
-					{@const badge = statusBadge(stream.status)}
+					{@const streamStatus = liveStatus(stream)}
+					{@const badge = statusBadge(streamStatus)}
 					{@const isExpanded = expandedStreams.has(stream.assignmentId)}
 					{@const assignment = findAssignment(stream.assignmentId)}
 					{@const assistantMsgs = stream.messages.filter(m => m.role === 'assistant')}
@@ -236,7 +261,7 @@
 
 								{#if assistantMsgs.length === 0}
 									<div class="text-xs text-[var(--color-text-muted)]">
-										{stream.status === 'running' ? 'Agent is working...' : 'No activity recorded'}
+										{streamStatus === 'running' ? 'Agent is working...' : 'No activity recorded'}
 									</div>
 								{:else}
 									{#each assistantMsgs as msg, turnIdx (msg.id)}
@@ -309,7 +334,7 @@
 									{/each}
 								{/if}
 
-								{#if stream.status === 'running'}
+								{#if streamStatus === 'running'}
 									<div class="flex items-center gap-2 pt-2 text-xs text-[var(--color-text-muted)]">
 										<span class="relative flex h-2 w-2">
 											<span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style:background-color={color}></span>

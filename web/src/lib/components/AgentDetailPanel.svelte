@@ -181,12 +181,14 @@
 			<div class="flex items-center gap-2">
 				<span class="h-2.5 w-2.5 rounded-full" style:background-color={color}></span>
 				<h2 class="text-sm font-semibold text-[var(--color-text-primary)]">@{agent.agentName}</h2>
-				{#if agent.status === 'running'}
+				{#if isProcessing}
 					<span class="rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] text-blue-400">Running</span>
 				{:else if agent.status === 'complete'}
 					<span class="rounded-full bg-green-500/20 px-2 py-0.5 text-[10px] text-green-400">Complete</span>
-				{:else}
+				{:else if agent.status === 'error'}
 					<span class="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] text-red-400">Failed</span>
+				{:else}
+					<span class="rounded-full bg-[var(--color-surface-tertiary)] px-2 py-0.5 text-[10px] text-[var(--color-text-secondary)]">Idle</span>
 				{/if}
 			</div>
 			<button
@@ -229,7 +231,7 @@
 				<div class="text-xs text-[var(--color-text-muted)]">Loading agent activity...</div>
 			{:else if rawMessages.length === 0}
 				<div class="text-xs text-[var(--color-text-muted)]">
-					{agent.status === 'running' ? 'Agent is working...' : 'No activity recorded'}
+					{isProcessing ? 'Agent is working...' : 'No activity recorded'}
 				</div>
 			{:else}
 				{@const turnCounter = { n: 0 }}

@@ -40,6 +40,11 @@ const TASK_PLAN_SCHEMA = {
         required: ["title"],
       },
     },
+    replace: {
+      type: "boolean",
+      description:
+        "Destructively replace all existing pending tasks with this new plan. Defaults to false (append-safe). Pass true ONLY when you explicitly want to throw away the current pending plan and start over — for example, the user says 'scrap the plan and redo it'. Do NOT pass true when the user asks to add tasks, assign agents, or continue the existing plan.",
+    },
   },
   required: ["tasks"],
 } as const;
@@ -227,7 +232,7 @@ export default defineExtension({
     {
       name: "task_plan",
       description:
-        "Create a task plan by decomposing complex work into discrete tasks and AUTOMATICALLY START the first task. Replaces all existing pending tasks. Use at the start of multi-step work (3+ steps). After this call, the first task is already active — you can begin working immediately. Use task_complete when each task is done (it auto-advances to the next). Optional subtasks are checklist items within a task. When a task has `assignTo` set, the assigned agent/team is auto-started by default so they begin working right away — pass `autoStart: false` on a task if you want the assignment to wait for manual start.",
+        "Create a task plan by decomposing complex work into discrete tasks and AUTOMATICALLY START the first task. APPENDS to the existing plan by default — pending tasks are preserved. To add a single task to an ongoing plan prefer task_add. To ASSIGN an agent/team to an existing task without changing the plan use task_assign. Only pass `replace: true` when the user explicitly asks to scrap and redo the plan. After this call, the first newly-added task is active (unless prerequisites are pending). Use task_complete when each task is done (it auto-advances). When a task has `assignTo` set, the assignment auto-starts by default — pass `autoStart: false` to defer.",
       inputSchema: TASK_PLAN_SCHEMA as Record<string, unknown>,
     },
     {

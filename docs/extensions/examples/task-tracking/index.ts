@@ -383,7 +383,7 @@ function notFoundError(snap: PersistedSnapshot, badId: string): string {
 // ── Tool handlers (commit-1 scope: the 5 simple ones) ──────────────
 
 const planHandler: ToolHandler = async (args) => {
-  const { tasks } = args as {
+  const { tasks, replace } = args as {
     tasks?: Array<{
       title: string;
       description?: string;
@@ -392,13 +392,22 @@ const planHandler: ToolHandler = async (args) => {
       autoStart?: boolean;
       dependsOn?: string[];
     }>;
+    replace?: boolean;
   };
   if (!Array.isArray(tasks)) {
     return toolError("task_plan requires a 'tasks' array");
   }
 
   const snap = await loadSnapshot();
-  const kept = snap.tasks.filter((t) => t.status !== "pending");
+  // Default: append mode. Preserves all existing tasks (including
+  // pending ones). `replace: true` opts into the destructive "wipe
+  // pending, keep in-flight/done" behavior for explicit replan.
+  // Rationale: the old destructive default silently dropped pending
+  // work when the LLM misinterpreted assign requests as replans
+  // (see retrospective for the 6→1-task vanishing incident).
+  const kept = replace === true
+    ? snap.tasks.filter((t) => t.status !== "pending")
+    : [...snap.tasks];
   const now = new Date().toISOString();
   const basePriority = kept.length;
   const newTasks: TrackedTask[] = tasks.map((t, idx) => ({

@@ -156,6 +156,53 @@ describe("task-tracking extension — task_plan", () => {
     expect(after.tasks.find((t) => t.title === "A")).toBeUndefined();
   });
 
+  test("appends by default — pending tasks are preserved across task_plan calls", async () => {
+    // Seed a prior plan: 1 active + 2 pending.
+    const now = new Date().toISOString();
+    fakeStorage.seed({
+      schemaVersion: 1,
+      activeTaskId: "existing-active",
+      tasks: [
+        { id: "existing-active", title: "A", description: "", status: "active", assignments: [], subtasks: [], priority: 0, createdAt: now, startedAt: now } as TrackedTask,
+        { id: "existing-p1", title: "P1", description: "", status: "pending", assignments: [], subtasks: [], priority: 1, createdAt: now } as TrackedTask,
+        { id: "existing-p2", title: "P2", description: "", status: "pending", assignments: [], subtasks: [], priority: 2, createdAt: now } as TrackedTask,
+      ],
+    });
+
+    await tools.task_plan!({ tasks: [{ title: "New1" }, { title: "New2" }] });
+
+    const snap = fakeStorage.peek()!;
+    // All 3 existing + 2 new = 5. Regression guard for the "assign team → tasks vanish" bug.
+    expect(snap.tasks).toHaveLength(5);
+    const titles = snap.tasks.map((t) => t.title);
+    expect(titles).toContain("A");
+    expect(titles).toContain("P1");
+    expect(titles).toContain("P2");
+    expect(titles).toContain("New1");
+    expect(titles).toContain("New2");
+    // The pre-existing active task stays active — no double auto-start.
+    expect(snap.activeTaskId).toBe("existing-active");
+  });
+
+  test("replace:true destructively wipes pending tasks (explicit opt-in)", async () => {
+    const now = new Date().toISOString();
+    fakeStorage.seed({
+      schemaVersion: 1,
+      activeTaskId: "keep-active",
+      tasks: [
+        { id: "keep-active", title: "Active", description: "", status: "active", assignments: [], subtasks: [], priority: 0, createdAt: now, startedAt: now } as TrackedTask,
+        { id: "drop-p1", title: "P1", description: "", status: "pending", assignments: [], subtasks: [], priority: 1, createdAt: now } as TrackedTask,
+        { id: "keep-done", title: "Done", description: "", status: "completed", assignments: [], subtasks: [], priority: 2, createdAt: now, completedAt: now } as TrackedTask,
+      ],
+    });
+
+    await tools.task_plan!({ tasks: [{ title: "Fresh" }], replace: true });
+
+    const snap = fakeStorage.peek()!;
+    // Active and completed are preserved; pending is wiped; new task appended.
+    expect(snap.tasks.map((t) => t.title).sort()).toEqual(["Active", "Done", "Fresh"]);
+  });
+
   test("unknown deps become warnings (not fatal)", async () => {
     const out = await tools.task_plan!({
       tasks: [{ title: "A", dependsOn: ["does-not-exist"] }],

@@ -28,6 +28,7 @@ import {
   JsonRpcError,
   registerEventHandler,
   spawnAssignment,
+  cancelRun,
   toolError,
   toolResult,
   type SpawnAssignmentInput,
@@ -120,6 +121,8 @@ let storage: StorageLike = new Storage("conversation");
 let taskEvents: TaskEventsLike = new TaskEvents();
 let agentConfigs: AgentConfigsLike = new AgentConfigs();
 let spawn: SpawnFn = spawnAssignment;
+type CancelFn = typeof cancelRun;
+let cancel: CancelFn = cancelRun;
 
 /** Test-only: inject a fake storage backend. */
 export function _setStoreForTests(fake: StorageLike): void {
@@ -133,6 +136,9 @@ export function _setTaskEventsForTests(fake: TaskEventsLike): void {
 export function _setAgentConfigsForTests(fake: AgentConfigsLike): void {
   agentConfigs = fake;
 }
+/** Test-only: inject a fake cancelRun. */
+export function _setCancelForTests(fake: CancelFn): void { cancel = fake; }
+
 /** Test-only: inject a fake spawnAssignment. */
 export function _setSpawnForTests(fake: SpawnFn): void {
   spawn = fake;
@@ -143,6 +149,7 @@ export function _resetBindingsForTests(): void {
   taskEvents = new TaskEvents();
   agentConfigs = new AgentConfigs();
   spawn = spawnAssignment;
+  cancel = cancelRun;
 }
 
 // Storage key for the persisted snapshot. Pre-Phase-3 the built-in
@@ -1040,6 +1047,182 @@ const assignHandler: ToolHandler = async (args) => {
   );
 };
 
+/**
+ * Stop a running assignment mid-execution. Cancels the underlying sub-
+ * agent run via the Phase 4 `ezcorp/cancel-run` reverse-RPC and resets
+ * the assignment to "assigned" so `task_resume` can pick it up.
+ * Preserves subConversationId — the resumed run reuses the same sub-
+ * conversation so the sub-agent sees its full prior context.
+ *
+ * Ownership: cancelRun is gated on the caller extension having spawned
+ * the run (see phase-4-plan.md §5.3). The task-tracking extension owns
+ * runs it started via `spawnAssignment` (through this extension's
+ * assignHandler autoStart / startHandler / etc). Runs started via the
+ * HTTP /api/conversations/.../start route don't belong to the extension
+ * and cancel will reject with -32001 — the handler surfaces that to
+ * the LLM with guidance to use the UI's Stop button.
+ */
+const stopHandler: ToolHandler = async (args) => {
+  const { taskId, assignmentId, reason } = args as {
+    taskId?: string;
+    assignmentId?: string;
+    reason?: string;
+  };
+  if (typeof taskId !== "string" || typeof assignmentId !== "string") {
+    return toolError("task_stop requires 'taskId' and 'assignmentId'");
+  }
+  const snap = await loadSnapshot();
+  const task = snap.tasks.find((t) => t.id === taskId);
+  if (!task) return toolError(notFoundError(snap, taskId));
+
+  // Find assignment at task level or subtask level.
+  let assignment: TaskAssignment | undefined = task.assignments.find((a) => a.id === assignmentId);
+  if (!assignment) {
+    for (const subtask of task.subtasks) {
+      assignment = subtask.assignments?.find((a) => a.id === assignmentId);
+      if (assignment) break;
+    }
+  }
+  if (!assignment) return toolError(`Assignment ${assignmentId} not found on task ${taskId}`);
+  if (assignment.status !== "running") {
+    return toolError(`Assignment is "${assignment.status}", expected "running"`);
+  }
+
+  if (!assignment.agentRunId) {
+    return toolError(`Assignment has no agentRunId — cannot cancel an unmaterialized run`);
+  }
+
+  // Ask the host to cancel. Ownership check happens host-side.
+  try {
+    const result = await cancel(assignment.agentRunId);
+    if (!result.cancelled) {
+      const detailReason = typeof (result as { reason?: unknown }).reason === "string"
+        ? (result as { reason: string }).reason
+        : "unknown";
+      return toolError(
+        `Host rejected cancel: ${detailReason}. This usually means the run was started outside this extension (e.g. via the UI). Ask the user to click Stop on the assignment pill.`,
+      );
+    }
+  } catch (err) {
+    if (err instanceof JsonRpcError && err.code === -32001) {
+      return toolError(
+        `Cannot cancel this run — it was started outside this extension. Ask the user to click Stop on the assignment pill in the task panel.`,
+      );
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return toolError(`Cancel failed: ${msg}`);
+  }
+
+  // Reset state. Preserve subConversationId for resume.
+  assignment.status = "assigned";
+  delete assignment.agentRunId;
+  delete assignment.startedAt;
+
+  // Fall the task back to pending if nothing else on it is running.
+  const anyRunning = task.assignments.some((a) => a.status === "running")
+    || task.subtasks.some((s) => (s.assignments ?? []).some((a) => a.status === "running"));
+  if (!anyRunning && task.status === "active") {
+    task.status = "pending";
+    if (snap.activeTaskId === task.id) snap.activeTaskId = undefined;
+  }
+
+  await saveSnapshot(snap);
+  await emitState(snap);
+  await taskEvents.emitAssignmentUpdate(taskId, assignment);
+
+  const reasonLine = reason ? `\nReason: ${reason}` : "";
+  return toolResult(
+    `Stopped assignment "${assignment.agentName}" on task "${task.title}".${reasonLine}\nContext preserved — call task_resume with the same taskId + assignmentId to continue.`,
+  );
+};
+
+/**
+ * Resume a previously-stopped assignment. Re-spawns on the SAME sub-
+ * conversation so the sub-agent sees its full prior context.
+ * `spawnAssignment`'s `reuseSubConversationFor: agentConfigId` asks the
+ * host to look up the existing sub-conv for the parent conversation +
+ * agent config pair; since we preserved `subConversationId` on the
+ * assignment when it was stopped, the host will find and reuse it.
+ */
+const resumeHandler: ToolHandler = async (args) => {
+  const { taskId, assignmentId } = args as {
+    taskId?: string;
+    assignmentId?: string;
+  };
+  if (typeof taskId !== "string" || typeof assignmentId !== "string") {
+    return toolError("task_resume requires 'taskId' and 'assignmentId'");
+  }
+  const snap = await loadSnapshot();
+  const task = snap.tasks.find((t) => t.id === taskId);
+  if (!task) return toolError(notFoundError(snap, taskId));
+
+  let assignment: TaskAssignment | undefined = task.assignments.find((a) => a.id === assignmentId);
+  if (!assignment) {
+    for (const subtask of task.subtasks) {
+      assignment = subtask.assignments?.find((a) => a.id === assignmentId);
+      if (assignment) break;
+    }
+  }
+  if (!assignment) return toolError(`Assignment ${assignmentId} not found on task ${taskId}`);
+  if (assignment.status !== "assigned") {
+    return toolError(`Assignment is "${assignment.status}", expected "assigned" (call task_stop first if it's running).`);
+  }
+  if (!assignment.subConversationId) {
+    return toolError(
+      `Assignment has no prior subConversationId — nothing to resume. Use task_start / task_assign autoStart to begin a fresh run.`,
+    );
+  }
+
+  // Dependency gate — mirror task_start / assign.
+  if (isBlocked(task as ReadonlyTask, snap as unknown as ReadonlySnapshot)) {
+    const waiting = unsatisfiedDeps(task as ReadonlyTask, snap as unknown as ReadonlySnapshot).map((t) => t.title);
+    return toolError(`Task is blocked — waiting for prerequisites: ${waiting.join(", ")}`);
+  }
+
+  // Re-spawn. Passing reuseSubConversationFor nudges the host to match
+  // the existing sub-conversation (same agentConfigId under the same
+  // parent conversation), which lines up with the one we stored on
+  // assignment.subConversationId before the stop.
+  const input: SpawnAssignmentInput = {
+    task: task.description || task.title,
+    agentConfigId: assignment.agentConfigId,
+    taskId,
+    assignmentId,
+    title: task.title,
+    reuseSubConversationFor: assignment.agentConfigId,
+  };
+  const outcome = await attemptSpawn(input);
+  if (outcome.status !== "started") {
+    if (outcome.status === "invalid" || outcome.status === "dispatch-failed" || outcome.status === "unknown-error") {
+      // Mark the assignment failed — mirrors the ladder in assignHandler.
+      await recordAssignmentFailure(snap, taskId, assignment, outcome.message);
+      return toolError(`Resume failed (${outcome.status}): ${outcome.message}`);
+    }
+    return toolError(`Resume rejected (${outcome.status}): ${outcome.message}`);
+  }
+
+  // Happy path — transition to running, record the fresh run ids.
+  assignment.status = "running";
+  assignment.startedAt = new Date().toISOString();
+  assignment.agentRunId = outcome.handle.agentRunId;
+  // subConversationId is preserved; the host confirms reuse via the handle.
+  assignment.subConversationId = outcome.handle.subConversationId;
+
+  if (task.status === "pending") {
+    task.status = "active";
+    if (!task.startedAt) task.startedAt = new Date().toISOString();
+    snap.activeTaskId = task.id;
+  }
+
+  await saveSnapshot(snap);
+  await emitState(snap);
+  await taskEvents.emitAssignmentUpdate(taskId, assignment);
+
+  return toolResult(
+    `Resumed assignment "${assignment.agentName}" on task "${task.title}". Sub-agent sees full prior context (subConversationId ${assignment.subConversationId}).`,
+  );
+};
+
 export const tools: Record<string, ToolHandler> = {
   task_plan: planHandler,
   task_add: addHandler,
@@ -1053,6 +1236,8 @@ export const tools: Record<string, ToolHandler> = {
   task_set_dependencies: setDepsHandler,
   task_unassign: unassignHandler,
   task_assign: assignHandler,
+  task_stop: stopHandler,
+  task_resume: resumeHandler,
 };
 
 // ── commit-4 two-hop bridge (task:assignment_update subscription) ───

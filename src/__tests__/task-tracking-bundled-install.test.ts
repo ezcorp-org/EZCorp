@@ -146,7 +146,7 @@ describe("ensureBundledExtensions — first-boot install", () => {
     expect(granted.eventSubscriptions).toEqual(["task:assignment_update"]);
   });
 
-  test("manifest declares all 12 task-tracking tools", async () => {
+  test("manifest declares all 14 task-tracking tools", async () => {
     await ensureBundledExtensions();
     const row = store.get("task-tracking")!;
     const manifest = row.manifest as { tools?: Array<{ name: string }> };
@@ -159,8 +159,10 @@ describe("ensureBundledExtensions — first-boot install", () => {
       "task_list",
       "task_list_agents",
       "task_plan",
+      "task_resume",
       "task_set_dependencies",
       "task_start",
+      "task_stop",
       "task_subtask_toggle",
       "task_unassign",
       "task_update",

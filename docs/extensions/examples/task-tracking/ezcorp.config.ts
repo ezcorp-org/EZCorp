@@ -185,13 +185,42 @@ const TASK_SET_DEPS_SCHEMA = {
 
 const TASK_LIST_AGENTS_SCHEMA = { type: "object", properties: {} } as const;
 
+const TASK_STOP_SCHEMA = {
+  type: "object",
+  properties: {
+    taskId: { type: "string", description: "The id of the task holding the running assignment." },
+    assignmentId: {
+      type: "string",
+      description: "The id of the running assignment to stop. Must be in \"running\" status.",
+    },
+    reason: {
+      type: "string",
+      description: "Optional short note explaining why the assignment was stopped. Shown in the task panel.",
+    },
+  },
+  required: ["taskId", "assignmentId"],
+} as const;
+
+const TASK_RESUME_SCHEMA = {
+  type: "object",
+  properties: {
+    taskId: { type: "string", description: "The id of the task holding the stopped assignment." },
+    assignmentId: {
+      type: "string",
+      description:
+        "The id of a stopped assignment (status=\"assigned\" with prior subConversationId) to resume. Re-spawns the sub-agent on the same sub-conversation so it sees its full prior context.",
+    },
+  },
+  required: ["taskId", "assignmentId"],
+} as const;
+
 export default defineExtension({
   schemaVersion: 2,
   name: "task-tracking",
   version: "1.0.0",
   description:
     "Multi-task planning and sub-agent coordination for a conversation",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   persistent: true,
   tools: [
@@ -263,6 +292,18 @@ export default defineExtension({
       description:
         "List all agents and teams available for task assignment.",
       inputSchema: TASK_LIST_AGENTS_SCHEMA as Record<string, unknown>,
+    },
+    {
+      name: "task_stop",
+      description:
+        "Stop a running assignment mid-execution. Cancels the sub-agent run and resets the assignment to \"assigned\" so it can be resumed. Preserves the sub-conversation so task_resume sees the full prior context. Use when you need to pause a task mid-stream (e.g. the approach is wrong, you've spotted a blocker, you want to hand it off).",
+      inputSchema: TASK_STOP_SCHEMA as Record<string, unknown>,
+    },
+    {
+      name: "task_resume",
+      description:
+        "Resume a previously-stopped assignment. Re-spawns the same sub-agent on the same sub-conversation so it picks up exactly where it left off with full prior turn context. Only works on assignments that were stopped (status=\"assigned\" with a prior subConversationId), not on never-started ones — use task_assign + auto-start for those.",
+      inputSchema: TASK_RESUME_SCHEMA as Record<string, unknown>,
     },
   ],
   permissions: {

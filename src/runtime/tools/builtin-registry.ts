@@ -3,9 +3,11 @@
  * Used by the /api/tools endpoint to include built-in tools alongside
  * extension tools, and by the mention search / tool-invoke APIs.
  *
- * After Phase 3 commit-5 the task-tracking tools moved to a bundled
- * extension and their metadata flows through the extensions table like
- * every other extension. Only the two orchestration tools remain.
+ * After Phase 4 commit-5 `invoke_agent` moved to the bundled
+ * `orchestration` extension — the only remaining built-in is
+ * `ask_human` (pending its own extension port in Phase 5).
+ * (Scratchpad moved to a bundled extension in Phase 1; task-tracking
+ * moved to a bundled extension in Phase 3 commit-5.)
  */
 
 export type BuiltInCategory = "orchestration";
@@ -22,10 +24,8 @@ export interface BuiltInToolMeta {
 /** Build the full tool list. */
 function buildToolList(): BuiltInToolMeta[] {
   return [
-    // Orchestration (2) — not mentionable (require active run context).
-    // (Scratchpad moved to a bundled extension in Phase 1; task-tracking
-    // moved to a bundled extension in Phase 3 commit-5.)
-    { name: "invoke_agent", description: "Invoke a specialized agent to handle a task. The agent runs as an independent sub-conversation and returns its response.", category: "orchestration", mentionable: false },
+    // Orchestration (1) — ask_human stays as a built-in pending Phase 5.
+    // invoke_agent moved to the `orchestration` bundled extension in Phase 4.
     { name: "ask_human", description: "Pause execution and ask the user a question. The agent will wait for the user's response before continuing.", category: "orchestration", mentionable: false },
   ];
 }

@@ -776,22 +776,42 @@ export class AgentExecutor {
                 firstMentionedTeam?.team.teamToolScope
                 ?? (run as any)._teamToolScope as import("../types").TeamToolScope | undefined;
 
-              const { createInvokeAgentTool } = await import("./tools/invoke-agent");
-              agentTools.push(createInvokeAgentTool({
-                executor: this,
-                bus: this.bus,
-                parentConversationId: conversationId,
-                parentRunId: run.id,
-                projectId: options.projectId,
-                availableAgents: allAvailableAgents,
-                parentModel: options.model,
-                parentProvider: options.provider,
-                parentMessageId: options.parentMessageId,
-                depth,
-                ...(resolvedMemberOverrides ? { memberOverrides: resolvedMemberOverrides } : {}),
-                ...(resolvedSubAgentMembers ? { subAgentMembers: resolvedSubAgentMembers } : {}),
-                ...(resolvedTeamToolScope ? { teamToolScope: resolvedTeamToolScope } : {}),
-              }));
+              // Orchestration extension (Phase 4 commit-5): wire-on-first-use for
+              // invoke_agent. The legacy built-in was deleted; the same tool
+              // surface is now served by the bundled `orchestration` extension
+              // (docs/extensions/examples/orchestration/). Mirrors the Phase 3
+              // `ensureTaskTrackingWired` pattern.
+              try {
+                const { ensureOrchestrationWired, wireOrchestrationToolsForTurn } =
+                  await import("./orchestration-host");
+                const wired = await ensureOrchestrationWired(conversationId);
+                if (wired) {
+                  await wireOrchestrationToolsForTurn({
+                    agentTools,
+                    conversationId,
+                    runId: run.id,
+                    availableAgents: allAvailableAgents,
+                    parentModel: options.model,
+                    parentProvider: options.provider,
+                    parentMessageId: options.parentMessageId,
+                    depth,
+                    memberOverrides: resolvedMemberOverrides
+                      ? Object.fromEntries(resolvedMemberOverrides)
+                      : undefined,
+                    subAgentMembers: resolvedSubAgentMembers,
+                    teamToolScope: resolvedTeamToolScope,
+                    registry: ExtensionRegistry.getInstance(),
+                    executor: this,
+                    stateMediator: this._stateMediator,
+                    spawnQuota: this._spawnQuota,
+                    userId: convRecord?.userId,
+                  });
+                }
+              } catch (orchWireErr) {
+                log.warn("Orchestration extension wire failed — agent orchestration unavailable this turn", {
+                  error: String(orchWireErr),
+                });
+              }
               if (resolvedTeamToolScope) {
                 (run as any)._teamToolScope = resolvedTeamToolScope;
               }

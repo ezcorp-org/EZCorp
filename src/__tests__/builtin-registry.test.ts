@@ -3,20 +3,22 @@ import { test, expect, describe } from "bun:test";
 import { getBuiltInToolMetadata, getBuiltInCategories, getBuiltInToolsByCategory } from "../runtime/tools/builtin-registry";
 
 describe("builtin-registry", () => {
-  test("returns 2 tools (orchestration only)", () => {
+  test("returns 1 tool (ask_human only)", () => {
     // Phase 1 moved the 2 scratchpad tools out of the built-in registry
     // into a bundled extension. Phase 3 commit-5 moved the 12
-    // task-tracking tools to a bundled extension too. Only the 2
-    // orchestration tools (invoke_agent, ask_human) remain as built-ins.
+    // task-tracking tools to a bundled extension too. Phase 4 commit-5
+    // moved invoke_agent to the bundled `orchestration` extension.
+    // Only ask_human remains as a built-in (pending Phase 5).
     const tools = getBuiltInToolMetadata();
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(1);
   });
 
-  test("scratchpad and task-tracking are no longer in the built-in registry", () => {
+  test("scratchpad, task-tracking, and invoke_agent are no longer in the built-in registry", () => {
     const tools = getBuiltInToolMetadata();
     expect(tools.some((t) => t.name === "scratchpad_write")).toBe(false);
     expect(tools.some((t) => t.name === "task_plan")).toBe(false);
     expect(tools.some((t) => t.name === "task_list")).toBe(false);
+    expect(tools.some((t) => t.name === "invoke_agent")).toBe(false);
     expect(tools.some((t) => (t as { category: string }).category === "scratchpad")).toBe(false);
     expect(tools.some((t) => (t as { category: string }).category === "task-tracking")).toBe(false);
   });

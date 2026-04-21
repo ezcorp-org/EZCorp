@@ -115,6 +115,32 @@ mock.module("../extensions/tool-executor", () => ({
   extensionToAgentTool: () => ({}),
 }));
 
+// Orchestration host — Phase 4 commit-5 replaced the in-process
+// invoke-agent tool injection with a wire-on-first-use helper that
+// resolves the bundled `orchestration` extension from the DB.
+// The test fixture doesn't install that extension, so we stub the
+// helpers: `ensureOrchestrationWired` is a no-op success, and
+// `wireOrchestrationToolsForTurn` appends a minimal AgentTool with
+// `name: "invoke_agent"` so the rest of the executor path (auto-
+// spin-up, filter preservation, depth-gate, event suppression)
+// behaves identically to the legacy built-in injection.
+mock.module("../runtime/orchestration-host", () => ({
+  ensureOrchestrationWired: async () => true,
+  wireOrchestrationToolsForTurn: async (params: { agentTools: any[] }) => {
+    params.agentTools.push({
+      name: "invoke_agent",
+      label: "Invoke Agent",
+      description:
+        "Invoke a specialized agent to handle a task. The agent runs as an independent sub-conversation and returns its response.",
+      parameters: { type: "object", properties: {}, required: [] },
+      execute: async () => ({
+        content: [{ type: "text" as const, text: "(stub invoke_agent response)" }],
+        details: {},
+      }),
+    });
+  },
+}));
+
 // ── Import after all mocks ──
 const { AgentExecutor } = await import("../runtime/executor");
 const { EventBus } = await import("../runtime/events");

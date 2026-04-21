@@ -1,9 +1,9 @@
 // Host-side helpers for the Phase 4 `orchestration` bundled extension.
 //
-// Phase 4 §5.1: the legacy built-in `invoke_agent` tool at
-// `src/runtime/tools/invoke-agent.ts` is being migrated into a bundled
-// extension at `docs/extensions/examples/orchestration/`. This module is
-// the executor's entry point for wiring that extension on a per-turn
+// Phase 4 §5.1: the legacy built-in `invoke_agent` tool (deleted in
+// commit 5) was migrated into a bundled extension at
+// `docs/extensions/examples/orchestration/`. This module is the
+// executor's entry point for wiring that extension on a per-turn
 // basis — mirroring the Phase 3 `task-tracking-host.ts` pattern.
 //
 // Two exports:
@@ -18,10 +18,10 @@
 //     through the 6-arg `extensionToAgentTool` seam, and appends the
 //     resulting AgentTool to the turn's tool list.
 //
-// Commit 4 ships this file + bundles the extension but does NOT remove
-// the executor's `createInvokeAgentTool` injection — both paths are live.
-// Commit 5 flips the executor to call these helpers in place of the
-// built-in.
+// Commit 4 shipped this file + bundled the extension alongside the
+// legacy built-in (dual-wired); commit 5 flipped the executor to call
+// these helpers and deleted the legacy built-in — this file is now
+// the sole host-side entry point for the invoke_agent tool.
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { getDb } from "../db/connection";

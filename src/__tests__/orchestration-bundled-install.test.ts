@@ -2,10 +2,10 @@
  * Tests the bundled install path for the `orchestration` extension —
  * Phase 4 commit-4a promoted the extension scaffold (shipped in commit 3)
  * into BUNDLED_EXTENSIONS so `ensureBundledExtensions()` creates its DB
- * row on first boot. Dual-wired: the executor's legacy
- * `createInvokeAgentTool` path is still live this commit, so installing
- * the extension row is a no-op for LLM turns until commit 5 flips the
- * wiring.
+ * row on first boot. Dual-wired at that point: the executor's legacy
+ * invoke-agent path was still live through commit-4a, so installing
+ * the extension row was a no-op for LLM turns until commit 5 flipped
+ * the wiring.
  *
  * Pattern mirrors scratchpad-bundled-install + task-tracking-bundled-
  * install: in-memory `store` mock of `db/queries/extensions`, no real DB.

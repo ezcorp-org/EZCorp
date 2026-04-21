@@ -2,16 +2,12 @@
 // orchestration — multi-agent orchestration primitives extension.
 //
 // Phase 4 §1-§4: provides `invoke_agent` as a bundled extension, porting
-// the legacy built-in at src/runtime/tools/invoke-agent.ts. The handler
-// dispatches via the Phase 2d `spawnAssignment` reverse-RPC and bridges
-// the async handle into the synchronous-to-the-LLM tool return via a
-// `task:assignment_update` subscription (Phase 2c / same two-hop pattern
-// the task-tracking extension shipped in Phase 3).
-//
-// Commit 3 adds the scaffold + handler + subscription. The extension is
-// NOT yet bundled (see src/extensions/bundled.ts) and is NOT yet wired
-// on first-use in the executor — those are commit 4. Until then,
-// src/runtime/tools/invoke-agent.ts remains the live path.
+// the legacy built-in formerly at src/runtime/tools/invoke-agent.ts
+// (deleted in commit 5). The handler dispatches via the Phase 2d
+// `spawnAssignment` reverse-RPC and bridges the async handle into the
+// synchronous-to-the-LLM tool return via a `task:assignment_update`
+// subscription (Phase 2c / same two-hop pattern the task-tracking
+// extension shipped in Phase 3).
 //
 // Permission contract: requires `agentConfig: "read"`,
 // `spawnAgents: { maxPerHour, maxConcurrent }`, and
@@ -105,9 +101,10 @@ const pendingInvocations = new Map<string, PendingInvocation>();
 
 // ── invoke_agent tool handler ──────────────────────────────────────
 //
-// Mirrors the legacy built-in (`src/runtime/tools/invoke-agent.ts`)
-// surface: same JSON schema, same error strings, same `_agentMeta` in
-// the details. Overrides / teamToolScope / parentMessageId /
+// Mirrors the legacy built-in (formerly at
+// `src/runtime/tools/invoke-agent.ts`, deleted in Phase 4 commit 5)
+// surface: same JSON schema, same error strings, same `_agentMeta`
+// in the details. Overrides / teamToolScope / parentMessageId /
 // orchestrationDepth ride in on `ctx.invocationMetadata` — the host's
 // `wireOrchestrationToolsForTurn` (commit 4) binds them at tool-wiring
 // time via `extensionToAgentTool`'s `invocationMetadata` seam.

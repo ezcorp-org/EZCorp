@@ -13,17 +13,34 @@
  * extension, where it's covered by
  * src/__tests__/task-tracking-extension.test.ts (the
  * `task:assignment_update` subscription cases).
+ *
+ * Phase 4 commit-5 also deleted the legacy invoke-agent built-in — the
+ * `__current__` sentinel substitution for the invoke-agent branch now
+ * lives inside the bundled `orchestration` extension + the host's
+ * spawn-assignment-handler → startAssignment cascade. The pure-logic
+ * checks below (resolveSentinel / resolveModel / resolveForTaskAssignment)
+ * are inline replicas that continue to pin the invariant — the
+ * end-to-end proof that the sentinel survives the invoke-agent path in
+ * the new architecture lives in orchestration-e2e.test.ts.
  */
 import { test, expect, describe } from "bun:test";
 import { CURRENT_MODEL_SENTINEL } from "../types";
 
-/** Inline replica of the unexported resolveSentinel from invoke-agent.ts */
+/** Inline replica of the unexported resolveSentinel logic that
+ *  historically lived in the legacy invoke-agent built-in. Phase 4
+ *  commit-5 moved the runtime behavior into the bundled `orchestration`
+ *  extension (which delegates the sentinel substitution to the host's
+ *  spawn-assignment-handler → startAssignment chain). The pure-logic
+ *  checks in this file continue to guard the invariant. */
 function resolveSentinel(value: string | undefined | null, fallback: string | undefined): string | undefined {
   if (value === CURRENT_MODEL_SENTINEL) return fallback;
   return value ?? undefined;
 }
 
-/** Inline replica of the 3-tier resolution chain used in invoke-agent.ts */
+/** Inline replica of the 3-tier resolution chain (override → config → parent)
+ *  formerly implemented inline in the legacy invoke-agent built-in and
+ *  now mirrored by the startAssignment override cascade reached via the
+ *  orchestration extension. */
 function resolveModel(overrideModel: string | undefined | null, configModel: string | undefined | null, parentModel: string | undefined): string | undefined {
   return resolveSentinel(overrideModel, parentModel) ?? resolveSentinel(configModel, parentModel) ?? parentModel;
 }

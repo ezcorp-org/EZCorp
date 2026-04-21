@@ -16,6 +16,7 @@ import type { AgentEvents } from "../../types";
 interface PendingHumanInput {
   resolve: (response: string) => void;
   reject: (err: Error) => void;
+  conversationId: string;
 }
 
 const pendingRequests = new Map<string, PendingHumanInput>();
@@ -84,7 +85,7 @@ export function createAskHumanTool(opts: AskHumanOpts): AgentTool {
 
       try {
         const response = await new Promise<string>((resolve, reject) => {
-          pendingRequests.set(requestId, { resolve, reject });
+          pendingRequests.set(requestId, { resolve, reject, conversationId });
         });
 
         return {
@@ -126,4 +127,20 @@ export function rejectHumanInput(requestId: string): void {
 /** Check whether a request is still pending. */
 export function hasPendingHumanInput(requestId: string): boolean {
   return pendingRequests.has(requestId);
+}
+
+/**
+ * Read the `conversationId` associated with a pending human-input gate.
+ *
+ * Added in Phase 5 (commit 1) so the POST endpoint at
+ * `web/src/routes/api/orchestrator/human-input/+server.ts` can
+ * reverse-map `requestId → conversationId` and emit
+ * `orchestrator:human_response` with the conversation id — which the
+ * SSE conversation filter now uses to gate cross-user delivery.
+ *
+ * Returns `undefined` when no pending entry exists (unknown requestId,
+ * or the gate already resolved / rejected / timed out / was aborted).
+ */
+export function getPendingHumanConversationId(requestId: string): string | undefined {
+  return pendingRequests.get(requestId)?.conversationId;
 }

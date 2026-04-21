@@ -24,17 +24,23 @@ beforeEach(() => __clearMembershipCacheForTests());
 afterEach(() => __clearMembershipCacheForTests());
 
 describe("DIRECT_CARRIER_EVENT_TYPES", () => {
-  test("enumerates the 13 event types identified in the prereqs audit", () => {
-    expect(DIRECT_CARRIER_EVENT_TYPES.size).toBe(13);
+  test("enumerates the 14 direct-carrier event types (13 from prereqs audit + Phase 5 orchestrator:human_response)", () => {
+    expect(DIRECT_CARRIER_EVENT_TYPES.size).toBe(14);
     for (const name of [
       "run:complete", "run:error", "run:cancel", "run:turn_saved",
       "tool:start", "tool:complete", "tool:error",
       "tool:permission_request", "tool:permission_mode_change",
-      "obs:turn", "orchestrator:human_input",
+      "obs:turn", "orchestrator:human_input", "orchestrator:human_response",
       "task:snapshot", "task:assignment_update",
     ]) {
       expect(DIRECT_CARRIER_EVENT_TYPES.has(name as never)).toBe(true);
     }
+  });
+
+  test("includes orchestrator:human_response (Phase 5 — host-side payload-shape migration)", () => {
+    // Explicit assertion for the Phase 5 addition. Kept as its own case
+    // so a regression that removes the entry surfaces with a clear name.
+    expect(DIRECT_CARRIER_EVENT_TYPES.has("orchestrator:human_response")).toBe(true);
   });
 
   test("does NOT include runId-only events (pass-through tier)", () => {
@@ -44,7 +50,6 @@ describe("DIRECT_CARRIER_EVENT_TYPES", () => {
       "pipeline:start", "pipeline:step", "pipeline:complete", "pipeline:error",
       "tool:kill",
       "agent:spawn", "agent:status", "agent:complete",
-      "orchestrator:human_response",
       "ext:state",
     ]) {
       expect(DIRECT_CARRIER_EVENT_TYPES.has(name as never)).toBe(false);
@@ -106,6 +111,34 @@ describe("shouldDeliverEvent — direct-carrier filtering", () => {
       get,
     );
     expect(deliver).toBe(false);
+  });
+
+  test("orchestrator:human_response is filtered by conversationId — passes to owner of conv-A, drops for conv-B subscriber", async () => {
+    // Phase 5 commit 1 — the response event now carries conversationId at
+    // the top level and is in the DIRECT_CARRIER set, so cross-user leak
+    // attempts are blocked identically to tool:complete / task:snapshot.
+    const get = makeGetConversation({
+      "conv-A": { userId: "user-1" },
+      "conv-B": { userId: "user-2" },
+    });
+
+    // conv-A subscriber receives the event emitted for conv-A.
+    const deliverSameConv = await shouldDeliverEvent(
+      "orchestrator:human_response",
+      { requestId: "req-1", response: "blue", conversationId: "conv-A" },
+      { userId: "user-1" },
+      get,
+    );
+    expect(deliverSameConv).toBe(true);
+
+    // user-2 is on conv-B but the event targets conv-A → filter drops it.
+    const deliverCrossUser = await shouldDeliverEvent(
+      "orchestrator:human_response",
+      { requestId: "req-1", response: "blue", conversationId: "conv-A" },
+      { userId: "user-2" },
+      get,
+    );
+    expect(deliverCrossUser).toBe(false);
   });
 
   test("blocks a forged conversationId (event claims conv user does not own)", async () => {

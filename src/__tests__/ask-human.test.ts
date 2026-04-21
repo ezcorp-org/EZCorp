@@ -1,5 +1,11 @@
 import { test, expect, describe, beforeEach } from "bun:test";
-import { createAskHumanTool, resolveHumanInput, rejectHumanInput, hasPendingHumanInput } from "../runtime/tools/ask-human";
+import {
+  createAskHumanTool,
+  resolveHumanInput,
+  rejectHumanInput,
+  hasPendingHumanInput,
+  getPendingHumanConversationId,
+} from "../runtime/tools/ask-human";
 import { EventBus } from "../runtime/events";
 import type { AgentEvents } from "../types";
 
@@ -121,6 +127,30 @@ describe("ask-human tool", () => {
     // Should not throw
     rejectHumanInput("nonexistent-id");
     expect(hasPendingHumanInput("nonexistent-id")).toBe(false);
+  });
+
+  test("getPendingHumanConversationId returns the conversationId while the gate is live, undefined after resolution (Phase 5 commit 1)", async () => {
+    const tool = createAskHumanTool({ bus, runId: "r1", conversationId: "conv-phase5" });
+
+    let capturedRequestId: string | undefined;
+    bus.on("orchestrator:human_input", (data) => {
+      capturedRequestId = (data as any).requestId;
+    });
+
+    const resultPromise = tool.execute("call-1", { question: "What?" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // While pending, accessor returns the conversationId supplied to the factory.
+    expect(getPendingHumanConversationId(capturedRequestId!)).toBe("conv-phase5");
+
+    // Unknown requestId always returns undefined.
+    expect(getPendingHumanConversationId("nonexistent-id")).toBeUndefined();
+
+    resolveHumanInput(capturedRequestId!, "ok");
+    await resultPromise;
+
+    // After resolution, the entry is gone.
+    expect(getPendingHumanConversationId(capturedRequestId!)).toBeUndefined();
   });
 
   test("requestId is unique per call", async () => {

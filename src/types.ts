@@ -286,6 +286,7 @@ export interface AgentEvents {
   "orchestrator:human_response": {
     requestId: string;
     response: string;
+    conversationId: string;
   };
   // ── Task Tracking Panel ──
   "task:snapshot": {

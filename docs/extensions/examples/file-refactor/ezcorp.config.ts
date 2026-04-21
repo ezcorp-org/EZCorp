@@ -32,6 +32,7 @@ export default defineExtension({
           },
           excludePatterns: {
             type: "array",
+            items: { type: "string" },
             format: "tag-input",
             description: "Glob patterns to skip (e.g. node_modules, .git)",
             "x-options": {

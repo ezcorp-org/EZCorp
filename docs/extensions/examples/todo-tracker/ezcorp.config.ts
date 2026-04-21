@@ -30,6 +30,7 @@ export default defineExtension({
           },
           tags: {
             type: "array",
+            items: { type: "string" },
             format: "tag-input",
             description: "Filter by tag",
             "x-options": {

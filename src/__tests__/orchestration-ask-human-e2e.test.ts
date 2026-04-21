@@ -97,7 +97,6 @@ const {
 } = await import("../db/schema");
 
 import type { AgentEvents } from "../types";
-import type { AgentExecutor } from "../runtime/executor";
 import type { ExtensionManifestV2, ExtensionPermissions } from "../extensions/types";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { RegisteredTool } from "../extensions/registry";

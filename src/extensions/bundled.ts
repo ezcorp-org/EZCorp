@@ -71,8 +71,11 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
   },
   {
     // Multi-agent orchestration primitives — provides `invoke_agent`
-    // for delegating to a sub-agent within a conversation. Phase 4
-    // ported this from the legacy built-in to a bundled extension.
+    // for delegating to a sub-agent within a conversation, and (Phase
+    // 5) `ask_human` for pausing execution to surface a question to the
+    // user. Phase 4 ported `invoke_agent` from the legacy built-in;
+    // Phase 5 adds `ask_human` alongside it in the same extension (no
+    // new extension — §Frozen decisions).
     // Wire-on-first-use via orchestration-host.ensureOrchestrationWired
     // — no per-conversation wiring happens at install time. As of
     // commit 5 the executor invokes this extension exclusively; no
@@ -82,7 +85,12 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     permissions: {
       agentConfig: "read",
       spawnAgents: { maxPerHour: 500, maxConcurrent: 25 },
-      eventSubscriptions: ["task:assignment_update"],
+      // `task:assignment_update` — required by `invoke_agent`'s two-hop
+      //   bridge (Phase 4).
+      // `orchestrator:human_response` — required by `ask_human`'s gate
+      //   resolution (Phase 5). Mirrors the manifest at
+      //   docs/extensions/examples/orchestration/ezcorp.config.ts.
+      eventSubscriptions: ["task:assignment_update", "orchestrator:human_response"],
       grantedAt: {
         agentConfig: Date.now(),
         spawnAgents: Date.now(),

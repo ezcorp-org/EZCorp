@@ -98,6 +98,11 @@ export interface OrchestratorHumanInputEvent {
   question: string;
   requestId: string;
 }
+export interface OrchestratorHumanResponseEvent {
+  requestId: string;
+  response: string;
+  conversationId: string;
+}
 
 // task:snapshot + task:assignment_update are already typed on the SDK
 // in `./task-events` — re-export those to give subscribers the same
@@ -129,6 +134,7 @@ export interface SubscribableEventMap {
   "tool:permission_mode_change": ToolPermissionModeChangeEvent;
   "obs:turn": ObsTurnEvent;
   "orchestrator:human_input": OrchestratorHumanInputEvent;
+  "orchestrator:human_response": OrchestratorHumanResponseEvent;
   "task:snapshot": TaskSnapshotEvent;
   "task:assignment_update": TaskAssignmentUpdateEvent;
 }

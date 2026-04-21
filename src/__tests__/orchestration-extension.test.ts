@@ -341,7 +341,7 @@ describe("orchestration extension — non-terminal status no-op", () => {
     // sentinel and confirm the sentinel wins.
     const sentinel = Symbol("not-resolved");
     const raceResult = await Promise.race([
-      invocation.then(() => "resolved" as const),
+      Promise.resolve(invocation).then(() => "resolved" as const),
       Promise.resolve(sentinel),
     ]);
     expect(raceResult).toBe(sentinel);

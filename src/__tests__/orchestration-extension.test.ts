@@ -298,6 +298,77 @@ describe("orchestration extension — foreign assignmentId", () => {
   });
 });
 
+// ── invoke_agent — non-terminal status no-op ───────────────────────
+
+describe("orchestration extension — non-terminal status no-op", () => {
+  test("non-terminal status for a known assignmentId leaves pending entry intact; subsequent terminal resolves normally", async () => {
+    const { fn } = makeFakeSpawn();
+    _setSpawnForTests(fn);
+
+    const invocation = tools.invoke_agent!({ agentConfigId: "agent-builder", task: "go" });
+
+    // Wait for the pending entry to appear.
+    let assignmentId: string | undefined;
+    for (let i = 0; i < 20 && !assignmentId; i++) {
+      await new Promise((r) => setTimeout(r, 1));
+      assignmentId = Array.from(_internals.pendingInvocations.keys())[0];
+    }
+    expect(assignmentId).toBeDefined();
+
+    const before = _internals.pendingInvocations.get(assignmentId!);
+    expect(before).toBeDefined();
+    const timerBefore = before!.timeoutHandle;
+
+    // Fire a non-terminal status against the same assignmentId — this
+    // drives the `status !== "completed" && status !== "failed"` early
+    // return at orchestration/index.ts:246. The pending entry must NOT
+    // be deleted, its timer must NOT be cleared, and the invocation
+    // promise must NOT resolve.
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv-x",
+      taskId: "task-x",
+      assignment: { id: assignmentId!, status: "running", resultPreview: "still working" },
+    });
+
+    // Pending entry still present, exact same object + same timer.
+    const after = _internals.pendingInvocations.get(assignmentId!);
+    expect(after).toBeDefined();
+    expect(after).toBe(before);
+    expect(after!.timeoutHandle).toBe(timerBefore);
+    expect(_internals.pendingInvocations.size).toBe(1);
+
+    // Invocation promise did NOT resolve — race it against a microtask
+    // sentinel and confirm the sentinel wins.
+    const sentinel = Symbol("not-resolved");
+    const raceResult = await Promise.race([
+      invocation.then(() => "resolved" as const),
+      Promise.resolve(sentinel),
+    ]);
+    expect(raceResult).toBe(sentinel);
+
+    // Fire a second non-terminal status — still a no-op.
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv-x",
+      taskId: "task-x",
+      assignment: { id: assignmentId!, status: "assigned" },
+    });
+    expect(_internals.pendingInvocations.size).toBe(1);
+
+    // Now fire the terminal status — the state from the non-terminal
+    // drops should not have corrupted anything; invocation resolves
+    // with the terminal's resultPreview.
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv-x",
+      taskId: "task-x",
+      assignment: { id: assignmentId!, status: "completed", resultPreview: "done at last" },
+    });
+    const out = await invocation;
+    expect(expectText(out)).toBe("done at last");
+    expect(expectIsError(out)).toBe(false);
+    expect(_internals.pendingInvocations.size).toBe(0);
+  });
+});
+
 // ── invoke_agent — reuseSubConversationFor ─────────────────────────
 
 describe("orchestration extension — spawn invocation shape", () => {

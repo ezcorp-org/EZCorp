@@ -804,7 +804,7 @@ export class AgentExecutor {
                     executor: this,
                     stateMediator: this._stateMediator,
                     spawnQuota: this._spawnQuota,
-                    userId: convRecord?.userId,
+                    userId: convRecord?.userId ?? undefined,
                   });
                 }
               } catch (orchWireErr) {

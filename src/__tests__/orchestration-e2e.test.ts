@@ -579,7 +579,7 @@ describe("orchestration e2e: orchestration-host + real subprocess + real handler
     expect(tool.name).toBe("invoke_agent");
     // Schema override: the agentConfigId enum is injected per-turn so
     // the LLM can only pick agents visible to this turn.
-    const params = tool.parameters as { properties: { agentConfigId: { enum: string[] } } };
+    const params = tool.parameters as unknown as { properties: { agentConfigId: { enum: string[] } } };
     expect(params.properties.agentConfigId.enum).toEqual(["cfg-builder"]);
 
     proc.kill();
@@ -665,7 +665,8 @@ describe("orchestration e2e: orchestration-host + real subprocess + real handler
 
     const result = await execPromise;
     expect(result.details?.isError).toBeFalsy();
-    expect(result.content?.[0]?.text).toBe("built it");
+    const first0 = result.content?.[0];
+    expect(first0?.type === "text" ? first0.text : undefined).toBe("built it");
 
     proc.kill();
   });
@@ -717,7 +718,8 @@ describe("orchestration e2e: orchestration-host + real subprocess + real handler
 
     const result = await execPromise;
     expect(result.details?.isError).toBe(true);
-    expect(result.content?.[0]?.text).toBe("agent crashed");
+    const crashedFirst = result.content?.[0];
+    expect(crashedFirst?.type === "text" ? crashedFirst.text : undefined).toBe("agent crashed");
 
     proc.kill();
   });
@@ -747,7 +749,8 @@ describe("orchestration e2e: orchestration-host + real subprocess + real handler
     // validates via `agentConfigs.resolve`).
     const result = await tool.execute("test-call-unknown", { agentConfigId: "cfg-nonexistent", task: "nope" });
     expect(result.details?.isError).toBe(true);
-    expect(result.content?.[0]?.text).toMatch(/Unknown agent/);
+    const unknownFirst = result.content?.[0];
+    expect(unknownFirst?.type === "text" ? unknownFirst.text : undefined).toMatch(/Unknown agent/);
 
     proc.kill();
   });
@@ -915,7 +918,8 @@ describe("orchestration e2e: orchestration-host + real subprocess + real handler
 
     const result = await execPromise;
     expect(result.details?.isError).toBeFalsy();
-    expect(result.content?.[0]?.text).toBe("owned-result");
+    const ownedFirst = result.content?.[0];
+    expect(ownedFirst?.type === "text" ? ownedFirst.text : undefined).toBe("owned-result");
 
     proc.kill();
   });

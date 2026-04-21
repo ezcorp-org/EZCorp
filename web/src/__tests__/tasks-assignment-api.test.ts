@@ -41,6 +41,34 @@ let taskStore: TaskSnapshot = {
 };
 
 // ── Mock db/query layer ─────────────────────────────────────────────
+//
+// Defense-in-depth: even though `$server/runtime/task-tracking-host` is
+// fully mocked below (so `ensureTaskTrackingWired` never reaches the real
+// `getDb()`), the audit surfaced 38 failures when the task-tracking-host
+// mock was bypassed — `getDb()` throws "Database not initialized." in the
+// test env. Stub the connection with a drizzle-query-chain that returns
+// empty arrays so any code path that slips past the host mock still no-ops
+// cleanly instead of exploding. Follows the same template used in
+// `user-commands-queries.test.ts` + `mention-search-*-api.test.ts`.
+
+const dbStub = {
+  select: () => ({
+    from: () => ({
+      where: () => ({ limit: () => Promise.resolve([]) }),
+    }),
+  }),
+  insert: () => ({
+    values: () => ({ onConflictDoNothing: () => Promise.resolve() }),
+  }),
+  update: () => ({
+    set: () => ({ where: () => Promise.resolve() }),
+  }),
+  delete: () => ({ where: () => Promise.resolve() }),
+};
+
+mock.module("$server/db/connection", () => ({
+  getDb: () => dbStub,
+}));
 
 const mockGetConversation = mock(async (_id: string) => mockConv);
 const mockGetSubConversations = mock(async (_parentId: string): Promise<any[]> => []);

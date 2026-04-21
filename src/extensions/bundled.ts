@@ -294,6 +294,42 @@ export async function ensureBundledExtensions(): Promise<void> {
           continue;
         }
 
+        // Refresh the stored manifest from on-disk for bundled extensions.
+        // The DB copy of a bundled extension's manifest can go stale after
+        // an ezcorp.config.ts edit (e.g. fixing a tool schema) because
+        // `ensureBundledExtensions` used to just log drift + skip. Net
+        // effect: the LLM saw the old broken schema until the row was
+        // manually reinstalled. Source-of-truth for bundled extensions is
+        // the repo, so pull the on-disk manifest and write it back —
+        // EXCEPT preserve the stored `permissions` block. That keeps the
+        // S6 drift check (§detectAndLogManifestDrift) and S9 version gate
+        // (§detectVersionBumpRequiringReapproval) as the sole escalation
+        // paths for permission changes. Non-permission fields (tools,
+        // description, version-unless-gated, entrypoint) track source.
+        try {
+          const diskDir = join(getProjectRoot(), entry.path);
+          const diskManifest = await loadManifestFresh(diskDir);
+          const refreshed: ExtensionManifestV2 = {
+            ...diskManifest,
+            permissions: (existing.manifest as ExtensionManifestV2).permissions ?? diskManifest.permissions,
+          };
+          const currentJson = JSON.stringify(existing.manifest);
+          const refreshedJson = JSON.stringify(refreshed);
+          if (currentJson !== refreshedJson) {
+            await updateExtension(existing.id, { manifest: refreshed });
+            log.info("Refreshed bundled extension manifest from disk", {
+              name: entry.name,
+              extensionId: existing.id,
+            });
+          }
+        } catch (refreshErr) {
+          // Non-fatal: drift check already ran. Next boot retries.
+          log.warn("Bundled manifest refresh failed", {
+            name: entry.name,
+            error: String(refreshErr),
+          });
+        }
+
         // If a bundled extension was disabled by a prior runtime check
         // (e.g. the now-removed integrity gate) or by an operator toggling
         // it off outside the opt-out env flag, re-enable it on the next

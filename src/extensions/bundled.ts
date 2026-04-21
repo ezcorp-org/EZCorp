@@ -70,6 +70,30 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     },
   },
   {
+    // Multi-agent orchestration primitives — currently provides
+    // `invoke_agent` for delegating to a sub-agent within a conversation.
+    // Phase 4 origin: this is the bundled-extension conversion of the
+    // legacy built-in at src/runtime/tools/invoke-agent.ts. Wire-on-
+    // first-use via orchestration-host.ensureOrchestrationWired — no
+    // per-conversation wiring happens at install time. Note that this
+    // commit (4a) installs the extension but does NOT yet swap the
+    // executor's live `createInvokeAgentTool` path; commit 5 performs
+    // that flip. Until then the two tools are dual-wired at the host
+    // layer — the extension's tool is NOT injected into LLM turns yet.
+    name: "orchestration",
+    path: "docs/extensions/examples/orchestration",
+    permissions: {
+      agentConfig: "read",
+      spawnAgents: { maxPerHour: 500, maxConcurrent: 25 },
+      eventSubscriptions: ["task:assignment_update"],
+      grantedAt: {
+        agentConfig: Date.now(),
+        spawnAgents: Date.now(),
+        eventSubscriptions: Date.now(),
+      },
+    },
+  },
+  {
     name: "project-analyzer",
     path: "docs/extensions/examples/project-analyzer",
     permissions: { filesystem: ["$CWD"], shell: true, grantedAt: {} },

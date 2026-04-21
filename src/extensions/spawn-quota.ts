@@ -59,6 +59,10 @@ export interface SpawnQuota {
   /** Release a reservation without waiting for the bus. Handler uses
    *  this on error paths (e.g. `startAssignment` threw after reserve). */
   release(reservationToken: string): void;
+  /** True iff `reservationToken` is currently held by `extensionId`.
+   *  Used by `ezcorp/cancel-run` (Phase 4) to enforce that an extension
+   *  can only cancel its own spawned runs. */
+  isOwner(extensionId: string, reservationToken: string): boolean;
   /** Test-only counter — current live reservations for this extension. */
   _concurrentCount(extensionId: string): number;
   /** Tear down all bus subscriptions. Call on executor shutdown. */
@@ -145,6 +149,10 @@ export function createSpawnQuota(bus: EventBus<AgentEvents>): SpawnQuota {
     },
 
     release,
+
+    isOwner(extensionId, reservationToken) {
+      return tokenToExt.get(reservationToken) === extensionId;
+    },
 
     _concurrentCount(extensionId) {
       return concurrent.get(extensionId)?.size ?? 0;

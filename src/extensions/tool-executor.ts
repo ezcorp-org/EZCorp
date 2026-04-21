@@ -13,6 +13,7 @@ import { handleStorageRpc, type StorageContext } from "./storage-handler";
 import { handleAgentConfigsRpc, type AgentConfigsContext } from "./agent-configs-handler";
 import { handleEmitTaskEventRpc, type TaskEventsContext } from "./task-events-handler";
 import { handleSpawnAssignmentRpc, type SpawnAssignmentContext } from "./spawn-assignment-handler";
+import { handleCancelRunRpc, type CancelRunContext } from "./cancel-run-handler";
 import type { SpawnQuota } from "./spawn-quota";
 import { getConversation, getConversationSpawnDepth } from "../db/queries/conversations";
 import { getDb } from "../db/connection";
@@ -228,6 +229,9 @@ export class ToolExecutor {
             }
             if (req.method === "ezcorp/spawn-assignment") {
               return this.handlePiSpawnAssignment(extensionId, req);
+            }
+            if (req.method === "ezcorp/cancel-run") {
+              return this.handlePiCancelRun(extensionId, req);
             }
             if (req.method === "ezcorp/storage") {
               return this.handlePiStorage(extensionId, req);
@@ -563,6 +567,41 @@ export class ToolExecutor {
       ...(this.currentProvider !== undefined ? { parentProvider: this.currentProvider } : {}),
     };
     return handleSpawnAssignmentRpc(extensionId, req, ctx);
+  }
+
+  /**
+   * Handle a `ezcorp/cancel-run` reverse RPC request (Phase 4 §5.3).
+   * Cancels a sub-run the calling extension previously originated via
+   * `ezcorp/spawn-assignment`. Reuses the `spawnAgents` permission gate
+   * and the spawn-quota's per-extension reservation set for ownership.
+   * See cancel-run-handler.ts for the full enforcement ladder.
+   */
+  async handlePiCancelRun(
+    extensionId: string,
+    req: JsonRpcRequest,
+  ): Promise<JsonRpcResponse> {
+    const granted = this.registry.getGrantedPermissions(extensionId);
+    if (!granted) {
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32603, message: "Extension not found in registry" },
+      };
+    }
+    if (!this.executor || !this.spawnQuota) {
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32603, message: "Cancel path unavailable in this context" },
+      };
+    }
+    const ctx: CancelRunContext = {
+      userId: this.currentUserId ?? "unknown",
+      grantedPermissions: granted,
+      executor: this.executor,
+      quota: this.spawnQuota,
+    };
+    return handleCancelRunRpc(extensionId, req, ctx);
   }
 
   private async recordToolCall(

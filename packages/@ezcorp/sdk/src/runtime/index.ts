@@ -91,3 +91,8 @@ export type { SubscribableEvent, SubscribableEventMap } from "./events";
 
 export { spawnAssignment } from "./spawn";
 export type { SpawnAssignmentInput, SpawnAssignmentHandle } from "./spawn";
+
+// ── Phase 4 cancel-run wrapper (§5.3) ───────────────────────────
+
+export { cancelRun } from "./cancel-run";
+export type { CancelRunResult } from "./cancel-run";

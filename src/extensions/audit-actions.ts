@@ -51,6 +51,11 @@ export const EXT_AUDIT_ACTIONS = {
   /** `ezcorp/spawn-assignment` refused a spawn because the per-hour
    *  quota or concurrent-run cap was exceeded (Phase 2d). */
   SPAWN_QUOTA_EXCEEDED: "ext:spawn-quota-exceeded",
+  /** `ezcorp/cancel-run` successfully cancelled (or attempted to cancel)
+   *  a sub-run the calling extension originated. The metadata `reason`
+   *  field distinguishes outcomes: `"cancelled"`, `"not-owned"`,
+   *  `"missing-run"`, `"permission-missing"` (Phase 4). */
+  SPAWN_CANCELLED: "ext:spawn-cancelled",
   /** `ezcorp/emit-task-event` rejected an emission — rate-limited,
    *  unauthorized conversation wiring, or malformed payload (Phase 2b). */
   EMIT_EVENT_REJECTED: "ext:emit-event-rejected",

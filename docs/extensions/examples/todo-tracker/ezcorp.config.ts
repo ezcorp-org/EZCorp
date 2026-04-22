@@ -5,7 +5,7 @@ export default defineExtension({
   name: "todo-tracker",
   version: "1.0.0",
   description: "Scan project files for TODO, FIXME, and HACK comments",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   tools: [
     {

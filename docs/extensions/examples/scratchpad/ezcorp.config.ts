@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description:
     "Ephemeral key-value store for sharing data between agents within a conversation",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   persistent: false,
   tools: [

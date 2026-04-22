@@ -1,6 +1,6 @@
 # Example Extensions
 
-Working examples that demonstrate EzCorp extension capabilities, from simple tools to multi-agent orchestration. Each example is a complete, installable extension with tests and documentation.
+Working examples that demonstrate EZCorp extension capabilities, from simple tools to multi-agent orchestration. Each example is a complete, installable extension with tests and documentation.
 
 > **Data storage convention:** every example that writes persistent data stores it under `<projectRoot>/.ezcorp/extension-data/<extension-name>/`. See [../data-storage.md](../data-storage.md) for the full guide.
 

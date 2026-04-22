@@ -326,6 +326,17 @@ export class AgentExecutor {
     return undefined;
   }
 
+  listActiveAgentRuns(projectId?: string): { run: AgentRun; conversationId: string }[] {
+    const out: { run: AgentRun; conversationId: string }[] = [];
+    for (const [runId, convId] of this.runConversations) {
+      const run = this.runs.get(runId);
+      if (!run || run.status !== "running") continue;
+      if (projectId && run.projectId !== projectId) continue;
+      out.push({ run, conversationId: convId });
+    }
+    return out.sort((a, b) => b.run.startedAt - a.run.startedAt);
+  }
+
   getPendingPermissions(conversationId: string): PendingPermissionInfo[] {
     return [...this.pendingPermissions.values()].filter(p => p.conversationId === conversationId);
   }

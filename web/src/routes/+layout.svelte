@@ -1,6 +1,7 @@
 <script lang="ts">
 	import "../app.css";
 	import { onMount } from "svelte";
+	import UpdateBanner from "$lib/components/UpdateBanner.svelte";
 
 	let { children } = $props();
 
@@ -13,4 +14,5 @@
 	});
 </script>
 
+<UpdateBanner />
 {@render children()}

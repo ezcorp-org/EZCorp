@@ -71,6 +71,48 @@ mock.module("../extensions/migrations/task-tracking-storage", () => ({
   },
 }));
 
+// ── Manifest loader override ────────────────────────────────────────
+// Refresh-branch tests drive `loadManifestFresh` return values per-
+// test. Current loader signature: `(dir: string) =>
+// Promise<ExtensionManifestV2>`. If the real loader ever gains
+// additional parameters the mock's delegate path will drift — rerun
+// this suite after any signature change to ../extensions/loader.
+//
+// The `loadManifest` export (used by installer.ts on first boot) is
+// left untouched so the existing install-path tests continue to read
+// the REAL bundled manifest from disk. To preserve that, this mock
+// imports the real module via an absolute file-URL specifier (which
+// bypasses the mock.module hook that matches only on the specifier
+// string `../extensions/loader`).
+const freshManifestCalls: Array<{ dir: string }> = [];
+let freshManifestOverride:
+  | { kind: "value"; manifest: import("../extensions/types").ExtensionManifestV2 }
+  | { kind: "throw"; error: Error }
+  | undefined;
+
+// Absolute file URL pointing at the real loader module on disk. Using
+// this specifier sidesteps the mock.module hook below.
+const REAL_LOADER_URL = new URL(
+  "../extensions/loader.ts",
+  import.meta.url,
+).href;
+
+mock.module("../extensions/loader", () => ({
+  loadManifest: async (dir: string) => {
+    const real = await import(REAL_LOADER_URL);
+    return real.loadManifest(dir);
+  },
+  loadManifestFresh: async (dir: string) => {
+    freshManifestCalls.push({ dir });
+    if (freshManifestOverride) {
+      if (freshManifestOverride.kind === "throw") throw freshManifestOverride.error;
+      return freshManifestOverride.manifest;
+    }
+    const real = await import(REAL_LOADER_URL);
+    return real.loadManifestFresh(dir);
+  },
+}));
+
 afterAll(() => restoreModuleMocks());
 
 import {

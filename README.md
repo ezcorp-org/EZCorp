@@ -21,38 +21,61 @@ EZCorp is a self-hosted AI platform that brings together multi-model chat, long-
 - **Teams** -- Multi-user support with team workspaces and shared conversations.
 - **Self-hosted** -- Your data stays on your infrastructure. Runs on a single Docker container with zero external dependencies.
 
-## Quick Start
+## Quick Start (self-hosted, pre-built image)
+
+```bash
+curl -O https://raw.githubusercontent.com/ezcorp-org/EZcorp/main/compose.prod.yml
+export EZCORP_ENCRYPTION_SECRET=$(openssl rand -base64 32)
+export EZCORP_ENCRYPTION_SALT=$(openssl rand -base64 32)
+docker compose -f compose.prod.yml up -d
+```
+
+Open [http://localhost:3000](http://localhost:3000), create your admin account, and start chatting. Your data lives in a named Docker volume and survives `docker compose down`.
+
+For HTTPS, backups, external Postgres, and auto-updates, see the **[production guide](docs/production-guide.md)**.
+
+## Quick Start (from source)
 
 ```bash
 git clone <repo-url> && cd ezcorp
 docker compose up -d
 ```
 
-Open [http://localhost:3000](http://localhost:3000), create your admin account, and start chatting.
+The dev compose uses an external pgvector container with live mounts for development. Production deployments use `compose.prod.yml` instead — see below.
 
 ## Docker Setup
 
-EZCorp runs as a single Docker service with PGlite (embedded Postgres) by default.
+EZCorp runs as a single Docker service with PGlite (embedded Postgres) by default. A safe boot sequence (pre-migrate snapshot → migrate → rollback-on-failure) protects your data across upgrades. See [Boot sequence and migration safety](docs/production-guide.md#2-boot-sequence-and-migration-safety) for details.
 
-### Environment Variables
+### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `EZCORP_PORT` | `3000` | Host port to bind |
 | `EZCORP_DB_PATH` | `/app/data/ezcorp` | Database storage path |
+| `EZCORP_BACKUP_DIR` | `<dbDir>/backups` | Where pre-boot and interval snapshots live |
+| `EZCORP_CHECK_UPDATES` | `true` | In-app update banner (set `false` to disable the GitHub Releases poll) |
+| `EZCORP_UPDATE_REPO` | `ezcorp-org/EZcorp` | Owner/repo for the update check |
 | `EZCORP_SCAN_GLOBAL_COMMANDS` | `1` | Scan `~/.claude/`, `~/.codex/`, `~/agents/` for slash commands. Set to `0` for multi-tenant deploys. |
 
-### Custom Port
+### Readiness probe
 
-```bash
-EZCORP_PORT=8080 docker compose up -d
-```
+- `GET /api/health` — liveness (HTTP is up). Used by Docker's `HEALTHCHECK`.
+- `GET /api/ready` — readiness (migrations succeeded). 503 during boot or if a migration failed. Point Watchtower / Kubernetes / load-balancer probes here.
 
-### Data Persistence
+### Auto-updates
 
-Data is stored in a Docker volume named `ezcorp-data`. This volume persists across container restarts and rebuilds.
+The in-app banner notifies you when a new release is published. For fully
+automatic updates, uncomment the Watchtower service in `compose.prod.yml` —
+it'll pull new `:latest` images and the safe boot sequence handles migration
+rollback if anything goes wrong.
 
-### Volume Migration
+### Data persistence
+
+Data is stored in the `ezcorp-data` named volume. It survives container
+restarts and image upgrades; only `docker compose down -v` destroys it.
+
+### Volume migration
 
 If migrating from a previous installation using `pi-data`:
 
@@ -60,9 +83,9 @@ If migrating from a previous installation using `pi-data`:
 docker volume create ezcorp-data && docker run --rm -v pi-data:/from -v ezcorp-data:/to alpine cp -a /from/. /to/
 ```
 
-### Production Deployment
+### Production deployment
 
-For external Postgres and HTTPS, see [docs/production-guide.md](docs/production-guide.md).
+For external Postgres, TLS reverse-proxy config, auto-updates, and backup/restore procedures, see [docs/production-guide.md](docs/production-guide.md).
 
 ## Building Extensions
 

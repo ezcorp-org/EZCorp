@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "Comprehensive code reviews by delegating to project-analyzer and code-quality",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   entrypoint: "./index.ts",
   tools: [

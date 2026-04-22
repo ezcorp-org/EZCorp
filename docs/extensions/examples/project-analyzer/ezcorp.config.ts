@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "Read and list project files with filesystem and shell access",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   entrypoint: "./index.ts",
   tools: [

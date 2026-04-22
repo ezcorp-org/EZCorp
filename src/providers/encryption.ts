@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const ALGORITHM = "aes-256-gcm";
@@ -15,6 +15,40 @@ const KEY_LENGTH = 32;
 let _cachedKey: Buffer | null = null;
 let _cachedSalt: string | null = null;
 
+/**
+ * Directory for persistent auto-generated secrets (`.pi-secret`, `.pi-salt`).
+ * Defaults to the dir containing `EZCORP_DB_PATH` so that in Docker the
+ * secret lives under `/app/data` (a declared VOLUME) and survives image
+ * upgrades. Dev installations without `EZCORP_DB_PATH` fall back to CWD.
+ *
+ * Override with `EZCORP_SECRETS_DIR` if you want secrets on a separate mount
+ * from the DB.
+ *
+ * **Production best practice:** set `EZCORP_ENCRYPTION_SECRET` explicitly;
+ * this auto-generation path is a convenience for dev and first-run docker,
+ * not a substitute for managed secret storage.
+ */
+function getSecretsDir(): string {
+  const override = process.env.EZCORP_SECRETS_DIR;
+  if (override) return override;
+  const dbPath = process.env.EZCORP_DB_PATH;
+  if (dbPath && dbPath !== ":memory:") {
+    // dirname without pulling in node:path as a new dep — we already import
+    // join from path, but keeping the logic inline for clarity.
+    const sep = dbPath.includes("\\") ? "\\" : "/";
+    const idx = dbPath.lastIndexOf(sep);
+    if (idx > 0) return dbPath.slice(0, idx);
+  }
+  return process.cwd();
+}
+
+function readFirstExisting(paths: string[]): string | null {
+  for (const p of paths) {
+    if (existsSync(p)) return readFileSync(p, "utf-8").trim();
+  }
+  return null;
+}
+
 function getAppSalt(): string {
   if (_cachedSalt) return _cachedSalt;
 
@@ -24,23 +58,29 @@ function getAppSalt(): string {
     return _cachedSalt;
   }
 
-  const saltPath = join(process.cwd(), ".pi-salt");
-  if (existsSync(saltPath)) {
-    _cachedSalt = readFileSync(saltPath, "utf-8").trim();
+  const primarySaltPath = join(getSecretsDir(), ".pi-salt");
+  const legacySaltPath = join(process.cwd(), ".pi-salt");
+  const existing = readFirstExisting([primarySaltPath, legacySaltPath]);
+  if (existing) {
+    _cachedSalt = existing;
     return _cachedSalt;
   }
 
-  // Backward compatibility: if .pi-secret already exists, encrypted data may
-  // exist using the legacy hardcoded salt — keep using it to avoid breakage.
-  const secretPath = join(process.cwd(), ".pi-secret");
-  if (existsSync(secretPath)) {
+  // Backward compatibility: if a secret already exists (in either location)
+  // WITHOUT a corresponding salt, it was written with the legacy hardcoded
+  // salt — keep using it to avoid breaking decryption of historical rows.
+  const primarySecretPath = join(getSecretsDir(), ".pi-secret");
+  const legacySecretPath = join(process.cwd(), ".pi-secret");
+  if (existsSync(primarySecretPath) || existsSync(legacySecretPath)) {
     _cachedSalt = LEGACY_SALT;
     return _cachedSalt;
   }
 
-  // Fresh installation: generate a random 16-byte salt and persist it.
+  // Fresh installation: generate a random 16-byte salt and persist it in the
+  // primary location (which, in Docker, is under the data VOLUME).
   const newSalt = randomBytes(16).toString("hex");
-  writeFileSync(saltPath, newSalt, { mode: 0o600 });
+  mkdirSync(getSecretsDir(), { recursive: true });
+  writeFileSync(primarySaltPath, newSalt, { mode: 0o600 });
   _cachedSalt = newSalt;
   return _cachedSalt;
 }
@@ -54,12 +94,15 @@ function getAppSecret(): Buffer {
   if (envSecret) {
     secret = envSecret;
   } else {
-    const secretPath = join(process.cwd(), ".pi-secret");
-    if (existsSync(secretPath)) {
-      secret = readFileSync(secretPath, "utf-8").trim();
+    const primary = join(getSecretsDir(), ".pi-secret");
+    const legacy = join(process.cwd(), ".pi-secret");
+    const existing = readFirstExisting([primary, legacy]);
+    if (existing) {
+      secret = existing;
     } else {
       secret = randomBytes(32).toString("hex");
-      writeFileSync(secretPath, secret, { mode: 0o600 });
+      mkdirSync(getSecretsDir(), { recursive: true });
+      writeFileSync(primary, secret, { mode: 0o600 });
     }
   }
 

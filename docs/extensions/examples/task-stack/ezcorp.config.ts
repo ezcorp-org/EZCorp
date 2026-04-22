@@ -5,7 +5,7 @@ export default defineExtension({
   name: "task-stack",
   version: "1.0.0",
   description: "Stack-based task management with subtasks, dependencies, time tracking, artifacts, and agent flags",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   tools: [
     // Stack Management

@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "Markdown formatting tools, style guidelines, and an editing assistant in one package",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   entrypoint: "./index.ts",
   persistent: true,

@@ -1,12 +1,12 @@
 # Getting Started
 
-Build and publish your first EzCorp extension. This guide walks through two extensions -- a skill (prompt + files) and an MCP tool (callable function) -- then publishes to the marketplace.
+Build and publish your first EZCorp extension. This guide walks through two extensions -- a skill (prompt + files) and an MCP tool (callable function) -- then publishes to the marketplace.
 
 ## Prerequisites
 
-- An EzCorp account on your team's hosted instance
+- An EZCorp account on your team's hosted instance
 - [Bun](https://bun.sh) installed locally
-- The EzCorp CLI available as `ezcorp` (ships with the platform)
+- The EZCorp CLI available as `ezcorp` (ships with the platform)
 
 For self-hosting setup, see [Quick Start](../quick-start.md).
 
@@ -360,7 +360,7 @@ ezcorp ext dev
 ```
 
 The dev server:
-- Registers your extension with the local EzCorp instance
+- Registers your extension with the local EZCorp instance
 - Watches for file changes and auto-reloads (100ms debounce)
 - Cleans up the registration on Ctrl+C
 
@@ -386,7 +386,7 @@ Both extensions are ready. Let's publish the tool.
 
 ### Get a publish token
 
-1. Go to **Settings > Developer** in the EzCorp web UI
+1. Go to **Settings > Developer** in the EZCorp web UI
 2. Generate a publish token
 3. Save it (you'll use it once -- after that it's stored in your config)
 

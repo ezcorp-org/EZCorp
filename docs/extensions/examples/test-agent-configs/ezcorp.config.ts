@@ -7,7 +7,7 @@ export default defineExtension({
   name: "test-agent-configs",
   version: "1.0.0",
   description: "Integration-test fixture — reads the caller's agent configs",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   persistent: false,
   tools: [

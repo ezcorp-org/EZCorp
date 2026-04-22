@@ -130,6 +130,19 @@ class TestStore {
 						} else {
 							task.assignments = [...(task.assignments ?? []), assignment];
 						}
+						if (
+							task.status !== "completed" &&
+							task.status !== "failed" &&
+							task.assignments.length > 0 &&
+							task.assignments.every(a => a.status === "completed" || a.status === "failed")
+						) {
+							const anyFailed = task.assignments.some(a => a.status === "failed");
+							task.status = anyFailed ? "failed" : "completed";
+							const ts = new Date().toISOString();
+							if (anyFailed) task.failedAt = task.failedAt ?? ts;
+							else task.completedAt = task.completedAt ?? ts;
+							if (snapshot.activeTaskId === task.id) snapshot.activeTaskId = undefined;
+						}
 						this.taskSnapshots = { ...this.taskSnapshots, [conversationId]: { ...snapshot } };
 					}
 				}
@@ -617,6 +630,150 @@ describe("setTaskSnapshot", () => {
 			});
 
 			expect(store.getTaskSnapshot("conv-au3")!.tasks[0].assignments).toHaveLength(0);
+		});
+	});
+
+	describe("task:assignment_update client-side rollup", () => {
+		test("task flips to completed when single assignment finishes", () => {
+			const snap = makeSnapshot({
+				conversationId: "conv-r1",
+				tasks: [makeTask({
+					id: "t1",
+					status: "active",
+					assignments: [makeAssignment({ id: "a1", status: "running" })],
+				})],
+				activeTaskId: "t1",
+			});
+			store.setTaskSnapshot(snap);
+
+			store.handleWSEvent({
+				type: "task:assignment_update",
+				data: {
+					conversationId: "conv-r1",
+					taskId: "t1",
+					assignment: makeAssignment({ id: "a1", status: "completed" }),
+				},
+			});
+
+			const result = store.getTaskSnapshot("conv-r1")!;
+			expect(result.tasks[0].status).toBe("completed");
+			expect(result.tasks[0].completedAt).toBeDefined();
+			expect(result.activeTaskId).toBeUndefined();
+		});
+
+		test("task stays active while one of two assignments is still running", () => {
+			const snap = makeSnapshot({
+				conversationId: "conv-r2",
+				tasks: [makeTask({
+					id: "t1",
+					status: "active",
+					assignments: [
+						makeAssignment({ id: "a1", status: "running" }),
+						makeAssignment({ id: "a2", status: "running" }),
+					],
+				})],
+			});
+			store.setTaskSnapshot(snap);
+
+			store.handleWSEvent({
+				type: "task:assignment_update",
+				data: {
+					conversationId: "conv-r2",
+					taskId: "t1",
+					assignment: makeAssignment({ id: "a1", status: "completed" }),
+				},
+			});
+
+			const result = store.getTaskSnapshot("conv-r2")!;
+			expect(result.tasks[0].status).toBe("active");
+		});
+
+		test("task flips to completed after both of two assignments finish", () => {
+			const snap = makeSnapshot({
+				conversationId: "conv-r3",
+				tasks: [makeTask({
+					id: "t1",
+					status: "active",
+					assignments: [
+						makeAssignment({ id: "a1", status: "running" }),
+						makeAssignment({ id: "a2", status: "running" }),
+					],
+				})],
+			});
+			store.setTaskSnapshot(snap);
+
+			store.handleWSEvent({
+				type: "task:assignment_update",
+				data: {
+					conversationId: "conv-r3",
+					taskId: "t1",
+					assignment: makeAssignment({ id: "a1", status: "completed" }),
+				},
+			});
+			store.handleWSEvent({
+				type: "task:assignment_update",
+				data: {
+					conversationId: "conv-r3",
+					taskId: "t1",
+					assignment: makeAssignment({ id: "a2", status: "completed" }),
+				},
+			});
+
+			const result = store.getTaskSnapshot("conv-r3")!;
+			expect(result.tasks[0].status).toBe("completed");
+		});
+
+		test("task flips to failed when any assignment is failed and all are terminal", () => {
+			const snap = makeSnapshot({
+				conversationId: "conv-r4",
+				tasks: [makeTask({
+					id: "t1",
+					status: "active",
+					assignments: [
+						makeAssignment({ id: "a1", status: "completed" }),
+						makeAssignment({ id: "a2", status: "running" }),
+					],
+				})],
+			});
+			store.setTaskSnapshot(snap);
+
+			store.handleWSEvent({
+				type: "task:assignment_update",
+				data: {
+					conversationId: "conv-r4",
+					taskId: "t1",
+					assignment: makeAssignment({ id: "a2", status: "failed" }),
+				},
+			});
+
+			const result = store.getTaskSnapshot("conv-r4")!;
+			expect(result.tasks[0].status).toBe("failed");
+			expect(result.tasks[0].failedAt).toBeDefined();
+		});
+
+		test("already-terminal task is not mutated by a late update", () => {
+			const task = makeTask({
+				id: "t1",
+				status: "completed",
+				assignments: [makeAssignment({ id: "a1", status: "completed" })],
+			});
+			(task as { completedAt?: string }).completedAt = "2026-01-01T00:00:00Z";
+			const snap = makeSnapshot({ conversationId: "conv-r5", tasks: [task] });
+			store.setTaskSnapshot(snap);
+
+			store.handleWSEvent({
+				type: "task:assignment_update",
+				data: {
+					conversationId: "conv-r5",
+					taskId: "t1",
+					assignment: makeAssignment({ id: "a1", status: "completed", resultPreview: "newer" }),
+				},
+			});
+
+			const result = store.getTaskSnapshot("conv-r5")!;
+			expect(result.tasks[0].status).toBe("completed");
+			expect((result.tasks[0] as { completedAt?: string }).completedAt).toBe("2026-01-01T00:00:00Z");
+			expect(result.tasks[0].assignments[0].resultPreview).toBe("newer");
 		});
 	});
 });

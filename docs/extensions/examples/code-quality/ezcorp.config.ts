@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "Static quality analysis for source files — complexity, naming, and style checks",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   entrypoint: "./index.ts",
   tools: [

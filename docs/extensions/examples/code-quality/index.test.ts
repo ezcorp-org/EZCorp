@@ -6,7 +6,7 @@ describe("code-quality", () => {
     expect(manifest.schemaVersion).toBe(2);
     expect(manifest.name).toBe("code-quality");
     expect(manifest.version).toBe("1.0.0");
-    expect(manifest.author.name).toBe("EzCorp");
+    expect(manifest.author.name).toBe("EZCorp");
   });
 
   test("declares two tools", () => {

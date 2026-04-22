@@ -113,8 +113,23 @@ const snapshots = new Map<string, Record<string, unknown>>();
  * Must be called from preload.ts at module level (with await).
  * Uses spread to capture real exports as plain values (not live bindings).
  * Uses dynamic import() so ESM-only packages (e.g. @mariozechner/pi-ai) are captured.
+ *
+ * Set `EZCORP_FAST_TEST=1` to skip the eager imports. When skipped,
+ * `restoreModuleMocks()` falls back to lazy `require()`-based factories
+ * that re-resolve at mock-registration time. Safe for single-file local
+ * runs where there are no prior test files to contaminate the loader
+ * cache; NOT safe for the full suite where mock.module calls from one
+ * file would leak into subsequent files without a real snapshot. CI
+ * should leave this unset.
  */
 export async function snapshotModules() {
+  if (process.env.EZCORP_FAST_TEST === "1") {
+    // Seed the keys so `restoreModuleMocks()` can still iterate, but
+    // don't pay the import cost. Values stay null; the lazy branch in
+    // restoreModuleMocks picks them up.
+    for (const path of MODULE_PATHS) snapshots.set(path, null as unknown as Record<string, unknown>);
+    return;
+  }
   for (const path of MODULE_PATHS) {
     try {
       const mod = await import(path);
@@ -182,7 +197,15 @@ const SKIP_SERVER_ALIAS_RESTORE = new Set<string>([
 export function restoreModuleMocks() {
   for (const [path, exports] of snapshots) {
     try {
-      mock.module(path, () => exports);
+      // Fast-test mode: snapshot was skipped, fall back to a lazy
+      // `require()` factory. Bun supports this pattern (see preload.ts's
+      // oauth-api workaround). It re-resolves at mock-registration time,
+      // which is safe for single-file runs.
+      if (exports === null) {
+        mock.module(path, () => require(path));
+      } else {
+        mock.module(path, () => exports);
+      }
     } catch {
       // Ignore errors
     }

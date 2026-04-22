@@ -28,7 +28,7 @@ test("manifest has required fields", async () => {
   const manifest = ((await import(import.meta.dir + "/ezcorp.config.ts")).default);
   expect(manifest.schemaVersion).toBe(2);
   expect(manifest.name).toBe("project-analyzer");
-  expect(manifest.author.name).toBe("EzCorp");
+  expect(manifest.author.name).toBe("EZCorp");
   expect(manifest.entrypoint).toBe("./index.ts");
   expect(manifest.tools).toHaveLength(2);
   expect(manifest.permissions.filesystem).toEqual(["$CWD"]);

@@ -162,7 +162,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   }
 
   // ── Auth enforcement ──────────────────────────────────────────────
-  const PUBLIC_PATHS = ["/login", "/setup", "/signup", "/reset-password", "/api/auth/login", "/api/auth/setup", "/api/auth/invite", "/api/auth/reset-password"];
+  const PUBLIC_PATHS = ["/login", "/setup", "/signup", "/reset-password", "/api/auth/login", "/api/auth/setup", "/api/auth/invite", "/api/auth/reset-password", "/api/health", "/api/ready", "/api/version"];
   const isPublic = PUBLIC_PATHS.some(p => url.pathname === p || url.pathname.startsWith(p + "/"))
     || url.pathname.startsWith("/_app/")
     || url.pathname.startsWith("/favicon")

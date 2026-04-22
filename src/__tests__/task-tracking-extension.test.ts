@@ -989,7 +989,7 @@ describe("task-tracking extension — task:assignment_update subscription", () =
     expect(fakeEvents.snapshots).toHaveLength(0);
   });
 
-  test("update for unknown taskId → silent no-op", async () => {
+  test("update for unknown taskId → resyncs UI via snapshot re-emit", async () => {
     await tools.task_plan!({ tasks: [{ title: "A" }] });
     fakeEvents.snapshots.length = 0;
     await _internals.handleAssignmentUpdate({
@@ -1004,7 +1004,137 @@ describe("task-tracking extension — task:assignment_update subscription", () =
         assignedAt: new Date().toISOString(),
       },
     });
-    expect(fakeEvents.snapshots).toHaveLength(0);
+    // Storage unchanged — no fabricated task.
+    expect(fakeStorage.peek()!.tasks).toHaveLength(1);
+    // Snapshot re-emitted so the UI can resync against reality.
+    expect(fakeEvents.snapshots).toHaveLength(1);
+  });
+
+  test("update for unknown assignmentId on known task → resyncs UI", async () => {
+    await tools.task_plan!({ tasks: [{ title: "A" }] });
+    const snap = fakeStorage.peek()!;
+    fakeEvents.snapshots.length = 0;
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv",
+      taskId: snap.tasks[0]!.id,
+      assignment: {
+        id: "assignment-that-does-not-exist",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "completed",
+        assignedAt: new Date().toISOString(),
+      },
+    });
+    // Storage unchanged.
+    expect(fakeStorage.peek()!.tasks[0]!.assignments).toHaveLength(0);
+    // Snapshot re-emitted.
+    expect(fakeEvents.snapshots).toHaveLength(1);
+  });
+
+  test("multi-assignment task: first completion keeps task active until second completes", async () => {
+    await tools.task_plan!({ tasks: [{ title: "A" }] });
+    const snap = fakeStorage.peek()!;
+    const taskId = snap.tasks[0]!.id;
+    snap.tasks[0]!.assignments.push(
+      {
+        id: "asn-1",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "running",
+        assignedAt: new Date().toISOString(),
+      },
+      {
+        id: "asn-2",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "running",
+        assignedAt: new Date().toISOString(),
+      },
+    );
+    await _internals.saveSnapshot(snap);
+
+    // First completion — task must stay active, sibling still running.
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv",
+      taskId,
+      assignment: {
+        id: "asn-1",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "completed",
+        assignedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        resultPreview: "one",
+      },
+    });
+    let after = fakeStorage.peek()!;
+    expect(after.tasks[0]!.status).toBe("active");
+    expect(after.tasks[0]!.assignments.find((a) => a.id === "asn-1")!.status).toBe("completed");
+    expect(after.tasks[0]!.assignments.find((a) => a.id === "asn-2")!.status).toBe("running");
+
+    // Second completion — now all assignments terminal, task rolls up.
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv",
+      taskId,
+      assignment: {
+        id: "asn-2",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "completed",
+        assignedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        resultPreview: "two",
+      },
+    });
+    after = fakeStorage.peek()!;
+    expect(after.tasks[0]!.status).toBe("completed");
+  });
+
+  test("multi-assignment task: a mix of failed + completed still rolls up", async () => {
+    await tools.task_plan!({ tasks: [{ title: "A" }] });
+    const snap = fakeStorage.peek()!;
+    const taskId = snap.tasks[0]!.id;
+    snap.tasks[0]!.assignments.push(
+      {
+        id: "asn-1",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "failed",
+        assignedAt: new Date().toISOString(),
+        failedAt: new Date().toISOString(),
+      },
+      {
+        id: "asn-2",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "running",
+        assignedAt: new Date().toISOString(),
+      },
+    );
+    await _internals.saveSnapshot(snap);
+
+    await _internals.handleAssignmentUpdate({
+      conversationId: "conv",
+      taskId,
+      assignment: {
+        id: "asn-2",
+        agentConfigId: "agent-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "completed",
+        assignedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      },
+    });
+    // Every assignment is terminal — task rolls up (completes).
+    expect(fakeStorage.peek()!.tasks[0]!.status).toBe("completed");
   });
 
   test("completion unblocks dependents and spawns their assigned assignments", async () => {
@@ -1463,5 +1593,139 @@ describe("task-tracking extension — task_resume", () => {
     const snap = fakeStorage.peek()!;
     expect(snap.tasks[0]!.status).toBe("active");
     expect(snap.activeTaskId).toBe("t1");
+  });
+});
+
+// ── task_complete / task_fail cancel running assignments ────────────
+//
+// Guards the parent-terminated-task bug: the LLM calls task_complete (or
+// task_fail) while a sub-agent is still running. Before the fix the
+// assignment stayed stuck in "running" forever. Now the handler cancels
+// the run and flips the assignment to the terminal state that matches
+// the parent's transition.
+
+describe("task-tracking extension — task_complete / task_fail cancel running assignments", () => {
+  test("task_complete cancels a running assignment's run and marks it completed", async () => {
+    const cancelled: string[] = [];
+    _setCancelForTests(async (runId) => {
+      cancelled.push(runId);
+      return { cancelled: true };
+    });
+    fakeStorage.seed(seedTaskWithAssignments([
+      {
+        taskId: "t1",
+        taskStatus: "active",
+        assignments: [{
+          id: "a1",
+          status: "running",
+          agentRunId: "run-1",
+          startedAt: new Date().toISOString(),
+        }],
+      },
+    ], "t1"));
+
+    const out = await tools.task_complete!({ taskId: "t1", summary: "done" });
+    expect(isResultText(out, /Completed/)).toBe(true);
+
+    expect(cancelled).toEqual(["run-1"]);
+    const snap = fakeStorage.peek()!;
+    expect(snap.tasks[0]!.status).toBe("completed");
+    expect(snap.tasks[0]!.assignments[0]!.status).toBe("completed");
+    expect(snap.tasks[0]!.assignments[0]!.completedAt).toBeDefined();
+  });
+
+  test("task_complete tolerates cancel failure and still marks assignment completed", async () => {
+    _setCancelForTests(async () => {
+      throw new JsonRpcError(-32001, "not owned");
+    });
+    fakeStorage.seed(seedTaskWithAssignments([
+      {
+        taskId: "t1",
+        taskStatus: "active",
+        assignments: [{
+          id: "a1",
+          status: "running",
+          agentRunId: "run-1",
+          startedAt: new Date().toISOString(),
+        }],
+      },
+    ], "t1"));
+
+    const out = await tools.task_complete!({ taskId: "t1" });
+    expect(isResultText(out, /Completed/)).toBe(true);
+
+    const snap = fakeStorage.peek()!;
+    expect(snap.tasks[0]!.status).toBe("completed");
+    expect(snap.tasks[0]!.assignments[0]!.status).toBe("completed");
+  });
+
+  test("task_complete with no running assignments is a no-op on cancel path", async () => {
+    const cancelled: string[] = [];
+    _setCancelForTests(async (runId) => {
+      cancelled.push(runId);
+      return { cancelled: true };
+    });
+    fakeStorage.seed(seedTaskWithAssignments([
+      { taskId: "t1", taskStatus: "active", assignments: [] },
+    ], "t1"));
+
+    await tools.task_complete!({ taskId: "t1" });
+    expect(cancelled).toEqual([]);
+    expect(fakeStorage.peek()!.tasks[0]!.status).toBe("completed");
+  });
+
+  test("task_fail cancels running assignments and flips them to failed", async () => {
+    const cancelled: string[] = [];
+    _setCancelForTests(async (runId) => {
+      cancelled.push(runId);
+      return { cancelled: true };
+    });
+    fakeStorage.seed(seedTaskWithAssignments([
+      {
+        taskId: "t1",
+        taskStatus: "active",
+        assignments: [{
+          id: "a1",
+          status: "running",
+          agentRunId: "run-1",
+          startedAt: new Date().toISOString(),
+        }],
+      },
+    ], "t1"));
+
+    const out = await tools.task_fail!({ taskId: "t1", reason: "upstream broke" });
+    expect(isResultText(out, /Failed task/)).toBe(true);
+
+    expect(cancelled).toEqual(["run-1"]);
+    const snap = fakeStorage.peek()!;
+    expect(snap.tasks[0]!.status).toBe("failed");
+    expect(snap.tasks[0]!.assignments[0]!.status).toBe("failed");
+    expect(snap.tasks[0]!.assignments[0]!.failedAt).toBeDefined();
+    expect(snap.tasks[0]!.assignments[0]!.resultPreview).toMatch(/upstream broke/);
+  });
+
+  test("task_complete cancels both assignments on a multi-assignment task", async () => {
+    const cancelled: string[] = [];
+    _setCancelForTests(async (runId) => {
+      cancelled.push(runId);
+      return { cancelled: true };
+    });
+    fakeStorage.seed(seedTaskWithAssignments([
+      {
+        taskId: "t1",
+        taskStatus: "active",
+        assignments: [
+          { id: "a1", status: "running", agentRunId: "run-1", startedAt: new Date().toISOString() },
+          { id: "a2", status: "running", agentRunId: "run-2", startedAt: new Date().toISOString() },
+        ],
+      },
+    ], "t1"));
+
+    await tools.task_complete!({ taskId: "t1" });
+    expect(cancelled.sort()).toEqual(["run-1", "run-2"]);
+    const snap = fakeStorage.peek()!;
+    expect(snap.tasks[0]!.status).toBe("completed");
+    expect(snap.tasks[0]!.assignments[0]!.status).toBe("completed");
+    expect(snap.tasks[0]!.assignments[1]!.status).toBe("completed");
   });
 });

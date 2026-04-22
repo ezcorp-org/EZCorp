@@ -9,7 +9,7 @@ export default defineExtension({
   name: "test-task-events",
   version: "1.0.0",
   description: "Integration-test fixture — emits a task-panel snapshot",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   persistent: false,
   tools: [

@@ -5,7 +5,7 @@ export default defineExtension({
   name: "file-refactor",
   version: "1.0.0",
   description: "Preview file renames to match a naming convention",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   tools: [
     {

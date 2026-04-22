@@ -3,6 +3,7 @@
 	import { store, setActiveProjectId } from "$lib/stores.svelte.js";
 	import AgentCard from "$lib/components/AgentCard.svelte";
 	import RunStatus from "$lib/components/RunStatus.svelte";
+	import ActiveAgentsList from "$lib/components/ActiveAgentsList.svelte";
 
 	$effect(() => {
 		setActiveProjectId(page.params.id ?? null);
@@ -19,6 +20,11 @@
 </script>
 
 <div class="space-y-8">
+	<section>
+		<h2 class="mb-4 text-xl font-semibold text-[var(--color-text-primary)]">Active Agents</h2>
+		<ActiveAgentsList projectId={page.params.id} />
+	</section>
+
 	<section>
 		<h2 class="mb-4 text-xl font-semibold text-[var(--color-text-primary)]">Agents</h2>
 		{#if store.agents.length === 0}

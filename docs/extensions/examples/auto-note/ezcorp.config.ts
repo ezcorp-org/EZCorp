@@ -5,7 +5,7 @@ export default defineExtension({
   name: "auto-note",
   version: "1.0.0",
   description: "Jot a quick note and watch it auto-organize into a linked vault — categorized, tagged, and connected",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   persistent: true,
   category: "Productivity",

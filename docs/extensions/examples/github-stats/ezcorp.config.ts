@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "Fetch GitHub repository and user statistics via the GitHub API",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   entrypoint: "./index.ts",
   tools: [

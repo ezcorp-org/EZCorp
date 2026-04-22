@@ -7,7 +7,7 @@ export default defineExtension({
   description:
     "Web search and URL-to-markdown reader. Keyless by default (Jina AI); " +
     "set TAVILY_API_KEY, BRAVE_API_KEY, EXA_API_KEY, or SERPAPI_API_KEY to upgrade.",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   tools: [
     {

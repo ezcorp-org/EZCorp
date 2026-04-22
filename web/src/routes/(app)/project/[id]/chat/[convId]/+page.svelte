@@ -30,6 +30,10 @@
 		type TaskPanelTask,
 	} from "$lib/stores.svelte.js";
 	import { buildHistoricalBlocks } from "$lib/content-blocks.js";
+	import {
+		subConvoToAgentCallState,
+		type SubConvoRecord,
+	} from "$lib/sub-convo-agent-state.js";
 	import { startOAuthFlow, completeOAuthWithCode, listenForOAuthResult, isLoginCommand, type OAuthPending } from "$lib/oauth.js";
 	import { isModelCommand } from "$lib/commands.js";
 	import { restoreLastModel, persistLastModel } from "$lib/last-model.js";
@@ -99,15 +103,7 @@
 	// Saved memories: messageId → memoryId
 	let savedMemories = $state(new Map<string, string>());
 
-	// Sub-conversation state
-	interface SubConvoRecord {
-		id: string;
-		agentName: string;
-		agentConfigId: string;
-		parentMessageId: string;
-		messageCount?: number;
-		lastMessagePreview?: string | null;
-	}
+	// Sub-conversation state (type imported from $lib/sub-convo-agent-state.js)
 	let subConversations = $state<SubConvoRecord[]>([]);
 	let subConvoByMessage = $derived(new Map(subConversations.map(sc => [sc.parentMessageId, sc])));
 	// Filter: user-initiated sub-convos (no agentConfigId) show as SubConversationBlock
@@ -121,6 +117,21 @@
 
 	// All agent sub-conversations (with agentConfigId) for this conversation
 	let agentSubConvos = $derived(subConversations.filter(sc => sc.agentConfigId));
+
+	// Build a lookup from subConversationId → assignment status using the task snapshot
+	let assignmentBySubConvo = $derived.by(() => {
+		const map = new Map<string, { status: AssignmentStatus; resultPreview?: string }>();
+		if (!taskSnapshot) return map;
+		for (const task of taskSnapshot.tasks) {
+			for (const a of task.assignments ?? []) {
+				if (a.subConversationId) {
+					map.set(a.subConversationId, { status: a.status, resultPreview: a.resultPreview });
+				}
+			}
+		}
+		return map;
+	});
+
 	function getHistoricalAgentCalls(messageId: string): AgentCallState[] | undefined {
 		if (agentSubConvos.length === 0) return undefined;
 		// Match agents anchored to this message OR to its parent (user message)
@@ -132,48 +143,7 @@
 		);
 		if (matched.length === 0) return undefined;
 
-		// Build a lookup from subConversationId → assignment status using the task snapshot
-		const assignmentBySubConvo = new Map<string, { status: AssignmentStatus; resultPreview?: string }>();
-		if (taskSnapshot) {
-			for (const task of taskSnapshot.tasks) {
-				for (const a of task.assignments ?? []) {
-					if (a.subConversationId) {
-						assignmentBySubConvo.set(a.subConversationId, { status: a.status, resultPreview: a.resultPreview });
-					}
-				}
-			}
-		}
-
-		return matched.map(sc => {
-			const assignment = assignmentBySubConvo.get(sc.id);
-			// Auto-spin-up stores only the assistant response (messageCount=1),
-			// invoke_agent stores user task + assistant response (messageCount>=2).
-			// Any messages at all means the agent produced something.
-			const hasResponse = (sc.messageCount ?? 0) >= 1;
-
-			// Use real assignment status when available; fall back to message-presence heuristic
-			let status: AgentCallState['status'];
-			let resultPreview: string | undefined;
-			if (assignment) {
-				status = assignment.status === 'failed' ? 'error'
-					: assignment.status === 'running' ? 'running'
-					: 'complete';
-				resultPreview = assignment.resultPreview ?? (sc.lastMessagePreview ?? undefined);
-			} else {
-				status = hasResponse ? 'complete' : 'error';
-				resultPreview = hasResponse ? (sc.lastMessagePreview ?? undefined) : 'Agent did not respond';
-			}
-
-			return {
-				subConversationId: sc.id,
-				agentName: sc.agentName,
-				agentConfigId: sc.agentConfigId,
-				task: '',
-				status,
-				resultPreview,
-				startedAt: 0,
-			};
-		});
+		return matched.map(sc => subConvoToAgentCallState(sc, assignmentBySubConvo.get(sc.id)));
 	}
 
 	let settingsOpen = $state(false);
@@ -432,12 +402,18 @@
 			selectedAgent = null;
 			pendingSelectedAgentSubConvId = null;
 		}
+		// ?agent=<subConversationId> overrides localStorage — set by the
+		// Active Agents list when opening a sub-agent from its parent chat.
+		const urlAgent = page.url.searchParams.get("agent");
+		if (urlAgent) pendingSelectedAgentSubConvId = urlAgent;
 		panelRestoredFor = cid;
 	});
 
 	// Resolve pending selectedAgent once the streaming agent calls hydrate.
 	// The user may have had the AgentDetailPanel open on a sub-agent; we
-	// rebind it from store.streamingAgentCalls when the matching entry shows up.
+	// rebind it from store.streamingAgentCalls when the matching entry shows up,
+	// or synthesize one from the DB-loaded subConversations when arriving via
+	// a ?agent= deep link (no live streaming state yet).
 	$effect(() => {
 		if (!pendingSelectedAgentSubConvId) return;
 		const target = pendingSelectedAgentSubConvId;
@@ -448,6 +424,11 @@
 				pendingSelectedAgentSubConvId = null;
 				return;
 			}
+		}
+		const sc = subConversations.find(s => s.id === target);
+		if (sc) {
+			selectedAgent = subConvoToAgentCallState(sc, assignmentBySubConvo.get(sc.id));
+			pendingSelectedAgentSubConvId = null;
 		}
 	});
 

@@ -16,7 +16,7 @@ export default defineExtension({
   name: "test-spawn-assignment",
   version: "1.0.0",
   description: "Integration-test fixture — exercises ezcorp/spawn-assignment",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   persistent: false,
   tools: [

@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "Orchestrate sub-agents to complete complex development tasks (forward-looking manifest shape)",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   agent: {
     prompt: "You orchestrate sub-agents to complete complex development tasks.",

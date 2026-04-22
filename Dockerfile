@@ -22,6 +22,22 @@ RUN cd web && bun run build
 FROM oven/bun:1-slim
 WORKDIR /app
 
+# Build-time metadata injected by CI (`docker/metadata-action` → build-args).
+# Surfaced as OCI labels for image introspection and as env vars the app
+# reads at runtime (`EZCORP_IMAGE_SHA` is the circuit-breaker key; see
+# src/db/connection.ts).
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=unknown
+ENV EZCORP_IMAGE_VERSION=$VERSION
+ENV EZCORP_IMAGE_SHA=$REVISION
+LABEL org.opencontainers.image.title="ezcorp" \
+      org.opencontainers.image.version=$VERSION \
+      org.opencontainers.image.revision=$REVISION \
+      org.opencontainers.image.created=$CREATED \
+      org.opencontainers.image.source="https://github.com/ezcorp-org/EZcorp" \
+      org.opencontainers.image.description="EZ Corp AI — self-hosted agent runtime with embedded PGlite"
+
 # Install production dependencies (root)
 COPY package.json bun.lock ./
 # Workspace package.json required to resolve `workspace:*` specifiers.
@@ -60,15 +76,30 @@ COPY --from=builder /app/web/build ./web/build
 # Copy TESTENV project directory
 COPY --from=builder /app/TESTENV ./TESTENV
 
-# Create data directory for PGlite storage
-RUN mkdir -p /app/data
+# Create data directory for PGlite + backups. Declared as a VOLUME so users
+# who don't bind-mount get a named docker volume automatically (data survives
+# image upgrades). Default backup dir resolves to /app/data/backups via
+# src/db/backup.ts:getBackupDir(), so one mount covers both.
+#
+# chown to the `bun` user so the runtime (which runs unprivileged — see USER
+# below) can write snapshots, backups, and the persistent encryption secret.
+RUN mkdir -p /app/data && chown -R bun:bun /app /app/data
+VOLUME /app/data
 
 EXPOSE 3000
 
 ENV EZCORP_PORT=3000
 ENV EZCORP_DB_PATH=/app/data/ezcorp
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Drop root. The oven/bun:1-slim base image ships a `bun` user (uid 1000); all
+# files under /app are chowned to it above. Anything in a bind-mounted
+# /app/data from the host must be readable + writable by uid 1000.
+USER bun
+
+# start-period=60s covers first-boot cost: migrate() + bundled-extension
+# install + PGlite cold start. Shorter values flap "unhealthy" on slower
+# hardware or the first volume-init.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD bun -e "const r = await fetch('http://localhost:3000/api/health'); process.exit(r.ok || r.status === 401 ? 0 : 1)" || exit 1
 
 CMD ["bun", "run", "web/build/index.js"]

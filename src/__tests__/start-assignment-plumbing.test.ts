@@ -160,6 +160,27 @@ beforeEach(() => {
   createSubConversationCalls = [];
 });
 
+// ── 0. Sub-agent prompt — must tell the LLM not to call task_complete ─
+
+describe("startAssignment — sub-agent task prompt guardrails", () => {
+  test("injected message instructs the sub-agent NOT to call task_complete/task_fail/task_plan", async () => {
+    const { executor, calls } = makeMockExecutor();
+    getSubConversationsImpl = async () => [{ id: "sub-existing", agentConfigId: "cfg-test" }];
+
+    const opts = baseOpts({ executor });
+    await startAssignment(opts);
+
+    expect(calls).toHaveLength(1);
+    const msg = calls[0]!.userMessage;
+    // Without this guardrail, sub-agents routinely call task_complete —
+    // which only writes to their own (empty) sub-conv storage and leaves
+    // the parent task stuck.
+    expect(msg).toMatch(/Do NOT call task_complete/);
+    expect(msg).toMatch(/task_fail/);
+    expect(msg).toMatch(/task_plan/);
+  });
+});
+
 // ── 1. reuseSubConversationId — honored verbatim, skips DB lookup ──
 
 describe("startAssignment — reuseSubConversationId plumbing", () => {

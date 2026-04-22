@@ -1,6 +1,6 @@
 # Extension Development
 
-Extensions add capabilities to Pi -- tools that agents can call, skills that inject knowledge, and agent personas with specialized behavior. Build single-purpose tools or multi-component packages combining all three.
+Extensions add capabilities to EZCorp -- tools that agents can call, skills that inject knowledge, and agent personas with specialized behavior. Build single-purpose tools or multi-component packages combining all three.
 
 Extensions run in isolated subprocesses with strict security boundaries. They communicate with the platform over JSON-RPC and can only access resources explicitly granted by the user at install time.
 

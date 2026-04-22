@@ -956,6 +956,25 @@ export function initStores() {
 						} else {
 							task.assignments = [...(task.assignments ?? []), assignment];
 						}
+						// Client-side rollup: the extension emits a fresh task:snapshot
+						// when it receives this event and auto-advances, but that round-
+						// trip goes through the subprocess RPC and can lag. Mirror the
+						// rollup here so the task visibly flips to "completed"/"failed"
+						// the instant the last running assignment finishes, rather than
+						// waiting on the extension's snapshot emit.
+						if (
+							task.status !== "completed" &&
+							task.status !== "failed" &&
+							task.assignments.length > 0 &&
+							task.assignments.every(a => a.status === "completed" || a.status === "failed")
+						) {
+							const anyFailed = task.assignments.some(a => a.status === "failed");
+							task.status = anyFailed ? "failed" : "completed";
+							const ts = new Date().toISOString();
+							if (anyFailed) task.failedAt = task.failedAt ?? ts;
+							else task.completedAt = task.completedAt ?? ts;
+							if (snapshot.activeTaskId === task.id) snapshot.activeTaskId = undefined;
+						}
 						// Trigger reactivity
 						store.taskSnapshots = { ...store.taskSnapshots, [conversationId]: { ...snapshot } };
 					}

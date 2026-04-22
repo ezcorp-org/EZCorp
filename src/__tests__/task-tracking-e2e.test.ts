@@ -563,6 +563,111 @@ describe("task-tracking e2e: real subprocess + real host handlers + real bus", (
     proc.kill();
   });
 
+  test("multi-assignment task: only rolls up to 'completed' after every assignment is terminal", async () => {
+    const proc = spawnExtension();
+    bus = new EventBus<AgentEvents>();
+    quota = createSpawnQuota(bus);
+    dispatcher = new EventSubscriptionDispatcher(
+      bus,
+      makeStubRegistry(proc) as any,
+      async () => [EXT_ID],
+    );
+    dispatcher.registerExtension(EXT_ID, ["task:assignment_update"]);
+    dispatcher.start();
+    startHandlerPump(proc);
+
+    const { deleteStorageValue } = await import("../db/queries/extension-storage");
+    await deleteStorageValue(EXT_ID, "conversation", CONV_ID, "tasks");
+
+    // Plan a single task with one auto-started assignment, then assign a
+    // second agent to the same task so it has two running assignments.
+    await callTool(proc, 700, "task_plan", {
+      tasks: [{ title: "Solo", assignTo: "builder" }],
+    });
+    const rowInit = await getStorageValue(EXT_ID, "conversation", CONV_ID, "tasks");
+    const snapInit = rowInit!.value as {
+      tasks: Array<{ id: string; title: string; status: string; assignments: Array<{ id: string; status: string }> }>;
+    };
+    const soloTask = snapInit.tasks[0]!;
+    await callTool(proc, 701, "task_assign", {
+      taskId: soloTask.id,
+      agentConfigId: "cfg-builder",
+    });
+
+    const rowTwo = await getStorageValue(EXT_ID, "conversation", CONV_ID, "tasks");
+    const snapTwo = rowTwo!.value as typeof snapInit;
+    const taskTwo = snapTwo.tasks.find((t) => t.id === soloTask.id)!;
+    expect(taskTwo.assignments).toHaveLength(2);
+    const [asn1, asn2] = taskTwo.assignments;
+
+    // Complete the first assignment via the real bridge.
+    bus.emit("task:assignment_update", {
+      conversationId: CONV_ID,
+      taskId: soloTask.id,
+      assignment: {
+        id: asn1!.id,
+        agentConfigId: "cfg-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "completed",
+        assignedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        resultPreview: "first",
+      },
+    });
+
+    // Poll until assignment 1 is completed. Task MUST stay active.
+    const deadline1 = Date.now() + 3000;
+    while (Date.now() < deadline1) {
+      const r = await getStorageValue(EXT_ID, "conversation", CONV_ID, "tasks");
+      const s = r!.value as typeof snapInit;
+      const t = s.tasks[0]!;
+      const a1 = t.assignments.find((a) => a.id === asn1!.id)!;
+      if (a1.status === "completed") break;
+      await new Promise((r2) => setTimeout(r2, 20));
+    }
+    const midRow = await getStorageValue(EXT_ID, "conversation", CONV_ID, "tasks");
+    const midSnap = midRow!.value as typeof snapInit;
+    const midTask = midSnap.tasks[0]!;
+    expect(midTask.status).toBe("active");
+    expect(midTask.assignments.find((a) => a.id === asn1!.id)!.status).toBe("completed");
+    expect(midTask.assignments.find((a) => a.id === asn2!.id)!.status).toBe("running");
+
+    // Complete the second. Now the task should roll up.
+    bus.emit("task:assignment_update", {
+      conversationId: CONV_ID,
+      taskId: soloTask.id,
+      assignment: {
+        id: asn2!.id,
+        agentConfigId: "cfg-builder",
+        agentName: "builder",
+        isTeam: false,
+        status: "completed",
+        assignedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        resultPreview: "second",
+      },
+    });
+
+    const deadline2 = Date.now() + 3000;
+    let finalTask: typeof midTask | undefined;
+    while (Date.now() < deadline2) {
+      const r = await getStorageValue(EXT_ID, "conversation", CONV_ID, "tasks");
+      const s = r!.value as typeof snapInit;
+      const t = s.tasks[0]!;
+      if (t.status === "completed") {
+        finalTask = t;
+        break;
+      }
+      await new Promise((r2) => setTimeout(r2, 20));
+    }
+    expect(finalTask).toBeDefined();
+    expect(finalTask!.status).toBe("completed");
+    expect(finalTask!.assignments.every((a) => a.status === "completed")).toBe(true);
+
+    proc.kill();
+  });
+
   test("sequential task_list calls don't deadlock through the full real pipeline", async () => {
     const proc = spawnExtension();
     bus = new EventBus<AgentEvents>();

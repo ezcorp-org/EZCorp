@@ -147,6 +147,7 @@
 			? [
 					{ href: "/", label: "Home" },
 					{ href: "/project/global/chat", label: "Chat" },
+					{ href: "/active-agents", label: "Active Agents" },
 					{ href: "/agents", label: "Agents", group: "Build" },
 					{ href: "/pipelines", label: "Pipelines", group: "Build" },
 					{ href: "/extensions", label: "Extensions", group: "Build" },

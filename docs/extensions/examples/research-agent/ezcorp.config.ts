@@ -6,7 +6,7 @@ export default defineExtension({
   version: "1.0.0",
   description: "An AI research assistant that summarizes topics and answers questions with structured responses",
   author: {
-    name: "EzCorp",
+    name: "EZCorp",
   },
   permissions: {},
   agent: {

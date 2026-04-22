@@ -185,7 +185,7 @@ export async function startAssignment(opts: StartAssignmentOpts): Promise<StartA
 
   const taskBody = task.description ? `${task.title}\n\n${task.description}` : task.title;
   const taskDescription =
-    `## Your Task\n${taskBody}\n\n## Full Plan Context\nThis task is part of a larger plan. Here are all tasks:\n${planContext}\n\nFocus on completing YOUR task. If you need information from other tasks, note it in your output.`;
+    `## Your Task\n${taskBody}\n\n## Full Plan Context\nThis task is part of a larger plan. Here are all tasks:\n${planContext}\n\nFocus on completing YOUR task. If you need information from other tasks, note it in your output.\n\nIMPORTANT: Do NOT call task_complete, task_fail, or task_plan in this run. Your parent conversation tracks your completion automatically when this run ends — calling those tools here only writes to your own (empty) sub-conversation storage and wastes turns. Just finish the work and stop.`;
 
   const resolveSentinel = (value: string | undefined | null, fallback: string | undefined): string | undefined =>
     value === CURRENT_MODEL_SENTINEL ? fallback : value ?? undefined;

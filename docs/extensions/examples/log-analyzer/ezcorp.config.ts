@@ -5,7 +5,7 @@ export default defineExtension({
   name: "log-analyzer",
   version: "1.0.0",
   description: "Search and filter log files by query, level, and date",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./index.ts",
   tools: [
     {

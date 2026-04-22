@@ -6,7 +6,7 @@ export default defineExtension({
   version: "0.1.0",
   description:
     "In-EZCorp orchestration extension — lets agents start chats, fan out to sibling conversations, spawn teams, assign tasks, and drive the full EZCorp API surface from inside the app.",
-  author: { name: "EzCorp" },
+  author: { name: "EZCorp" },
   entrypoint: "./src/mcp/server.ts",
   persistent: false,
   category: "Orchestration",

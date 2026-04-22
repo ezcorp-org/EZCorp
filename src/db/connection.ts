@@ -1,7 +1,15 @@
 import * as schema from "./schema";
 import { migrate } from "./migrate";
-import { mkdirSync, renameSync, existsSync } from "node:fs";
+import { mkdirSync, renameSync, existsSync, cpSync } from "node:fs";
 import { logger } from "../logger";
+import { setReadiness } from "../readiness";
+import {
+  snapshotPreBoot,
+  latestPreBootSnapshot,
+  readMarker,
+  writeMarker,
+  clearMarker,
+} from "./backup";
 const log = logger.child("db");
 
 const DEFAULT_DB_DIR = `${process.env.HOME}/ez-corp/.data`;
@@ -27,6 +35,43 @@ async function initPglite(): Promise<void> {
     return pg;
   };
 
+  // Circuit breaker: if migrate() failed on the prior boot of THIS exact
+  // image, don't re-run migrate. The DB dir is the restored snapshot, so
+  // pre-failure features still work. /api/ready reports 503 so orchestrators
+  // know the container is in a bad state, and the UI can display recovery
+  // instructions. Disabled when running outside a built image (no SHA).
+  const imageSha = process.env.EZCORP_IMAGE_SHA;
+  if (!IS_MEMORY && imageSha) {
+    const marker = readMarker();
+    if (marker && marker.imageSha === imageSha) {
+      log.error("Migration failed on previous boot — skipping migrate (circuit breaker)", {
+        imageSha,
+        markerTs: marker.ts,
+      });
+      _pglite = await openPglite(dbArg);
+      _db = drizzle(_pglite, { schema });
+      setReadiness({
+        state: "degraded",
+        reason: "migration-blocked",
+        detail: {
+          message: "Previous migration failed for this image; boot continued without running migrate().",
+          imageSha: marker.imageSha,
+          error: marker.error,
+          markerTs: marker.ts,
+          recovery: [
+            "Roll back to a working image tag, or",
+            "Fix the failing migration and rebuild the image, then remove /app/data/.migration-failed",
+          ],
+        },
+      });
+      return;
+    }
+  }
+
+  // Snapshot before open+migrate so we have a rollback target. Always-on:
+  // the DB is small, `cpSync` is cheap, and rotation (3) bounds disk use.
+  if (!IS_MEMORY) snapshotPreBoot();
+
   try {
     _pglite = await openPglite(dbArg);
   } catch (e) {
@@ -41,8 +86,84 @@ async function initPglite(): Promise<void> {
 
   _db = drizzle(_pglite, { schema });
   log.info("Database mode: embedded PGlite", { path: DB_PATH });
-  await migrate(_db);
+
+  try {
+    await migrate(_db);
+  } catch (err) {
+    log.error("Migration failed — rolling back to pre-boot snapshot", { error: String(err) });
+    await rollbackMigration(err);
+    // Unreachable: rollbackMigration calls process.exit(1).
+    throw err;
+  }
+
+  clearMarker();
+  setReadiness({ state: "ready" });
 }
+
+/**
+ * Close PGlite, rename the failed DB dir aside, restore from the latest
+ * pre-boot snapshot, write a circuit-breaker marker, and exit(1) so Docker
+ * restarts us. On the next boot, the circuit breaker skips migrate().
+ *
+ * `renameSync`-then-`cpSync` (not rmSync-then-cp) is deliberate: rename is
+ * atomic on a single FS, so a SIGKILL between the two leaves `.failed.<ts>`
+ * intact for forensics instead of an empty DB dir.
+ */
+async function rollbackMigration(err: unknown): Promise<never> {
+  try {
+    if (_pglite) await _pglite.close();
+  } catch (closeErr) {
+    log.warn("PGlite close during rollback failed", { error: String(closeErr) });
+  }
+  _pglite = null;
+  _db = null;
+  // Clear the cached init promise so a caller that catches the rollback
+  // error (e.g. a test with EZCORP_NO_EXIT=1) can re-call initDb() and
+  // have the circuit breaker run fresh on the next boot attempt.
+  _initPromise = null;
+
+  const snapshot = latestPreBootSnapshot();
+  if (snapshot && existsSync(DB_PATH)) {
+    const failedPath = `${DB_PATH}.failed.${Date.now()}`;
+    try {
+      renameSync(DB_PATH, failedPath);
+      cpSync(snapshot, DB_PATH, { recursive: true });
+      log.info("Restored pre-boot snapshot", { snapshot, failedPath });
+    } catch (restoreErr) {
+      log.error("Rollback failed — data dir may be inconsistent", {
+        error: String(restoreErr),
+        failedPath,
+      });
+    }
+  } else if (!snapshot) {
+    log.error("No pre-boot snapshot available — cannot roll back");
+  }
+
+  const imageSha = process.env.EZCORP_IMAGE_SHA;
+  if (imageSha) {
+    writeMarker({
+      imageSha,
+      error: String(err).slice(0, 2000),
+      ts: new Date().toISOString(),
+    });
+  }
+
+  setReadiness({
+    state: "degraded",
+    reason: "migration-failed",
+    detail: { error: String(err).slice(0, 500) },
+  });
+
+  // In test environments, process.exit short-circuits suites. Callers in
+  // production rely on Docker's restart policy.
+  if (process.env.NODE_ENV === "test" || process.env.EZCORP_NO_EXIT === "1") {
+    throw err;
+  }
+  process.exit(1);
+}
+
+// Exported for tests
+export const __test = { rollbackMigration };
 
 async function initPostgres(): Promise<void> {
   const { drizzle } = await import("drizzle-orm/bun-sql");
@@ -81,8 +202,19 @@ async function initPostgres(): Promise<void> {
   await _db.execute(sql`CREATE EXTENSION IF NOT EXISTS vector`);
 
   log.info("Database mode: external Postgres");
-  await migrate(_db);
+  try {
+    await migrate(_db);
+  } catch (err) {
+    log.error("Migration failed on external Postgres — manual intervention required", { error: String(err) });
+    setReadiness({
+      state: "degraded",
+      reason: "migration-failed",
+      detail: { error: String(err).slice(0, 500) },
+    });
+    throw err;
+  }
   await repairDoubleEncodedJsonb(sql);
+  setReadiness({ state: "ready" });
 }
 
 // Historical rows written before the jsonb-double-encoding fix are stored as
@@ -130,7 +262,14 @@ async function init(): Promise<void> {
 
 export async function initDb(): Promise<void> {
   if (!_initPromise) {
-    _initPromise = init();
+    // Reset the promise on failure so callers can retry. Without this, a
+    // transient init error (e.g. migrate throws, is rolled back) would leave
+    // a cached rejected promise and every subsequent initDb() would re-throw
+    // the same error instead of re-running the boot sequence.
+    _initPromise = init().catch((err) => {
+      _initPromise = null;
+      throw err;
+    });
   }
   await _initPromise;
 }

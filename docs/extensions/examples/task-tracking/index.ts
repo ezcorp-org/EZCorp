@@ -262,6 +262,52 @@ async function attemptSpawn(
 }
 
 /**
+ * Walk every running assignment on a task (including subtask-scoped
+ * ones), ask the host to cancel the run, and transition the assignment
+ * to a terminal state so it can't stay stuck as "running" after its
+ * owning task has been completed or failed.
+ *
+ * Idempotent against the `run:cancel` listener in start-assignment.ts
+ * — we mutate `status` to the terminal state BEFORE calling cancel, so
+ * when run:cancel eventually fires the listener's `status !== "running"`
+ * guard short-circuits and doesn't overwrite our transition.
+ *
+ * Cancel failures (ownership -32001, already-cancelled, etc.) are
+ * intentionally swallowed: the parent task's terminal transition is
+ * the user's explicit intent; a stuck cancel RPC must not block it.
+ */
+async function terminateRunningAssignments(
+  task: TrackedTask,
+  terminalStatus: "completed" | "failed",
+  note: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const timestampField = terminalStatus === "completed" ? "completedAt" : "failedAt";
+  const targets: TaskAssignment[] = [];
+  for (const a of task.assignments) {
+    if (a.status === "running" || a.status === "assigned") targets.push(a);
+  }
+  for (const sub of task.subtasks) {
+    for (const a of sub.assignments ?? []) {
+      if (a.status === "running" || a.status === "assigned") targets.push(a);
+    }
+  }
+  for (const a of targets) {
+    a.status = terminalStatus;
+    (a as unknown as Record<string, string>)[timestampField] = now;
+    a.resultPreview = note;
+    if (a.agentRunId) {
+      try {
+        await cancel(a.agentRunId);
+      } catch {
+        // Ownership mismatch / already-cancelled — parent's terminal
+        // transition is the source of truth; keep going.
+      }
+    }
+  }
+}
+
+/**
  * Persist an assignment failure transition and emit the update.
  * Caller must have already mutated the in-memory assignment object to
  * reflect the failure — this function only saves + emits.
@@ -806,6 +852,12 @@ const completeHandler: ToolHandler = async (args) => {
   const task = snap.tasks.find((t) => t.id === taskId);
   if (!task) return toolError(notFoundError(snap, taskId));
 
+  await terminateRunningAssignments(
+    task,
+    "completed",
+    "Parent task was manually completed",
+  );
+
   task.status = "completed";
   task.completedAt = new Date().toISOString();
   if (summary) task.completionSummary = summary;
@@ -846,6 +898,12 @@ const failHandler: ToolHandler = async (args) => {
   const snap = await loadSnapshot();
   const task = snap.tasks.find((t) => t.id === taskId);
   if (!task) return toolError(notFoundError(snap, taskId));
+
+  await terminateRunningAssignments(
+    task,
+    "failed",
+    `Parent task was failed: ${reason}`,
+  );
 
   task.status = "failed";
   task.failedAt = new Date().toISOString();
@@ -1282,6 +1340,15 @@ async function auto_advance_after_complete(
 ): Promise<void> {
   const task = snap.tasks.find((t) => t.id === completedTaskId);
   if (!task || task.status === "completed" || task.status === "failed") return;
+
+  // Tasks with multiple assignments only roll up when every assignment
+  // has reached a terminal state. Prevents siblings from being orphaned
+  // "running" while the parent task flips to completed on first finish.
+  const allTerminal = task.assignments.every(
+    (a) => a.status === "completed" || a.status === "failed",
+  );
+  if (!allTerminal) return;
+
   task.status = "completed";
   task.completedAt = new Date().toISOString();
   if (summary) task.completionSummary = summary;
@@ -1321,8 +1388,18 @@ async function handleAssignmentUpdate(
 ): Promise<void> {
   const snap = await loadSnapshot();
   const task = snap.tasks.find((t) => t.id === payload.taskId);
-  if (!task) return; // update for a task we don't own
   const incoming = payload.assignment;
+  if (!task) {
+    // Update arrived for a task this extension doesn't own. Log so the
+    // silent drop is diagnosable, and re-emit the current snapshot to
+    // keep the UI in sync with storage (guards against UI drift when an
+    // upstream event was missed).
+    console.warn(
+      `[task-tracking] assignment update for unknown taskId: ${payload.taskId} (assignmentId=${incoming.id}, status=${incoming.status}); known tasks=${snap.tasks.length}`,
+    );
+    await emitState(snap);
+    return;
+  }
   const existing = task.assignments.find((a) => a.id === incoming.id);
   if (!existing) {
     // Subtask-scoped assignment?
@@ -1337,6 +1414,12 @@ async function handleAssignmentUpdate(
         return;
       }
     }
+    // Same pattern as the unknown-task branch: surface the drop and
+    // resync so the UI isn't left hanging on a stale assignment row.
+    console.warn(
+      `[task-tracking] assignment update for unknown assignmentId: ${incoming.id} on task ${task.id} (status=${incoming.status})`,
+    );
+    await emitState(snap);
     return;
   }
   // Idempotency guard: skip self-echo and already-terminal transitions.

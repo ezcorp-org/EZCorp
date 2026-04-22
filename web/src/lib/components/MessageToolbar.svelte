@@ -21,6 +21,7 @@
 		onsavememory,
 		onremovememory,
 		savedAsMemory = false,
+		onedittext,
 	}: {
 		role: 'user' | 'assistant';
 		isError?: boolean;
@@ -34,6 +35,10 @@
 		onsavememory?: () => void;
 		onremovememory?: () => void;
 		savedAsMemory?: boolean;
+		/** Content-only edit of an assistant turn (no regen). Surfaced as
+		 *  "Edit text" for assistant rows — primarily useful on seeded turns
+		 *  in a cloned chat. */
+		onedittext?: () => void;
 	} = $props();
 
 	let copyState: 'idle' | 'copied' = $state('idle');
@@ -117,6 +122,17 @@
 					<svg class="h-3.5 w-3.5 text-[var(--color-text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
 						<path d="M1 4v6h6" /><path d="M23 20v-6h-6" />
 						<path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+					</svg>
+				</button>
+			</Tooltip>
+		{/if}
+
+		{#if role === 'assistant' && onedittext}
+			<Tooltip text="Edit saved text (no regenerate)">
+				<button onclick={onedittext} class={btnClass} aria-label="Edit text" data-testid="edit-text-btn">
+					<svg class="h-3.5 w-3.5 text-[var(--color-text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+						<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+						<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
 					</svg>
 				</button>
 			</Tooltip>

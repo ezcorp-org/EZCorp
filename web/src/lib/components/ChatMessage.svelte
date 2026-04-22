@@ -46,6 +46,10 @@
 		onagentclick,
 		onsendmessage,
 		onopenobservability,
+		selectable = false,
+		selected = false,
+		onselectionchange,
+		onedittext,
 	}: {
 		message: Message;
 		streamingText?: string;
@@ -76,6 +80,18 @@
 		/** Opens the observability side panel — wired by the parent chat page. Used by the
 		 *  sub-agent-failure summary so users can dive into `agent_error` rows. */
 		onopenobservability?: () => void;
+		/** Select-mode props (chat window's "fork selected turns" feature). When
+		 *  `selectable` is true the message row renders a checkbox and swallows its
+		 *  hover toolbar — clicking anywhere on the row toggles selection via
+		 *  `onselectionchange`. System rows are still never selectable (they render
+		 *  independently of this branch). */
+		selectable?: boolean;
+		selected?: boolean;
+		onselectionchange?: (messageId: string) => void;
+		/** Content-only edit handler for cloned/seeded assistant turns. When
+		 *  present, the message toolbar surfaces an "Edit text" affordance that
+		 *  updates message content via PATCH (no regen, no branch). */
+		onedittext?: (message: Message) => void;
 	} = $props();
 
 	// Elapsed counter for the main streaming turn. Reused pattern from AgentChip.svelte.
@@ -180,7 +196,21 @@
 		<span class="text-xs text-[var(--color-text-muted)] italic">{message.content}</span>
 	</div>
 {:else if message.role === "user"}
-	<div class="group relative flex gap-3 px-4 py-3 bg-[var(--color-surface-tertiary)]/50 rounded-lg hover:outline hover:outline-1 hover:outline-[var(--color-border)]">
+	<div
+		class="group relative flex gap-3 px-4 py-3 bg-[var(--color-surface-tertiary)]/50 rounded-lg hover:outline hover:outline-1 hover:outline-[var(--color-border)] {selectable ? 'cursor-pointer' : ''} {selectable && selected ? 'outline outline-2 outline-blue-500' : ''}"
+		onclick={selectable ? () => onselectionchange?.(message.id) : undefined}
+		onkeydown={selectable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselectionchange?.(message.id); } } : undefined}
+		role={selectable ? 'checkbox' : undefined}
+		aria-checked={selectable ? selected : undefined}
+		tabindex={selectable ? 0 : undefined}
+	>
+		{#if selectable}
+			<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--color-border)] {selected ? 'bg-blue-600' : 'bg-[var(--color-surface-primary)]'}" data-testid="select-checkbox-{message.id}">
+				{#if selected}
+					<svg class="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+				{/if}
+			</div>
+		{/if}
 		<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-surface-tertiary)]">
 			<span class="text-xs font-medium text-[var(--color-text-primary)]">U</span>
 		</div>
@@ -192,7 +222,7 @@
 			{/if}
 			<p class="text-sm text-[var(--color-text-primary)] whitespace-pre-wrap break-words">{#if hasUserMentions}{#each userSegments as seg}{#if seg.type === "text"}{seg.text}{:else if seg.type === "mention"}<MentionChip name={seg.name} kind={seg.kind === 'ext' ? 'extension' : seg.kind === 'cmd' ? 'command' : seg.kind as 'agent' | 'team' | 'file' | 'dir'} tooltip={tooltipForMention(seg.name)} />{/if}{/each}{:else}{message.content}{/if}</p>
 		</div>
-		{#if !isStreaming}
+		{#if !isStreaming && !selectable}
 			<MessageToolbar
 				role="user"
 				{isError}
@@ -207,7 +237,21 @@
 		{/if}
 	</div>
 {:else}
-	<div class="group relative flex gap-3 px-4 py-3 rounded-lg hover:outline hover:outline-1 hover:outline-[var(--color-border)]">
+	<div
+		class="group relative flex gap-3 px-4 py-3 rounded-lg hover:outline hover:outline-1 hover:outline-[var(--color-border)] {selectable ? 'cursor-pointer' : ''} {selectable && selected ? 'outline outline-2 outline-blue-500' : ''}"
+		onclick={selectable ? () => onselectionchange?.(message.id) : undefined}
+		onkeydown={selectable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselectionchange?.(message.id); } } : undefined}
+		role={selectable ? 'checkbox' : undefined}
+		aria-checked={selectable ? selected : undefined}
+		tabindex={selectable ? 0 : undefined}
+	>
+		{#if selectable}
+			<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--color-border)] {selected ? 'bg-blue-600' : 'bg-[var(--color-surface-primary)]'}" data-testid="select-checkbox-{message.id}">
+				{#if selected}
+					<svg class="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+				{/if}
+			</div>
+		{/if}
 		<ProviderIcon provider={message.provider ?? "anthropic"} size="md" />
 		<div class="min-w-0 flex-1" title={usageTitle}>
 			{#if hasSiblings}
@@ -369,7 +413,7 @@
 				{/if}
 			</div>
 		</div>
-		{#if !isStreaming}
+		{#if !isStreaming && !selectable}
 			<MessageToolbar
 				role="assistant"
 				{isError}
@@ -381,6 +425,7 @@
 				onremovememory={onremovememory ? () => onremovememory!(message) : undefined}
 				{savedAsMemory}
 				onretry={onretry}
+				onedittext={onedittext ? () => onedittext!(message) : undefined}
 			/>
 		{/if}
 	</div>

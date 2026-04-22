@@ -9,10 +9,17 @@
 		createConversation,
 		createSubConversation,
 		updateConversation,
+		cloneTurns,
+		patchMessageContent,
 		type Message,
 		type Conversation,
 		type Mode,
 	} from "$lib/api.js";
+	import {
+		toggleSelection,
+		clearSelection,
+		orderedSelection,
+	} from "$lib/select-mode.js";
 	import {
 		store,
 		startStreaming,
@@ -61,6 +68,7 @@
 	import PermissionModeIndicator from "$lib/components/PermissionModeIndicator.svelte";
 	import ModeFormModal from "$lib/components/ModeFormModal.svelte";
 	import SkeletonLoader from "$lib/components/SkeletonLoader.svelte";
+	import Tooltip from "$lib/components/Tooltip.svelte";
 	import { inlineToolStore, type InlineToolCall } from "$lib/inline-tool-store.svelte.js";
 	import { invokeInlineTool } from "$lib/invoke-inline-tool.js";
 	import type { PermissionMode } from "$lib/permission-mode.js";
@@ -147,6 +155,16 @@
 	}
 
 	let settingsOpen = $state(false);
+	// Select Mode — lets users tick specific turns and fork them into a new chat.
+	// `selectedIds` is a fresh Set each toggle so Svelte's reactivity picks up changes.
+	let selectMode = $state(false);
+	let selectedIds = $state<Set<string>>(new Set());
+	let selectCloning = $state(false);
+	let selectError = $state<string | null>(null);
+	// Inline "Edit text" state for seeded assistant turns (content-only PATCH).
+	let editTextMessageId = $state<string | null>(null);
+	let editTextDraft = $state("");
+	let editTextSaving = $state(false);
 	let obsOpen = $state(false);
 	let showObsButton = $state(false);
 	let mobileConvListOpen = $state(false);
@@ -1758,6 +1776,66 @@
 		}
 	}
 
+	// ── Select Mode handlers ─────────────────────────────────────────────
+
+	function toggleSelectMode() {
+		selectMode = !selectMode;
+		if (!selectMode) {
+			selectedIds = clearSelection();
+			selectError = null;
+		}
+	}
+
+	function toggleSelectedMessage(id: string) {
+		selectedIds = toggleSelection(selectedIds, id);
+	}
+
+	async function handleForkSelection() {
+		if (selectedIds.size === 0 || selectCloning) return;
+		const orderedIds = orderedSelection(selectedIds, allMessages.map((m) => m.id));
+		selectCloning = true;
+		selectError = null;
+		try {
+			const newConv = await cloneTurns(convId, { messageIds: orderedIds });
+			selectedIds = clearSelection();
+			selectMode = false;
+			goto(`/project/${projectId}/chat/${newConv.id}`);
+		} catch (err) {
+			selectError = err instanceof Error ? err.message : "Failed to fork selected turns";
+			console.error("Failed to fork turns:", err);
+		} finally {
+			selectCloning = false;
+		}
+	}
+
+	// ── Inline "Edit text" for seeded assistant turns ────────────────────
+
+	function handleEditText(msg: Message) {
+		editTextMessageId = msg.id;
+		editTextDraft = msg.content;
+	}
+
+	function cancelEditText() {
+		editTextMessageId = null;
+		editTextDraft = "";
+	}
+
+	async function submitEditText() {
+		if (!editTextMessageId || !convId) return;
+		const targetId = editTextMessageId;
+		const draft = editTextDraft;
+		editTextSaving = true;
+		try {
+			const updated = await patchMessageContent(convId, targetId, draft);
+			allMessages = allMessages.map((m) => (m.id === targetId ? { ...m, content: updated.content } : m));
+			cancelEditText();
+		} catch (err) {
+			console.error("Failed to edit text:", err);
+		} finally {
+			editTextSaving = false;
+		}
+	}
+
 	function handleSelect(id: string) {
 		goto(`/project/${projectId}/chat/${id}`);
 	}
@@ -1847,13 +1925,16 @@
 			</span>
 			<div class="flex items-center gap-1 shrink-0">
 				<!-- Permission mode indicator -->
-				<PermissionModeIndicator {projectId} conversationId={convId} onmodechange={(mode) => { permissionModeOverride = mode; }} />
+				<Tooltip position="bottom" text="How tool-use permission is granted for this project (ask / auto / deny)">
+					<PermissionModeIndicator {projectId} conversationId={convId} onmodechange={(mode) => { permissionModeOverride = mode; }} />
+				</Tooltip>
 				<!-- Tool count indicator -->
+				<Tooltip position="bottom" text="Tools loaded in this chat ({loadedTools.length}) — click to inspect names and token cost">
 				<div class="relative">
 					<button
 						onclick={() => (toolsOpen = !toolsOpen)}
 						class="flex items-center rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors {toolsOpen ? 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-primary)]' : ''}"
-						title="Loaded tools ({loadedTools.length})"
+						aria-label="Loaded tools ({loadedTools.length})"
 					>
 						<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21.75 6.75a4.5 4.5 0 01-4.884 4.484c-1.076-.091-2.264.071-2.95.904l-7.152 8.684a2.548 2.548 0 11-3.586-3.586l8.684-7.152c.833-.686.995-1.874.904-2.95a4.5 4.5 0 016.336-4.486l-3.276 3.276a3.004 3.004 0 002.25 2.25l3.276-3.276c.256.565.398 1.192.398 1.852z" />
@@ -1888,11 +1969,13 @@
 						</div>
 					{/if}
 				</div>
+				</Tooltip>
+				<Tooltip position="bottom" text="Review files changed by tool calls in this conversation">
 				<button
 						data-testid="diff-panel-btn"
 						onclick={() => (diffPanelOpen = !diffPanelOpen)}
 						class="relative rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors {diffPanelOpen ? 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-primary)]' : ''}"
-						title="Diff summary"
+						aria-label="Diff summary"
 					>
 						<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5.586a1 1 0 01.293-.707l5.414-5.414A1 1 0 0115.414 0H17a2 2 0 012 2v17a2 2 0 01-2 2z" />
@@ -1901,22 +1984,42 @@
 							<span data-testid="diff-badge" class="absolute -bottom-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-bold leading-none text-white">{diffFileCount}</span>
 						{/if}
 					</button>
-				<ExportMenu conversationId={convId} leafMessageId={activeLeafId ?? undefined} />
+				</Tooltip>
+				<Tooltip position="bottom" text="Export this conversation as Markdown or JSON">
+					<ExportMenu conversationId={convId} leafMessageId={activeLeafId ?? undefined} />
+				</Tooltip>
 				{#if showObsButton}
+					<Tooltip position="bottom" text="Inspect tool-call traces and LLM request logs">
 					<button
 						onclick={() => (obsOpen = !obsOpen)}
 						class="rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors {obsOpen ? 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-primary)]' : ''}"
-						title="Inspect observability"
+						aria-label="Inspect observability"
 					>
 						<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 						</svg>
 					</button>
+					</Tooltip>
 				{/if}
+				<Tooltip position="bottom" text={isStreaming ? "Finish streaming turn before selecting" : selectMode ? "Exit select mode" : "Select turns to fork into a new chat"}>
+				<button
+					onclick={toggleSelectMode}
+					disabled={isStreaming}
+					class="rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed {selectMode ? 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-primary)]' : ''}"
+					aria-label={selectMode ? "Exit select mode" : "Select turns to fork into a new chat"}
+					data-testid="select-mode-toggle"
+					aria-pressed={selectMode}
+				>
+					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+					</svg>
+				</button>
+				</Tooltip>
+				<Tooltip position="bottom" text="Configure this conversation (model, system prompt, extensions)">
 				<button
 					onclick={() => (settingsOpen = true)}
 					class="rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
-					title="Conversation settings"
+					aria-label="Conversation settings"
 				>
 					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1924,6 +2027,7 @@
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
 					</svg>
 				</button>
+				</Tooltip>
 			</div>
 		</div>
 
@@ -2004,6 +2108,36 @@
 								</div>
 							</div>
 						</div>
+					{:else if editTextMessageId === msg.id}
+						<!-- Content-only edit UI for seeded assistant turns (no regen). -->
+						<div class="flex gap-3 px-4 py-3 bg-[var(--color-surface-secondary)] rounded-lg" data-testid="edit-text-form-{msg.id}">
+							<div class="min-w-0 flex-1">
+								<textarea
+									bind:value={editTextDraft}
+									class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] p-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none resize-y"
+									rows="4"
+									onkeydown={(e) => {
+										if (e.key === "Escape") cancelEditText();
+									}}
+								></textarea>
+								<div class="mt-2 flex gap-2">
+									<button
+										onclick={submitEditText}
+										disabled={editTextSaving}
+										class="rounded-md bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
+										data-testid="edit-text-save"
+									>
+										{editTextSaving ? "Saving…" : "Save"}
+									</button>
+									<button
+										onclick={cancelEditText}
+										class="rounded-md bg-[var(--color-surface-tertiary)] px-3 py-1 text-xs text-[var(--color-text-primary)] hover:bg-[var(--color-border)]"
+									>
+										Cancel
+									</button>
+								</div>
+							</div>
+						</div>
 					{:else}
 						<ChatMessage
 							message={msg}
@@ -2029,6 +2163,10 @@
 							onagentclick={(agent) => { selectedAgent = agent; }}
 							onsendmessage={handleSend}
 							onopenobservability={() => { obsOpen = true; }}
+							selectable={selectMode}
+							selected={selectedIds.has(msg.id)}
+							onselectionchange={toggleSelectedMessage}
+							onedittext={msg.role === 'assistant' ? handleEditText : undefined}
 						/>
 					{/if}
 
@@ -2204,28 +2342,63 @@
 			/>
 		{/if}
 
-		<!-- Input -->
-		<ChatInput
-			bind:this={chatInput}
-			onsubmit={handleSend}
-			onstop={handleStop}
-			streaming={isStreaming}
-			{selectedModel}
-			onmodelchange={handleModelChange}
-			onautoselect={handleModelAutoSelect}
-			{thinkingLevel}
-			onthinkinglevelchange={handleThinkingLevelChange}
-			{modelSupportsReasoning}
-			onreasoningchange={handleReasoningChange}
-			conversationId={convId}
-			{projectId}
-			ontoolinvoke={handleToolInvoke}
-			{sharedValues}
-			{selectedMode}
-			modes={availableModes}
-			onmodechange={handleModeChange}
-			onmodecreate={() => { showCreateModeModal = true; }}
-		/>
+		{#if selectMode}
+			<!-- Select-mode action bar replaces the composer so the fork action
+			     stays visible and un-confused with a normal send. -->
+			<div class="border-t border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3" data-testid="select-action-bar">
+				<div class="mx-auto flex max-w-3xl flex-col gap-2">
+					<div class="flex items-center justify-between gap-3">
+						<div class="text-sm text-[var(--color-text-primary)]">
+							<span data-testid="selected-count" class="font-medium">{selectedIds.size}</span>
+							{selectedIds.size === 1 ? 'turn' : 'turns'} selected
+						</div>
+						<div class="flex items-center gap-2">
+							<button
+								onclick={toggleSelectMode}
+								disabled={selectCloning}
+								class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-primary)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] disabled:opacity-50"
+							>
+								Cancel
+							</button>
+							<button
+								onclick={handleForkSelection}
+								disabled={selectedIds.size === 0 || selectCloning}
+								class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+								data-testid="new-chat-from-selection"
+							>
+								{selectCloning ? "Creating…" : "New Chat"}
+							</button>
+						</div>
+					</div>
+					{#if selectError}
+						<div class="text-xs text-red-400" role="alert">{selectError}</div>
+					{/if}
+				</div>
+			</div>
+		{:else}
+			<!-- Input -->
+			<ChatInput
+				bind:this={chatInput}
+				onsubmit={handleSend}
+				onstop={handleStop}
+				streaming={isStreaming}
+				{selectedModel}
+				onmodelchange={handleModelChange}
+				onautoselect={handleModelAutoSelect}
+				{thinkingLevel}
+				onthinkinglevelchange={handleThinkingLevelChange}
+				{modelSupportsReasoning}
+				onreasoningchange={handleReasoningChange}
+				conversationId={convId}
+				{projectId}
+				ontoolinvoke={handleToolInvoke}
+				{sharedValues}
+				{selectedMode}
+				modes={availableModes}
+				onmodechange={handleModeChange}
+				onmodecreate={() => { showCreateModeModal = true; }}
+			/>
+		{/if}
 	</div>
 
 	{#if currentConversation}

@@ -62,6 +62,26 @@ export interface MockOverrides {
 	commands?: Array<{ name: string; description: string; source?: string; body?: string }>;
 	/** Override specific routes: URL pattern -> handler */
 	routes?: Record<string, (url: URL) => unknown>;
+	/**
+	 * Per-message inline tool calls, keyed by `messageId`. Returned on the
+	 * conversation's `withToolCalls=true` GET alongside the message row, and
+	 * propagated through the `/clone-turns` mock so seeded turns in a forked
+	 * conversation still render their cards (matches the real server's
+	 * tool-call re-parenting during clone).
+	 */
+	messageToolCalls?: Record<string, Array<{
+		id: string;
+		extensionId: string;
+		toolName: string;
+		input: Record<string, unknown> | null;
+		outputSummary: string | null;
+		fullOutput?: string | null;
+		success: boolean;
+		durationMs: number;
+		status: "success" | "error" | "interrupted";
+		messageId?: string | null;
+		cardType?: string | null;
+	}>>;
 }
 
 const DEFAULT_PROJECT = makeProject({ id: "proj-1", name: "My Project" });
@@ -92,6 +112,7 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 	const subConversationToolCalls = overrides.subConversationToolCalls ?? {};
 	const settings = overrides.settings ?? {};
 	const routes = overrides.routes ?? {};
+	const messageToolCalls: Record<string, Array<any>> = { ...(overrides.messageToolCalls ?? {}) };
 
 	await page.route("**/api/**", (route) => {
 		const url = new URL(route.request().url());
@@ -205,7 +226,7 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 				}
 				return route.fulfill({
 					json: {
-						messages: convMessages.map(m => ({ ...m, toolCalls: [] })),
+						messages: convMessages.map(m => ({ ...m, toolCalls: messageToolCalls[m.id] ?? [] })),
 						subConversations: convSubConvos,
 						orphanedToolCalls: [],
 						subConversationToolCalls: subToolCallsForConv,
@@ -220,6 +241,71 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 			const convSubConvos = subConversations.filter(sc => sc.parentConversationId === convId);
 			return route.fulfill({ json: convSubConvos });
 		}
+		// Clone selected turns → new conversation (Select Mode → New Chat).
+		// Copies the picked messages into a fresh conv+id so the post-navigate
+		// GET /api/conversations/:newId/messages returns the seeded history.
+		if (path.match(/^\/api\/conversations\/[^/]+\/clone-turns$/) && method === "POST") {
+			const sourceConvId = path.split("/")[3]!;
+			const body = route.request().postDataJSON() as { messageIds: string[]; title?: string };
+			const source = conversations.find((c) => c.id === sourceConvId);
+			const srcTitle = source?.title ?? "Source";
+			const newConvId = "cloned-conv";
+			const newConv = makeConversation({
+				id: newConvId,
+				projectId: source?.projectId ?? "proj-1",
+				title: body.title ?? `Forked: ${srcTitle}`,
+			});
+			conversations.push(newConv);
+
+			// Copy each selected message with a fresh id, preserving order via
+			// the original createdAt. Rebuild the parent chain linearly.
+			const selected = messages
+				.filter((m) => m.conversationId === sourceConvId && body.messageIds.includes(m.id))
+				.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+			let prevId: string | null = null;
+			for (let i = 0; i < selected.length; i++) {
+				const src = selected[i]!;
+				const newMsgId = `cloned-msg-${i + 1}`;
+				const cloned = makeMessage({
+					id: newMsgId,
+					conversationId: newConvId,
+					role: src.role,
+					content: src.content,
+					parentMessageId: prevId,
+					createdAt: src.createdAt,
+				});
+				messages.push(cloned);
+				// Re-parent inline tool calls onto the cloned message id so the
+				// post-clone `withToolCalls=true` fetch finds them (mirrors the
+				// real server's behavior in `cloneTurnsIntoNewConversation`).
+				const srcCalls = messageToolCalls[src.id];
+				if (srcCalls && srcCalls.length > 0) {
+					messageToolCalls[newMsgId] = srcCalls.map((c, j) => ({
+						...c,
+						id: `cloned-tc-${i + 1}-${j}`,
+						messageId: newMsgId,
+					}));
+				}
+				prevId = newMsgId;
+			}
+
+			return route.fulfill({ status: 201, json: newConv });
+		}
+
+		// Content-only message PATCH (Edit text on seeded assistant turns).
+		if (path.match(/^\/api\/conversations\/[^/]+\/messages\/[^/]+$/) && method === "PATCH") {
+			const segments = path.split("/");
+			const convId = segments[3]!;
+			const messageId = segments[5]!;
+			const body = route.request().postDataJSON() as { content: string };
+			const idx = messages.findIndex((m) => m.id === messageId && m.conversationId === convId);
+			if (idx >= 0) {
+				messages[idx] = { ...messages[idx]!, content: body.content };
+				return route.fulfill({ json: messages[idx] });
+			}
+			return route.fulfill({ status: 404, json: { error: "Not found" } });
+		}
+
 		if (path.match(/^\/api\/conversations\/[^/]+\/messages$/) && method === "POST") {
 			const convId = path.split("/")[3]!;
 			const req = route.request();

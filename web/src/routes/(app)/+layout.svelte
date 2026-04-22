@@ -137,8 +137,8 @@
 
 	function isLinkActive(href: string): boolean {
 		const path = page.url.pathname;
-		// Home (/) and project Overview (/project/{id}) need exact match only
-		if (href === "/" || href === `/project/${store.activeProjectId}`) return path === href;
+		// Home (/) needs exact match only
+		if (href === "/") return path === href;
 		return path === href || path.startsWith(href + "/");
 	}
 
@@ -157,7 +157,6 @@
 					{ href: "/settings", label: "Settings", group: "Manage" },
 				]
 			: [
-					{ href: `/project/${store.activeProjectId}`, label: "Overview" },
 					{ href: `/project/${store.activeProjectId}/chat`, label: "Chat" },
 					{ href: "/memories", label: "Memories" },
 					{ href: `/project/${store.activeProjectId}/settings`, label: "Project Settings" },
@@ -291,7 +290,7 @@
 	{/if}
 
 	<!-- Main content -->
-	<main class="relative flex-1 overflow-y-auto {isChatRoute ? 'flex flex-col' : ''} {!isGlobalProject ? 'pb-14 md:pb-0' : ''}">
+	<main class="relative flex-1 overflow-y-auto {isChatRoute ? 'flex flex-col' : ''} pb-14 md:pb-0">
 		<!-- Mobile header (hidden on chat routes - chat has its own mobile header) -->
 		{#if !isChatRoute}
 		<div class="flex md:hidden items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3">
@@ -323,9 +322,7 @@
 			</div>
 		{/if}
 	</main>
-	{#if !isGlobalProject}
-		<MobileTabBar projectId={store.activeProjectId} currentPath={page.url.pathname} />
-	{/if}
+	<MobileTabBar projectId={store.activeProjectId} currentPath={page.url.pathname} />
 </div>
 
 <PullToRefresh />

@@ -3,12 +3,6 @@
 
 	let tabs = $derived([
 		{
-			label: "Overview",
-			href: `/project/${projectId}`,
-			active: currentPath === `/project/${projectId}` || currentPath === `/project/${projectId}/`,
-			icon: "dashboard",
-		},
-		{
 			label: "Chat",
 			href: `/project/${projectId}/chat`,
 			active: currentPath.includes("/chat"),
@@ -37,14 +31,7 @@
 			style="min-height: 48px;"
 			aria-current={tab.active ? "page" : undefined}
 		>
-			{#if tab.icon === "dashboard"}
-				<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
-					<rect x="3" y="3" width="7" height="7" rx="1" />
-					<rect x="14" y="3" width="7" height="7" rx="1" />
-					<rect x="3" y="14" width="7" height="7" rx="1" />
-					<rect x="14" y="14" width="7" height="7" rx="1" />
-				</svg>
-			{:else if tab.icon === "chat"}
+			{#if tab.icon === "chat"}
 				<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
 					<path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
 				</svg>

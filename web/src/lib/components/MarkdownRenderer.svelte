@@ -2,6 +2,8 @@
 	import { renderMarkdown } from "$lib/markdown.js";
 	import { copyToClipboard } from "$lib/clipboard.js";
 	import { highlightDiff } from "$lib/highlight-diff.js";
+	import { lightbox } from "$lib/image-lightbox.svelte.js";
+	import { attachImageFallbacks } from "$lib/image-error-handler.js";
 	import "$lib/hljs-theme.css";
 
 	let { content, streaming = false }: { content: string; streaming?: boolean } = $props();
@@ -15,8 +17,26 @@
 		if (body) highlightDiff(body);
 	});
 
+	// Wire error-fallback + zoom handlers for every rendered chat image.
+	$effect(() => {
+		void html;
+		if (body) attachImageFallbacks(body);
+	});
+
 	function handleClick(e: MouseEvent) {
 		const target = e.target as HTMLElement;
+
+		// Chat image → lightbox
+		const img = target.closest('img[data-chat-image="1"]') as HTMLImageElement | null;
+		if (img) {
+			e.preventDefault();
+			lightbox.show(
+				img.getAttribute('src') ?? '',
+				img.getAttribute('alt') ?? '',
+				img.getAttribute('data-original-url'),
+			);
+			return;
+		}
 
 		// Copy button
 		const copyBtn = target.closest('.copy-btn') as HTMLElement | null;
@@ -167,6 +187,35 @@
 		font-size: 0.75em;
 		font-weight: 600;
 		cursor: default;
+	}
+
+	.markdown-body :global(img.chat-image) {
+		max-width: min(512px, 100%);
+		max-height: 512px;
+		height: auto;
+		border-radius: 0.5rem;
+		border: 1px solid var(--color-border);
+		margin: 0.5em 0;
+		cursor: zoom-in;
+		background: var(--color-surface-tertiary);
+		display: block;
+	}
+
+	.markdown-body :global(.chat-image-fallback) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		margin: 0.5em 0;
+		border: 1px dashed var(--color-border);
+		border-radius: 0.5rem;
+		background: var(--color-surface-tertiary);
+		font-size: 0.85em;
+		color: var(--color-text-muted);
+	}
+	.markdown-body :global(.chat-image-fallback-link) {
+		color: var(--color-accent);
+		text-decoration: underline;
 	}
 
 	/* Highlight.js theme moved to `$lib/hljs-theme.css` (imported above) for reuse. */

@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { renderMarkdown, isDiffBlock } from "../markdown";
+import { renderMarkdown, isDiffBlock, isSafeImageSrc } from "../markdown";
 
 describe("renderMarkdown", () => {
 	test("returns empty string for empty content", () => {
@@ -298,5 +298,181 @@ describe("diff rendering", () => {
 		const html = renderMarkdown("```javascript\n" + code + "\n```");
 		expect(html).not.toContain("diff-container");
 		expect(html).toContain("code-block-wrapper");
+	});
+});
+
+describe("isSafeImageSrc", () => {
+	test("accepts https urls", () => {
+		expect(isSafeImageSrc("https://example.com/x.png")).toBe(true);
+	});
+	test("accepts http urls", () => {
+		expect(isSafeImageSrc("http://example.com/x.png")).toBe(true);
+	});
+	test("accepts data: image URIs", () => {
+		expect(isSafeImageSrc("data:image/png;base64,iVBOR")).toBe(true);
+	});
+	test("accepts blob: URIs", () => {
+		expect(isSafeImageSrc("blob:https://example.com/xyz")).toBe(true);
+	});
+	test("accepts absolute path /foo.png", () => {
+		expect(isSafeImageSrc("/foo.png")).toBe(true);
+	});
+	test("rejects protocol-relative urls", () => {
+		expect(isSafeImageSrc("//example.com/x.png")).toBe(false);
+	});
+	test("rejects javascript: URIs", () => {
+		expect(isSafeImageSrc("javascript:alert(1)")).toBe(false);
+	});
+	test("rejects file: URIs", () => {
+		expect(isSafeImageSrc("file:///etc/passwd")).toBe(false);
+	});
+	test("rejects data: non-image URIs", () => {
+		expect(isSafeImageSrc("data:text/html,<script>alert(1)</script>")).toBe(false);
+	});
+	test("rejects empty and whitespace", () => {
+		expect(isSafeImageSrc("")).toBe(false);
+		expect(isSafeImageSrc("   ")).toBe(false);
+	});
+	test("rejects malformed / non-URL strings", () => {
+		// URL() throws for bare identifiers without a scheme; we catch and reject.
+		expect(isSafeImageSrc("not a url")).toBe(false);
+		expect(isSafeImageSrc("http://")).toBe(false);
+		expect(isSafeImageSrc("abc")).toBe(false);
+	});
+});
+
+describe("markdown image rendering", () => {
+	test("https image renders as <img> with chat-image marker and lazy loading", () => {
+		const html = renderMarkdown("![a cat](https://example.com/cat.png)");
+		expect(html).toContain('data-chat-image="1"');
+		expect(html).toContain('loading="lazy"');
+		expect(html).toContain('decoding="async"');
+		expect(html).toContain('src="https://example.com/cat.png"');
+		expect(html).toContain('alt="a cat"');
+		expect(html).toContain('data-original-url="https://example.com/cat.png"');
+		expect(html).toContain('class="chat-image"');
+		expect(html).toContain('referrerpolicy="no-referrer"');
+	});
+
+	test("data:image URI renders as <img>", () => {
+		const html = renderMarkdown("![](data:image/png;base64,AAA)");
+		expect(html).toContain('data-chat-image="1"');
+		expect(html).toContain("data:image/png;base64,AAA");
+	});
+
+	test("javascript: URI is NOT rendered as <img>", () => {
+		const html = renderMarkdown("![x](javascript:alert(1))");
+		// Must not produce an <img> element whose src is the javascript: URI.
+		expect(html).not.toMatch(/<img[^>]*src="javascript:/i);
+	});
+
+	test("file: URI is NOT rendered as <img>", () => {
+		const html = renderMarkdown("![x](file:///etc/passwd)");
+		expect(html).not.toMatch(/<img[^>]*src="file:/i);
+	});
+
+	test("image title attribute is preserved", () => {
+		const html = renderMarkdown('![alt](https://example.com/x.png "hover text")');
+		expect(html).toContain('title="hover text"');
+	});
+
+	test("image alt text cannot escape the attribute to inject a script tag", () => {
+		const html = renderMarkdown('![<script>alert(1)</script>](https://example.com/x.png)');
+		// No live <script> element — angle brackets inside attr values are legal
+		// HTML and harmless; only a tag-level <script>...</script> matters.
+		expect(html).not.toMatch(/<script[\s>]/i);
+	});
+
+	test("image href double-quote is encoded so it cannot close the src attribute", () => {
+		const html = renderMarkdown('![x](https://example.com/x.png"onerror="alert(1))');
+		// The raw `"` inside the URL must be HTML-encoded inside the src attr so it
+		// cannot terminate the attribute value and inject `onerror=`.
+		const imgTag = html.match(/<img[^>]*>/i)?.[0] ?? "";
+		expect(imgTag).not.toContain('onerror="alert');
+		expect(imgTag).toMatch(/src="[^"]*"/);
+	});
+
+	test("no image in markdown → no <img> in output", () => {
+		const html = renderMarkdown("just some text");
+		expect(html).not.toContain("<img");
+	});
+
+	test("image works inside paragraph with surrounding text", () => {
+		const html = renderMarkdown("Here is ![cat](https://example.com/c.png) a cat.");
+		expect(html).toContain("<img");
+		expect(html).toContain("a cat.");
+	});
+
+	test("DOMPurify preserves loading, decoding, referrerpolicy on <img>", () => {
+		const html = renderMarkdown("![](https://example.com/x.png)");
+		expect(html).toMatch(/loading="lazy"/);
+		expect(html).toMatch(/decoding="async"/);
+		expect(html).toMatch(/referrerpolicy="no-referrer"/);
+	});
+});
+
+describe("table rendering", () => {
+	const TABLE_MD = "| Name | Age |\n| --- | ---:|\n| Alice | 30 |\n| Bob | 25 |";
+
+	test("renders a table with thead/tbody/tr/th/td", () => {
+		const html = renderMarkdown(TABLE_MD);
+		expect(html).toContain("table-wrapper");
+		expect(html).toContain("<thead>");
+		expect(html).toContain("<tbody>");
+		expect(html).toContain("<th");
+		expect(html).toContain("<td");
+		expect(html).toContain("Alice");
+		expect(html).toContain("Bob");
+	});
+
+	test("preserves column alignment via inline style", () => {
+		const html = renderMarkdown(TABLE_MD);
+		expect(html).toContain('style="text-align:right"');
+	});
+
+	test("escapes HTML in table cells", () => {
+		const unsafe = "| A | B |\n| --- | --- |\n| <script>alert(1)</script> | x |";
+		const html = renderMarkdown(unsafe);
+		expect(html).not.toMatch(/<script[\s>]/i);
+	});
+});
+
+describe("mention pill rendering", () => {
+	test("renders agent mention as pill span", () => {
+		const html = renderMarkdown("hey ![agent:my-agent] how are you");
+		expect(html).toContain("!my-agent");
+		expect(html).toMatch(/display:inline-flex/);
+	});
+
+	test("renders file mention as pill span showing basename", () => {
+		const html = renderMarkdown("see @[file:src/foo/bar.ts]");
+		// basename only in the pill display
+		expect(html).toContain("bar.ts");
+		expect(html).toMatch(/title="src\/foo\/bar\.ts"/);
+	});
+
+	test("renders dir mention as pill with trailing slash", () => {
+		const html = renderMarkdown("in @[dir:src/foo]");
+		expect(html).toContain("foo/");
+	});
+
+	test("renders slash-command mention as pill", () => {
+		const html = renderMarkdown("run /[cmd:init] now");
+		expect(html).toContain("/init");
+	});
+
+	test("renders ext mention as pill", () => {
+		const html = renderMarkdown("with ![ext:my-ext]");
+		expect(html).toContain("!my-ext");
+	});
+
+	test("renders team mention as pill", () => {
+		const html = renderMarkdown("with ![team:t1]");
+		expect(html).toContain("!t1");
+	});
+
+	test("file mention without directory shows raw name", () => {
+		const html = renderMarkdown("see @[file:foo.ts]");
+		expect(html).toContain("foo.ts");
 	});
 });

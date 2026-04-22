@@ -16,6 +16,7 @@ const DOMPURIFY_CONFIG = {
 		'href', 'src', 'alt', 'title', 'class', 'id', 'target',
 		'rel', 'data-mention', 'data-citation', 'colspan', 'rowspan',
 		'data-code', 'data-view', 'data-expanded', 'style',
+		'loading', 'decoding', 'referrerpolicy',
 	],
 	ALLOW_DATA_ATTR: true,
 };
@@ -47,8 +48,34 @@ function renderDiffBlock(text: string): string {
 	return `<div class="diff-container" data-view="side-by-side"><div class="diff-header"><button class="diff-toggle-btn">Unified</button></div>${fileHeaders}<div class="diff-view-side">${sideBySideHtml}</div><div class="diff-view-unified" style="display:none">${unifiedHtml}</div></div>`;
 }
 
+/** Is this a safe src we'd let through to an <img>? */
+export function isSafeImageSrc(href: string): boolean {
+	const trimmed = href.trim();
+	if (!trimmed) return false;
+	if (trimmed.startsWith("//")) return false;
+	if (trimmed.startsWith("data:image/")) return true;
+	if (trimmed.startsWith("blob:")) return true;
+	if (trimmed.startsWith("/")) return true;
+	try {
+		const u = new URL(trimmed);
+		return u.protocol === "https:" || u.protocol === "http:";
+	} catch {
+		return false;
+	}
+}
+
 function makeRenderers(highlightFn: (text: string, lang?: string) => string, enableDiffRendering = false) {
 	return {
+		image({ href, title, text }: { href: string; title?: string | null; text: string }) {
+			if (!isSafeImageSrc(href)) {
+				return escapeHtml(`![${text}](${href})`);
+			}
+			const altAttr = ` alt="${escapeHtml(text ?? "")}"`;
+			const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+			const srcAttr = ` src="${escapeHtml(href)}"`;
+			const dataUrlAttr = ` data-original-url="${escapeHtml(href)}"`;
+			return `<img${srcAttr}${altAttr}${titleAttr} loading="lazy" decoding="async" referrerpolicy="no-referrer" data-chat-image="1"${dataUrlAttr} class="chat-image" />`;
+		},
 		code({ text, lang }: { text: string; lang?: string }) {
 			if (enableDiffRendering && isDiffBlock(text, lang)) {
 				return renderDiffBlock(text);

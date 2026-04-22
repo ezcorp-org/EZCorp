@@ -11,6 +11,7 @@
 	import CommandPalette from "$lib/components/CommandPalette.svelte";
 	import ShortcutHelp from "$lib/components/ShortcutHelp.svelte";
 	import ToastContainer from "$lib/components/ToastContainer.svelte";
+	import ImageLightbox from "$lib/components/ImageLightbox.svelte";
 	import QuickStartChecklist from "$lib/components/QuickStartChecklist.svelte";
 	import ConnectionBanner from "$lib/components/chat/ConnectionBanner.svelte";
 	import MobileTabBar from "$lib/components/MobileTabBar.svelte";
@@ -328,6 +329,7 @@
 <PullToRefresh />
 <ConnectionBanner />
 <ToastContainer />
+<ImageLightbox />
 
 <!-- Mobile overlay drawer -->
 <SwipeDrawer

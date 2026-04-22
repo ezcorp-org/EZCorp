@@ -300,6 +300,147 @@ export async function getSiblings(parentMessageId: string): Promise<Message[]> {
     .orderBy(asc(messages.createdAt));
 }
 
+/**
+ * Clone a selection of turns from `sourceConvId` into a brand-new conversation.
+ *
+ * Builds a fresh linear parent chain across the selected messages (original
+ * branching is discarded). Inline tool calls whose `messageId` is in the
+ * selection travel along, re-parented to the cloned message ids. The new
+ * conversation inherits `projectId / model / provider / systemPrompt /
+ * agentConfigId / modeId` from the source and `userId` from the caller.
+ *
+ * Used by the "Select Mode → New Chat" feature in the chat window so users
+ * can fork a subset of turns into a fresh conversation and continue from
+ * there without losing role formatting or tool-call context.
+ */
+export async function cloneTurnsIntoNewConversation(
+  sourceConvId: string,
+  messageIds: string[],
+  opts: { userId?: string | null; title?: string },
+): Promise<{ conversation: Conversation; messageIdMap: Map<string, string> }> {
+  if (!sourceConvId) throw new Error("sourceConvId is required");
+  if (!Array.isArray(messageIds) || messageIds.length === 0) {
+    throw new Error("messageIds must be a non-empty array");
+  }
+
+  const db = getDb();
+
+  const source = await getConversation(sourceConvId);
+  if (!source) throw new Error("Source conversation not found");
+
+  // Deduplicate — clients occasionally pass duplicates when they wire up
+  // checkbox toggles; dedupe here so the cloned chain doesn't have copies.
+  const uniqueIds = Array.from(new Set(messageIds));
+
+  const selected = await db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.conversationId, sourceConvId), inArray(messages.id, uniqueIds)))
+    .orderBy(asc(messages.createdAt));
+
+  if (selected.length !== uniqueIds.length) {
+    throw new Error("One or more messageIds do not belong to the source conversation");
+  }
+
+  const newConv = await createConversation(source.projectId, {
+    title: opts.title ?? `Forked: ${source.title}`,
+    model: source.model ?? undefined,
+    provider: source.provider ?? undefined,
+    systemPrompt: source.systemPrompt ?? undefined,
+    agentConfigId: source.agentConfigId ?? undefined,
+    userId: opts.userId ?? undefined,
+  });
+
+  try {
+    const messageIdMap = new Map<string, string>();
+    let prevNewId: string | null = null;
+
+    for (const src of selected) {
+      const inserted: MessageRow[] = await db
+        .insert(messages)
+        .values({
+          conversationId: newConv.id,
+          role: src.role,
+          content: src.content,
+          thinkingContent: src.thinkingContent ?? null,
+          model: src.model ?? null,
+          provider: src.provider ?? null,
+          usage: src.usage ?? null,
+          // runId is intentionally cleared — the clone is a fresh history and
+          // must not link back to the source's LLM run rows (memoriesUsed,
+          // etc. are deliberately not inherited).
+          runId: null,
+          parentMessageId: prevNewId,
+        })
+        .returning();
+      const newMsg = inserted[0]!;
+      messageIdMap.set(src.id, newMsg.id);
+      prevNewId = newMsg.id;
+    }
+
+    // Clone inline tool calls whose messageId is in our selection. We do NOT
+    // clone conversation-level tool calls (messageId = null) — those belong
+    // to the source conversation as a whole, not to the ported turns.
+    const sourceCalls = await db
+      .select()
+      .from(toolCalls)
+      .where(and(eq(toolCalls.conversationId, sourceConvId), inArray(toolCalls.messageId, uniqueIds)))
+      .orderBy(asc(toolCalls.createdAt));
+
+    for (const tc of sourceCalls) {
+      const remappedMessageId = tc.messageId ? messageIdMap.get(tc.messageId) ?? null : null;
+      if (!remappedMessageId) continue;
+      await db.insert(toolCalls).values({
+        conversationId: newConv.id,
+        messageId: remappedMessageId,
+        extensionId: tc.extensionId,
+        toolName: tc.toolName,
+        input: tc.input,
+        output: tc.output,
+        success: tc.success,
+        durationMs: tc.durationMs,
+        cardType: tc.cardType ?? null,
+        userId: opts.userId ?? null,
+        agentConfigId: tc.agentConfigId ?? null,
+        model: tc.model ?? null,
+        provider: tc.provider ?? null,
+      });
+    }
+
+    return { conversation: newConv, messageIdMap };
+  } catch (err) {
+    // Best-effort rollback: ON DELETE CASCADE wipes the child messages and
+    // tool_calls rows we just inserted, so the database is left consistent.
+    await db.delete(conversations).where(eq(conversations.id, newConv.id)).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Content-only update of a message (no branching, no regen). Used by the
+ * assistant-turn "Edit text" affordance on seeded turns in cloned chats.
+ * Callers are expected to have already verified conversation ownership and
+ * that the message belongs to `conversationId`.
+ */
+export async function updateMessageContent(
+  conversationId: string,
+  messageId: string,
+  content: string,
+): Promise<Message | null> {
+  const db = getDb();
+  const rows = await db
+    .update(messages)
+    .set({ content })
+    .where(and(eq(messages.conversationId, conversationId), eq(messages.id, messageId)))
+    .returning();
+  if (rows.length === 0) return null;
+  await db
+    .update(conversations)
+    .set({ updatedAt: sql`NOW()` })
+    .where(eq(conversations.id, conversationId));
+  return rows[0]!;
+}
+
 export async function getLatestLeaf(conversationId: string): Promise<Message | null> {
   const db = getDb();
   // Deterministic tiebreak on id DESC — when two leaves share the same

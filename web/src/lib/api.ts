@@ -434,6 +434,42 @@ export async function deleteConversation(id: string): Promise<void> {
 	checkResponse(res);
 }
 
+/**
+ * Fork a subset of turns from an existing conversation into a brand-new one.
+ * Server-side also clones associated inline tool calls. Returns the new
+ * conversation row so the caller can navigate to its URL.
+ */
+export async function cloneTurns(
+	sourceConvId: string,
+	data: { messageIds: string[]; title?: string },
+): Promise<Conversation> {
+	const res = await fetch(`${BASE}/api/conversations/${sourceConvId}/clone-turns`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(data),
+	});
+	checkResponse(res);
+	return res.json();
+}
+
+/**
+ * Content-only update of a message (no branching, no regen). Used by the
+ * assistant-turn "Edit text" affordance on seeded turns in cloned chats.
+ */
+export async function patchMessageContent(
+	conversationId: string,
+	messageId: string,
+	content: string,
+): Promise<Message> {
+	const res = await fetch(`${BASE}/api/conversations/${conversationId}/messages/${messageId}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ content }),
+	});
+	checkResponse(res);
+	return res.json();
+}
+
 // ── Modes ───────────────────────────────────────────────────────────
 
 export async function fetchModes(): Promise<Mode[]> {

@@ -19,5 +19,11 @@ export const updateConversationSchema = z.object({
   modeId: z.string().uuid().nullable().optional(),
 });
 
+export const cloneTurnsSchema = z.object({
+  messageIds: z.array(z.string().uuid("Invalid messageId")).min(1, "Select at least one turn").max(500),
+  title: z.string().max(500).optional(),
+});
+
 export type CreateConversationInput = z.infer<typeof createConversationSchema>;
 export type UpdateConversationInput = z.infer<typeof updateConversationSchema>;
+export type CloneTurnsInput = z.infer<typeof cloneTurnsSchema>;

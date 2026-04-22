@@ -33,7 +33,7 @@ test.describe("Waterfall Timeline", () => {
 		await page.waitForTimeout(500);
 
 		// Click the observability inspect button (if it shows)
-		const obsButton = page.locator('button[title="Inspect observability"]');
+		const obsButton = page.locator('button[aria-label="Inspect observability"]');
 		if (await obsButton.isVisible({ timeout: 2000 }).catch(() => false)) {
 			await obsButton.click();
 
@@ -87,7 +87,7 @@ test.describe("Waterfall Timeline", () => {
 		await page.goto(`/project/${proj.id}/chat/${conv.id}`);
 		await page.waitForTimeout(500);
 
-		const obsButton = page.locator('button[title="Inspect observability"]');
+		const obsButton = page.locator('button[aria-label="Inspect observability"]');
 		if (await obsButton.isVisible({ timeout: 2000 }).catch(() => false)) {
 			await obsButton.click();
 
@@ -135,7 +135,7 @@ test.describe("Waterfall Timeline", () => {
 		await page.goto(`/project/${proj.id}/chat/${conv.id}`);
 		await page.waitForTimeout(500);
 
-		const obsButton = page.locator('button[title="Inspect observability"]');
+		const obsButton = page.locator('button[aria-label="Inspect observability"]');
 		if (await obsButton.isVisible({ timeout: 2000 }).catch(() => false)) {
 			await obsButton.click();
 

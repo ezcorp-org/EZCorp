@@ -37,7 +37,7 @@
 		onclick={() => (open = !open)}
 		disabled={exporting}
 		class="rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
-		title="Export conversation"
+		aria-label="Export conversation"
 	>
 		<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"

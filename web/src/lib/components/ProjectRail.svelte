@@ -29,7 +29,7 @@
 
 	function selectProject(id: string) {
 		setActiveProjectId(id);
-		goto(id === "global" ? "/project/global/chat" : `/project/${id}`);
+		goto(`/project/${id}/chat`);
 	}
 
 	function onProjectEnter(id: string, e: MouseEvent) {

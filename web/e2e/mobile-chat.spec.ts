@@ -161,7 +161,7 @@ test.describe("Mobile Chat", () => {
 		await expect(page.getByText("Hello from mobile!")).toBeVisible({ timeout: 5000 });
 
 		// Click the tools button to open the popover
-		const toolsBtn = page.locator("button[title^='Loaded tools']");
+		const toolsBtn = page.locator("button[aria-label^='Loaded tools']");
 		await expect(toolsBtn).toBeVisible();
 		await toolsBtn.click();
 
@@ -281,7 +281,7 @@ test.describe("Mobile Chat", () => {
 		await expect(page.getByText("Hello from mobile!")).toBeVisible({ timeout: 5000 });
 
 		// The observability button should appear because we set showObservability to true
-		const obsBtn = page.locator("button[title='Inspect observability']");
+		const obsBtn = page.locator("button[aria-label='Inspect observability']");
 		await expect(obsBtn).toBeVisible({ timeout: 5000 });
 		await obsBtn.click();
 

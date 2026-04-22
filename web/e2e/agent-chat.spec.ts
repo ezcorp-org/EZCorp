@@ -95,7 +95,7 @@ test.describe("Agent Chat Flow", () => {
 		await page.waitForLoadState("networkidle");
 
 		// Open settings
-		await page.getByTitle("Conversation settings").click();
+		await page.getByLabel("Conversation settings").click();
 
 		// Should show read-only prompt managed by agent
 		await expect(page.getByText("managed by the agent persona")).toBeVisible();
@@ -122,7 +122,7 @@ test.describe("Agent Chat Flow", () => {
 		await page.waitForLoadState("networkidle");
 
 		// Open settings
-		await page.getByTitle("Conversation settings").click();
+		await page.getByLabel("Conversation settings").click();
 
 		// Should have an editable textarea
 		await expect(page.locator("#conv-prompt")).toBeVisible();

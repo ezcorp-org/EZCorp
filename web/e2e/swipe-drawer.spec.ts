@@ -217,7 +217,7 @@ test.describe("Swipe Drawer", () => {
 			},
 		});
 
-		const obsBtn = page.locator("button[title='Inspect observability']");
+		const obsBtn = page.locator("button[aria-label='Inspect observability']");
 		await expect(obsBtn).toBeVisible({ timeout: 5000 });
 		await obsBtn.click();
 
@@ -234,7 +234,7 @@ test.describe("Swipe Drawer", () => {
 			},
 		});
 
-		const obsBtn = page.locator("button[title='Inspect observability']");
+		const obsBtn = page.locator("button[aria-label='Inspect observability']");
 		await expect(obsBtn).toBeVisible({ timeout: 5000 });
 		await obsBtn.click();
 

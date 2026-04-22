@@ -44,7 +44,7 @@
 		bind:this={buttonEl}
 		onclick={() => (dropdownOpen = !dropdownOpen)}
 		class="flex items-center gap-1.5 rounded px-2 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors {dropdownOpen ? 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-primary)]' : ''}"
-		title="Permission mode: {modeToLabel(currentMode)}"
+		aria-label="Permission mode: {modeToLabel(currentMode)}"
 	>
 		<span class="inline-block h-2 w-2 rounded-full {modeToColor(currentMode)}"></span>
 		<span>{modeToLabel(currentMode)}</span>

@@ -14,7 +14,7 @@ const mockTools = {
 };
 
 function toolButton(page: import("@playwright/test").Page) {
-	return page.locator('button[title^="Loaded tools"]');
+	return page.locator('button[aria-label^="Loaded tools"]');
 }
 
 function popover(page: import("@playwright/test").Page) {

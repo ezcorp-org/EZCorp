@@ -14,7 +14,7 @@
 			const project = await createProject(data);
 			refreshProjects();
 			setActiveProjectId(project.id);
-			goto(`/project/${project.id}`);
+			goto(`/project/${project.id}/chat`);
 		} finally {
 			submitting = false;
 		}

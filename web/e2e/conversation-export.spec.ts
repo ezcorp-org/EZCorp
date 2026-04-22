@@ -17,8 +17,8 @@ test.describe("Conversation Export", () => {
 		});
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		// The export button has title="Export conversation"
-		const exportBtn = page.locator('[title="Export conversation"]');
+		// The export button has aria-label="Export conversation"
+		const exportBtn = page.locator('[aria-label="Export conversation"]');
 		await expect(exportBtn).toBeVisible({ timeout: 5000 });
 	});
 
@@ -33,7 +33,7 @@ test.describe("Conversation Export", () => {
 		});
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		const exportBtn = page.locator('[title="Export conversation"]');
+		const exportBtn = page.locator('[aria-label="Export conversation"]');
 		await exportBtn.click();
 
 		await expect(page.getByText("Export as Markdown")).toBeVisible({ timeout: 3000 });
@@ -51,7 +51,7 @@ test.describe("Conversation Export", () => {
 		});
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		await page.locator('[title="Export conversation"]').click();
+		await page.locator('[aria-label="Export conversation"]').click();
 
 		const dropdown = page.locator(".export-menu");
 		await expect(dropdown.getByText("Export as Markdown")).toBeVisible({ timeout: 3000 });
@@ -82,7 +82,7 @@ test.describe("Conversation Export", () => {
 
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		await page.locator('[title="Export conversation"]').click();
+		await page.locator('[aria-label="Export conversation"]').click();
 		await page.getByText("Export as Markdown").click();
 
 		await page.waitForTimeout(500);
@@ -114,7 +114,7 @@ test.describe("Conversation Export", () => {
 
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		await page.locator('[title="Export conversation"]').click();
+		await page.locator('[aria-label="Export conversation"]').click();
 		await page.getByText("Export as JSON").click();
 
 		await page.waitForTimeout(500);
@@ -140,7 +140,7 @@ test.describe("Conversation Export", () => {
 
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		await page.locator('[title="Export conversation"]').click();
+		await page.locator('[aria-label="Export conversation"]').click();
 		await expect(page.getByText("Export as Markdown")).toBeVisible({ timeout: 3000 });
 
 		await page.getByText("Export as Markdown").click();
@@ -160,7 +160,7 @@ test.describe("Conversation Export", () => {
 		});
 		await page.goto(`/project/proj-1/chat/conv-1`);
 
-		await page.locator('[title="Export conversation"]').click();
+		await page.locator('[aria-label="Export conversation"]').click();
 		await expect(page.getByText("Export as Markdown")).toBeVisible({ timeout: 3000 });
 
 		// Click somewhere outside the export menu

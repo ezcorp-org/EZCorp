@@ -622,6 +622,12 @@ export async function migrate(db: any): Promise<void> {
   await db.execute(sql`UPDATE agent_configs SET model = '__current__' WHERE model IS NULL`);
 
   // ── Extension Storage (isolated per-extension KV) ─────────────────
+  //
+  // The upsert key uses NULLS NOT DISTINCT (Postgres 15+) so that
+  // scope='global' rows — which store scope_id as NULL — collide on
+  // their (extension_id, scope, key) prefix during onConflictDoUpdate.
+  // A plain UNIQUE(…) would treat every NULL as distinct, silently
+  // inserting duplicates for global-scope keys. PGlite 0.3+ is PG16.
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS extension_storage (
       id TEXT PRIMARY KEY,
@@ -635,8 +641,41 @@ export async function migrate(db: any): Promise<void> {
       expires_at TIMESTAMP WITH TIME ZONE,
       created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-      UNIQUE(extension_id, scope, scope_id, key)
+      CONSTRAINT extension_storage_upsert_key
+        UNIQUE NULLS NOT DISTINCT (extension_id, scope, scope_id, key)
     )
+  `);
+  // Migration for databases created before the NULLS NOT DISTINCT fix:
+  // dedupe duplicate global-scope rows (keep lowest id deterministically),
+  // drop the old auto-named UNIQUE, install the correctly-named constraint.
+  // Idempotent — skipped once extension_storage_upsert_key exists.
+  await db.execute(sql`
+    DO $$
+    DECLARE cname TEXT;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'extension_storage_upsert_key'
+      ) THEN
+        DELETE FROM extension_storage a USING extension_storage b
+        WHERE a.id < b.id
+          AND a.extension_id = b.extension_id
+          AND a.scope = b.scope
+          AND a.scope_id IS NOT DISTINCT FROM b.scope_id
+          AND a.key = b.key;
+        SELECT conname INTO cname FROM pg_constraint
+        WHERE conrelid = 'extension_storage'::regclass
+          AND contype = 'u'
+          AND array_length(conkey, 1) = 4
+        LIMIT 1;
+        IF cname IS NOT NULL THEN
+          EXECUTE 'ALTER TABLE extension_storage DROP CONSTRAINT ' || quote_ident(cname);
+        END IF;
+        ALTER TABLE extension_storage
+          ADD CONSTRAINT extension_storage_upsert_key
+          UNIQUE NULLS NOT DISTINCT (extension_id, scope, scope_id, key);
+      END IF;
+    END $$
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ext_storage_lookup ON extension_storage(extension_id, scope, scope_id, key)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ext_storage_extension ON extension_storage(extension_id)`);

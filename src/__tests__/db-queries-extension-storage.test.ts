@@ -41,6 +41,22 @@ describe("extension-storage queries", () => {
     expect(got!.sizeBytes).toBe(12);
   });
 
+  test("setStorageValue upserts on (ext, scope, NULL scopeId, key) — no duplicate rows", async () => {
+    // Regression for the bug where plain UNIQUE(…) treated NULL scope_id as
+    // distinct, letting two calls with the same key silently insert two rows.
+    // Post-fix: NULLS NOT DISTINCT makes them collide and the second wins.
+    await setStorageValue(EXT, "global", null, "same-key", "first", false, 5);
+    await setStorageValue(EXT, "global", null, "same-key", "second", false, 6);
+
+    const got = await getStorageValue(EXT, "global", null, "same-key");
+    expect(got!.value).toBe("second");
+    expect(got!.sizeBytes).toBe(6);
+
+    const keys = await listStorageKeys(EXT, "global", null);
+    const hits = keys.filter((k) => k.key === "same-key");
+    expect(hits.length).toBe(1);
+  });
+
   test("getStorageValue returns null when key missing", async () => {
     const got = await getStorageValue(EXT, "global", null, "missing");
     expect(got).toBeNull();

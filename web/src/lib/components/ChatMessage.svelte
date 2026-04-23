@@ -11,7 +11,7 @@
 	import AgentChip from "./AgentChip.svelte";
 	import MentionChip from "./MentionChip.svelte";
 	import ProviderIcon from "./ProviderIcon.svelte";
-	import AttachmentCard from "./AttachmentCard.svelte";
+	import MessageAttachments from "./MessageAttachments.svelte";
 	import { getSegments } from "$lib/mention-logic.js";
 
 	interface ProviderUnavailableError {
@@ -222,13 +222,7 @@
 				</div>
 			{/if}
 			<p class="text-sm text-[var(--color-text-primary)] whitespace-pre-wrap break-words">{#if hasUserMentions}{#each userSegments as seg}{#if seg.type === "text"}{seg.text}{:else if seg.type === "mention"}<MentionChip name={seg.name} kind={seg.kind === 'ext' ? 'extension' : seg.kind === 'cmd' ? 'command' : seg.kind as 'agent' | 'team' | 'file' | 'dir'} tooltip={tooltipForMention(seg.name)} />{/if}{/each}{:else}{message.content}{/if}</p>
-			{#if message.attachments && message.attachments.length > 0}
-				<div class="mt-2 flex flex-wrap gap-2" data-testid="message-attachments">
-					{#each message.attachments as att (att.id)}
-						<AttachmentCard attachment={att} />
-					{/each}
-				</div>
-			{/if}
+			<MessageAttachments attachments={message.attachments} />
 		</div>
 		{#if !isStreaming && !selectable}
 			<MessageToolbar
@@ -272,13 +266,7 @@
 					<MemoriesCard memories={memoriesUsed!} />
 				</div>
 			{/if}
-			{#if message.attachments && message.attachments.length > 0}
-				<div class="mb-2 flex flex-wrap gap-2" data-testid="message-attachments">
-					{#each message.attachments as att (att.id)}
-						<AttachmentCard attachment={att} />
-					{/each}
-				</div>
-			{/if}
+			<MessageAttachments attachments={message.attachments} />
 			{#if isStreaming && !displayContent && !(contentBlocks && contentBlocks.length > 0)}
 				<SkeletonLoader statusText={`${streamingStatus ?? 'Thinking...'}${streamingStartedAt ? ` (${elapsedText})` : ''}`} />
 			{:else if isError && !isStreaming}

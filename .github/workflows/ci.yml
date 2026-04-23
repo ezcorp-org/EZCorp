@@ -20,10 +20,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: cd web && bun install --frozen-lockfile
-      # Generate SvelteKit's `./$types` codegen so api routes resolve.
-      - run: cd web && bunx --bun svelte-kit sync
-      # Non-blocking until the audit-flagged baseline of pre-existing tsc
-      # errors is paid down. CI surfaces the count so regressions are
-      # visible in PRs without breaking the merge gate.
+      # scripts/typecheck.sh runs backend (tsconfig.typecheck.json) + web
+      # (svelte-kit sync + scoped tsc). Both currently pass, so this is a
+      # hard gate.
       - run: bun run typecheck
-        continue-on-error: true

@@ -245,4 +245,49 @@ describe("POST /api/conversations/:id/messages (multi-modal)", () => {
     const body = await res.json();
     expect(body.attachments).toEqual([]);
   });
+
+  test("POST response includes AttachmentSummary with id + kind and no storagePath leak", async () => {
+    const req = buildMultipartRequest(
+      { content: "shape check", provider: "anthropic", model: "claude-3-5-sonnet-20241022" },
+      [{ name: "cat.png", type: "image/png", bytes: PNG_1x1 }],
+    );
+    const res = await invokePost(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.attachments.length).toBe(1);
+    const a = body.attachments[0];
+    expect(typeof a.id).toBe("string");
+    expect(a.id.length).toBeGreaterThan(0);
+    expect(a.filename).toBe("cat.png");
+    expect(a.mimeType).toBe("image/png");
+    expect(a.kind).toBe("image");
+    expect(typeof a.sizeBytes).toBe("number");
+    expect(a.storagePath).toBeUndefined();
+
+    // Also embedded on userMessage so optimistic replacement carries cards.
+    expect(body.userMessage.attachments).toBeDefined();
+    expect(body.userMessage.attachments[0].id).toBe(a.id);
+    expect(body.userMessage.attachments[0].storagePath).toBeUndefined();
+
+    // Defensive: no storagePath anywhere in the JSON stringified response.
+    expect(JSON.stringify(body)).not.toContain("/tmp/");
+    expect(JSON.stringify(body)).not.toContain(".ezcorp/attachments");
+  });
+
+  test("POST with multiple images returns one summary per file, stable order", async () => {
+    const req = buildMultipartRequest(
+      { content: "two", provider: "anthropic", model: "claude-3-5-sonnet-20241022" },
+      [
+        { name: "a.png", type: "image/png", bytes: PNG_1x1 },
+        { name: "b.png", type: "image/png", bytes: PNG_1x1 },
+      ],
+    );
+    const res = await invokePost(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.attachments.length).toBe(2);
+    expect(body.attachments[0].filename).toBe("a.png");
+    expect(body.attachments[1].filename).toBe("b.png");
+    expect(body.attachments[0].id).not.toBe(body.attachments[1].id);
+  });
 });

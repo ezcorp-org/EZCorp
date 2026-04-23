@@ -13,6 +13,7 @@ import { getCapabilities, classifyMime } from "$server/providers/model-capabilit
 import { validateAttachment } from "$server/chat/attachments/validator";
 import { writeAttachment, deleteForMessage } from "$server/chat/attachments/storage";
 import type { StagedAttachment } from "$server/chat/attachments/content-builder";
+import type { AttachmentSummary } from "$server/db/queries/conversations";
 import { buildCommandResolver } from "$lib/server/command-resolver";
 import type { RequestHandler } from "./$types";
 
@@ -136,6 +137,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 
   // ── Attachment pipeline ──────────────────────────────────────────
   let stagedAttachments: StagedAttachment[] = [];
+  let attachmentSummaries: AttachmentSummary[] = [];
   let userMessage: Awaited<ReturnType<typeof convQueries.createMessage>> | null = null;
 
   if (body.files.length > 0) {
@@ -187,7 +189,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
           mimeType: v.canonicalMime,
           bytes: v.bytes,
         });
-        await attachmentsDb.insertAttachment({
+        const row = await attachmentsDb.insertAttachment({
           messageId: userMessage.id,
           conversationId,
           filename: v.file.name,
@@ -197,9 +199,17 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
           kind,
         });
         stagedAttachments.push({
+          id: row.id,
           filename: v.file.name,
           mimeType: v.canonicalMime,
           storagePath: written.storagePath,
+        });
+        attachmentSummaries.push({
+          id: row.id,
+          filename: row.filename,
+          mimeType: row.mimeType,
+          sizeBytes: row.sizeBytes,
+          kind: row.kind,
         });
       }
     } catch (err) {
@@ -244,5 +254,9 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
     console.error("[messages] streamChat error:", err instanceof Error ? err.message : err);
   });
 
-  return json({ userMessage, runId, attachments: stagedAttachments });
+  const userMessageWithAttachments =
+    attachmentSummaries.length > 0
+      ? { ...userMessage, attachments: attachmentSummaries }
+      : userMessage;
+  return json({ userMessage: userMessageWithAttachments, runId, attachments: attachmentSummaries });
 };

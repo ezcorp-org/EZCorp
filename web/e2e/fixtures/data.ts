@@ -1,4 +1,4 @@
-import type { Agent, Run, Project, Conversation, Message, Pipeline, AgentConfig, ProviderStatus } from "../../src/lib/api.js";
+import type { Agent, Run, Project, Conversation, Message, Pipeline, AgentConfig, ProviderStatus, AttachmentSummary } from "../../src/lib/api.js";
 
 let idCounter = 0;
 const nextId = () => `test-${++idCounter}`;
@@ -106,6 +106,18 @@ export function makeMessage(overrides: Partial<Message> = {}): Message {
 		runId: null,
 		parentMessageId: null,
 		createdAt: "2026-01-01T00:00:00.000Z",
+		...overrides,
+	};
+}
+
+export function makeAttachment(overrides: Partial<AttachmentSummary> = {}): AttachmentSummary {
+	const id = overrides.id ?? nextId();
+	return {
+		id,
+		filename: "file.png",
+		mimeType: "image/png",
+		sizeBytes: 1024,
+		kind: "image",
 		...overrides,
 	};
 }

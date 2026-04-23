@@ -1418,9 +1418,15 @@
 				attachments,
 			});
 
-			// Replace optimistic user message with real one
+			// Replace optimistic user message with real one.
+			// Merge attachments from the top-level response field so the card
+			// renders immediately even if the server skipped embedding them on
+			// userMessage.
+			const realUserMsg: Message = result.attachments && result.attachments.length > 0
+				? { ...result.userMessage, attachments: result.attachments }
+				: result.userMessage;
 			allMessages = allMessages.map((m) =>
-				m.id === optimisticUserMsg.id ? result.userMessage : m,
+				m.id === optimisticUserMsg.id ? realUserMsg : m,
 			);
 
 			// Start streaming (returns false if run already errored)

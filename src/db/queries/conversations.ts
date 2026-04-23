@@ -1,6 +1,7 @@
 import { eq, desc, asc, sql, and, or, isNull, inArray, notInArray } from "drizzle-orm";
 import { getDb } from "../connection";
 import { conversations, messages, toolCalls, agentConfigs, runs } from "../schema";
+import { listAttachmentsForMessages } from "./attachments";
 import { getSetting } from "./settings";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -8,7 +9,44 @@ import { getSetting } from "./settings";
 type Conversation = typeof conversations.$inferSelect;
 type MessageRow = typeof messages.$inferSelect;
 type MemoryUsed = { id: string; content: string; category: string };
-type Message = MessageRow & { memoriesUsed?: MemoryUsed[] };
+export type AttachmentSummary = {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  kind: "image" | "text" | "pdf" | "audio";
+};
+type Message = MessageRow & { memoriesUsed?: MemoryUsed[]; attachments?: AttachmentSummary[] };
+
+/**
+ * Batch-attach sanitized attachment summaries to each message. `storagePath`
+ * is intentionally dropped — it's a server-side FS path that must never reach
+ * the client. The serving route at /api/attachments/[id] resolves the path
+ * server-side, so the client only needs the id + display metadata.
+ */
+async function attachAttachments(msgs: Message[]): Promise<Message[]> {
+  const ids = msgs.map((m) => m.id);
+  const rows = await listAttachmentsForMessages(ids);
+  if (rows.length === 0) return msgs;
+
+  const byMessage = new Map<string, AttachmentSummary[]>();
+  for (const row of rows) {
+    const list = byMessage.get(row.messageId) ?? [];
+    list.push({
+      id: row.id,
+      filename: row.filename,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      kind: row.kind,
+    });
+    byMessage.set(row.messageId, list);
+  }
+
+  return msgs.map((m) => {
+    const attachments = byMessage.get(m.id);
+    return attachments ? { ...m, attachments } : m;
+  });
+}
 
 /**
  * Batch-attach `memoriesUsed` from the runs table. memoriesUsed is already
@@ -252,7 +290,8 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(asc(messages.createdAt));
-  return attachMemoriesUsed(rows);
+  const withMem = await attachMemoriesUsed(rows);
+  return attachAttachments(withMem);
 }
 
 // ── Branching ────────────────────────────────────────────────────────
@@ -289,7 +328,8 @@ export async function getConversationPath(
     SELECT * FROM path ORDER BY created_at ASC
   `);
   const rows = (result.rows as Record<string, unknown>[]).map(rowToMessage);
-  return attachMemoriesUsed(rows);
+  const withMem = await attachMemoriesUsed(rows);
+  return attachAttachments(withMem);
 }
 
 export async function getSiblings(parentMessageId: string): Promise<Message[]> {

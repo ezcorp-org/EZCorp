@@ -311,17 +311,33 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 			const req = route.request();
 			const ct = req.headers()["content-type"] ?? "";
 			let content = "sent";
-			const attachments: Array<{ filename: string; mimeType: string }> = [];
+			// Match AttachmentSummary shape returned by the real server:
+			// { id, filename, mimeType, sizeBytes, kind }. Tests that inspect
+			// the optimistic card render rely on all five fields.
+			type AttachmentKind = "image" | "text" | "pdf" | "audio";
+			const attachments: Array<{
+				id: string; filename: string; mimeType: string; sizeBytes: number; kind: AttachmentKind;
+			}> = [];
 			if (ct.startsWith("multipart/form-data")) {
-				// Playwright doesn't parse multipart, but we can extract the
-				// boundary and filenames from the raw body for verification.
 				const raw = req.postDataBuffer()?.toString("binary") ?? "";
 				const contentMatch = /name="content"\r\n\r\n([\s\S]*?)\r\n--/.exec(raw);
 				if (contentMatch) content = contentMatch[1]!;
 				const fileRe = /name="files";\s*filename="([^"]+)"\r\nContent-Type: ([^\r\n]+)/g;
 				let m: RegExpExecArray | null;
+				let i = 0;
 				while ((m = fileRe.exec(raw)) !== null) {
-					attachments.push({ filename: m[1]!, mimeType: m[2]! });
+					const mime = m[2]!.trim();
+					const kind: AttachmentKind =
+						mime.startsWith("image/") ? "image" :
+						mime === "application/pdf" ? "pdf" :
+						mime.startsWith("audio/") ? "audio" : "text";
+					attachments.push({
+						id: `att-sent-${++i}`,
+						filename: m[1]!,
+						mimeType: mime,
+						sizeBytes: 1,
+						kind,
+					});
 				}
 			} else {
 				const body = req.postDataJSON();
@@ -332,8 +348,29 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 				conversationId: convId,
 				role: "user",
 				content,
+				// Merge attachments onto userMessage so the optimistic replacement
+				// path exercises its attachments render.
+				...(attachments.length > 0 ? { attachments } as any : {}),
 			});
 			return route.fulfill({ json: { userMessage: userMsg, runId: "run-stream", attachments } });
+		}
+
+		// Attachment bytes — tests that render history images hit this route
+		// via AttachmentCard. Tests install a per-id route.fulfill via
+		// page.route BEFORE `mockApi` to serve specific bytes; this fallback
+		// catches the case where no override is installed, returning a 1×1
+		// transparent PNG so the <img> onload fires and the card stays in
+		// its "image" rendering path.
+		if (path.match(/^\/api\/attachments\/[^/]+$/) && method === "GET") {
+			const ONE_PIXEL_PNG = Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+				"base64",
+			);
+			return route.fulfill({
+				status: 200,
+				contentType: "image/png",
+				body: ONE_PIXEL_PNG,
+			});
 		}
 
 		// Model capabilities — keyed by provider+model query params

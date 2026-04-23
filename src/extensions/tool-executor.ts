@@ -82,6 +82,10 @@ export class PermissionDeniedError extends Error {
  * Orchestrates tool calls between LLM and extension subprocesses.
  * Permission checking is injectable (not hard-imported from permissions.ts).
  */
+export type ArgsResolver = (
+  input: Record<string, unknown>,
+) => Promise<Record<string, unknown>> | Record<string, unknown>;
+
 export class ToolExecutor {
   private permissionChecker?: PermissionChecker;
   private bus?: EventBus<AgentEvents>;
@@ -94,6 +98,7 @@ export class ToolExecutor {
   private currentAgentConfigId?: string;
   private executor?: AgentExecutor;
   private spawnQuota?: SpawnQuota;
+  private argsResolver?: ArgsResolver;
 
   constructor(
     private registry: ExtensionRegistry,
@@ -150,6 +155,13 @@ export class ToolExecutor {
     this.spawnQuota = quota;
   }
 
+  /** Register a pre-call transformer for tool args. Used to substitute
+   *  symbolic references (e.g. `ez-attachment://<id>` handles) with their
+   *  concrete values before the extension subprocess receives them. */
+  setArgsResolver(fn: ArgsResolver): void {
+    this.argsResolver = fn;
+  }
+
   /** Execute a tool call through the extension subprocess.
    *
    *  `invocationMetadata` (Phase 4 §5.1a) is opaque per-turn data threaded
@@ -176,6 +188,13 @@ export class ToolExecutor {
 
     const extensionId = registered.extensionId;
     const originalName = registered.originalName;
+
+    // Resolve symbolic arg references (e.g. attachment handles → data URIs)
+    // before permission checks + subprocess dispatch. A resolver failure
+    // should not silently drop args, so any error propagates.
+    if (this.argsResolver) {
+      input = await this.argsResolver(input);
+    }
 
     // Permission check (if checker is set)
     if (this.permissionChecker) {

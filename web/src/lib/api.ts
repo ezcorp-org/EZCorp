@@ -359,6 +359,14 @@ export interface Mode {
 	builtin: boolean;
 }
 
+export interface AttachmentSummary {
+	id: string;
+	filename: string;
+	mimeType: string;
+	sizeBytes: number;
+	kind: "image" | "text" | "pdf" | "audio";
+}
+
 export interface Message {
 	id: string;
 	conversationId: string;
@@ -374,6 +382,9 @@ export interface Message {
 	/** Memories injected into the system prompt for this assistant turn.
 	 *  Sourced server-side from runs.result.output.memoriesUsed. */
 	memoriesUsed?: { id: string; content: string; category: string }[];
+	/** Files the user uploaded with this turn. Populated by the server
+	 *  message-loading paths; served as bytes via /api/attachments/:id. */
+	attachments?: AttachmentSummary[];
 }
 
 export interface SearchResult {
@@ -560,7 +571,7 @@ export async function fetchAllMessages(conversationId: string): Promise<Message[
 export async function sendMessage(
 	conversationId: string,
 	data: { content: string; provider?: string; model?: string; parentMessageId?: string; editOf?: string; permissionMode?: string; thinkingLevel?: string; attachments?: File[] },
-): Promise<{ userMessage: Message; runId: string; attachments?: Array<{ filename: string; mimeType: string; storagePath: string }> }> {
+): Promise<{ userMessage: Message; runId: string; attachments?: AttachmentSummary[] }> {
 	const url = `${BASE}/api/conversations/${conversationId}/messages`;
 	let res: Response;
 	if (data.attachments && data.attachments.length > 0) {

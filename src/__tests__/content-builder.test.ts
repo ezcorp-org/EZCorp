@@ -78,8 +78,8 @@ describe("buildUserContent", () => {
     expect(out).toBe("just words");
   });
 
-  test("image on vision model → ImageContent with base64 + mimeType", async () => {
-    const att: StagedAttachment = { filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
+  test("image on vision model → ImageContent with base64 + mimeType + handle ref block", async () => {
+    const att: StagedAttachment = { id: "att-cat", filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
     const out = await buildUserContent("look", [att], vision);
     expect(Array.isArray(out)).toBe(true);
     const parts = out as any[];
@@ -87,10 +87,15 @@ describe("buildUserContent", () => {
     expect(parts[1].type).toBe("image");
     expect(parts[1].mimeType).toBe("image/png");
     expect(parts[1].data).toBe(Buffer.from(PNG_1x1).toString("base64"));
+    // Trailing text part exposes a short opaque handle (not raw bytes) so
+    // the context stays cheap; the executor resolves it at tool-dispatch time.
+    expect(parts[2].type).toBe("text");
+    expect(parts[2].text).toContain(`handle="ez-attachment://att-cat"`);
+    expect(parts[2].text).not.toContain("data:image/png;base64,");
   });
 
   test("text file → TextContent with <file name=...> wrapper", async () => {
-    const att: StagedAttachment = { filename: "readme.txt", mimeType: "text/plain", storagePath: txtPath };
+    const att: StagedAttachment = { id: "att-txt", filename: "readme.txt", mimeType: "text/plain", storagePath: txtPath };
     const out = await buildUserContent("", [att], vision);
     expect(Array.isArray(out)).toBe(true);
     const parts = out as any[];
@@ -101,7 +106,7 @@ describe("buildUserContent", () => {
   });
 
   test("PDF → TextContent with extracted text wrapped", async () => {
-    const att: StagedAttachment = { filename: "doc.pdf", mimeType: "application/pdf", storagePath: pdfPath };
+    const att: StagedAttachment = { id: "att-pdf", filename: "doc.pdf", mimeType: "application/pdf", storagePath: pdfPath };
     const out = await buildUserContent("summarize", [att], textOnly);
     const parts = out as any[];
     expect(parts[0]).toEqual({ type: "text", text: "summarize" });
@@ -111,7 +116,7 @@ describe("buildUserContent", () => {
   });
 
   test("image on non-vision model → UnsupportedAttachmentError", async () => {
-    const att: StagedAttachment = { filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
+    const att: StagedAttachment = { id: "att-cat", filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
     let err: any;
     try { await buildUserContent("x", [att], textOnly); } catch (e) { err = e; }
     expect(err).toBeInstanceOf(UnsupportedAttachmentError);
@@ -120,14 +125,90 @@ describe("buildUserContent", () => {
   });
 
   test("multiple attachments are preserved in order after the text part", async () => {
-    const a: StagedAttachment = { filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
-    const b: StagedAttachment = { filename: "readme.txt", mimeType: "text/plain", storagePath: txtPath };
+    const a: StagedAttachment = { id: "att-cat", filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
+    const b: StagedAttachment = { id: "att-txt", filename: "readme.txt", mimeType: "text/plain", storagePath: txtPath };
     const out = await buildUserContent("caption", [a, b], vision);
     const parts = out as any[];
-    expect(parts.length).toBe(3);
+    // text + image + text-file wrapper + handle ref block
+    expect(parts.length).toBe(4);
     expect(parts[0].type).toBe("text");
     expect(parts[1].type).toBe("image");
     expect(parts[2].type).toBe("text");
     expect(parts[2].text).toContain("hello file");
+    expect(parts[3].type).toBe("text");
+    expect(parts[3].text).toContain(`handle="ez-attachment://att-cat"`);
+  });
+
+  test("multiple images each get their own indexed entry in the ref block", async () => {
+    const a: StagedAttachment = { id: "att-cow", filename: "cow.png", mimeType: "image/png", storagePath: pngPath };
+    const b: StagedAttachment = { id: "att-man", filename: "man.png", mimeType: "image/png", storagePath: pngPath };
+    const out = await buildUserContent("replace farmer with man", [a, b], vision);
+    const parts = out as any[];
+    // text + 2 images + handle ref block
+    expect(parts.length).toBe(4);
+    const refs = parts[3].text as string;
+    expect(refs).toContain(`index="1" filename="cow.png" mimeType="image/png" handle="ez-attachment://att-cow"`);
+    expect(refs).toContain(`index="2" filename="man.png" mimeType="image/png" handle="ez-attachment://att-man"`);
+    // Ref block is short — no inline base64 payloads.
+    expect(refs).not.toContain("data:image/png;base64,");
+  });
+
+  test("text/PDF-only attachments do not emit a ref block", async () => {
+    const att: StagedAttachment = { id: "att-txt", filename: "readme.txt", mimeType: "text/plain", storagePath: txtPath };
+    const out = await buildUserContent("parse", [att], vision);
+    const parts = out as any[];
+    expect(parts.length).toBe(2);
+    expect(parts[0].type).toBe("text");
+    expect(parts[1].text).toContain("hello file");
+    expect(parts[1].text).not.toContain("<attachment");
+  });
+
+  test("images-only, no user text → parts are image + ref block", async () => {
+    const att: StagedAttachment = { id: "att-lone", filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
+    const out = await buildUserContent("", [att], vision);
+    const parts = out as any[];
+    expect(parts.length).toBe(2);
+    expect(parts[0].type).toBe("image");
+    expect(parts[1].type).toBe("text");
+    expect(parts[1].text).toContain(`handle="ez-attachment://att-lone"`);
+  });
+
+  test("filename containing a double quote is escaped to single quote in the ref block", async () => {
+    const att: StagedAttachment = { id: "att-q", filename: `weird"name".png`, mimeType: "image/png", storagePath: pngPath };
+    const out = await buildUserContent("x", [att], vision);
+    const parts = out as any[];
+    const refs = parts[2].text as string;
+    // The attribute value is wrapped in "...", so embedded " is replaced with '.
+    expect(refs).toContain(`filename="weird'name'.png"`);
+    expect(refs).not.toContain(`weird"name"`);
+  });
+
+  test("PDF + image mix emits PDF text wrapper separately and the image-only ref block", async () => {
+    const img: StagedAttachment = { id: "att-img", filename: "cat.png", mimeType: "image/png", storagePath: pngPath };
+    const pdf: StagedAttachment = { id: "att-pdf", filename: "doc.pdf", mimeType: "application/pdf", storagePath: pdfPath };
+    const out = await buildUserContent("look", [img, pdf], vision);
+    const parts = out as any[];
+    // text + image + pdf-wrapper + ref block (images only)
+    expect(parts.length).toBe(4);
+    expect(parts[0].type).toBe("text");
+    expect(parts[1].type).toBe("image");
+    expect(parts[2].type).toBe("text");
+    expect(parts[2].text).toContain(`<file name="doc.pdf"`);
+    expect(parts[3].type).toBe("text");
+    expect(parts[3].text).toContain(`handle="ez-attachment://att-img"`);
+    expect(parts[3].text).not.toContain("att-pdf");
+  });
+
+  test("handle index increments across images even if non-image attachments are mixed in", async () => {
+    const img1: StagedAttachment = { id: "att-1", filename: "a.png", mimeType: "image/png", storagePath: pngPath };
+    const txt: StagedAttachment = { id: "att-txt2", filename: "notes.txt", mimeType: "text/plain", storagePath: txtPath };
+    const img2: StagedAttachment = { id: "att-2", filename: "b.png", mimeType: "image/png", storagePath: pngPath };
+    const out = await buildUserContent("", [img1, txt, img2], vision);
+    const parts = out as any[];
+    const refs = parts[parts.length - 1].text as string;
+    expect(refs).toContain(`index="1" filename="a.png"`);
+    expect(refs).toContain(`index="2" filename="b.png"`);
+    // No reference to text file handle.
+    expect(refs).not.toContain("att-txt2");
   });
 });

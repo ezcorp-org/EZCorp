@@ -480,8 +480,20 @@ export class AgentExecutor {
       })(),
     ]);
 
-    // Convert DB messages to pi-ai Message format
-    const history: Message[] = branchMessages.map((m) => {
+    // Rehydrate past-turn attachments into history so images uploaded on
+    // earlier turns (and their `ez-attachment://` handles) remain visible +
+    // resolvable on the current turn. Server-only code path — storagePath
+    // never leaks past the pi-ai call below.
+    const { loadPastAttachments, rehydrateUserMessageContent } =
+      await import("../chat/attachments/history-rehydrate");
+    const pastCaps = options.provider && options.model
+      ? (await import("../providers/model-capabilities")).getCapabilities(options.provider, options.model)
+      : null;
+    const { byMessage: pastByMessage, all: allPastAttachments } = pastCaps
+      ? await loadPastAttachments(branchMessages).catch(() => ({ byMessage: new Map(), all: [] }))
+      : { byMessage: new Map(), all: [] };
+
+    const history: Message[] = await Promise.all(branchMessages.map(async (m): Promise<Message> => {
       if (m.role === "assistant") {
         return {
           role: "assistant" as const,
@@ -494,12 +506,16 @@ export class AgentExecutor {
           timestamp: Date.now(),
         } satisfies AssistantMessage;
       }
+      const attsForMsg = pastByMessage.get(m.id) ?? [];
+      const content = pastCaps
+        ? await rehydrateUserMessageContent(m.content, attsForMsg, pastCaps)
+        : m.content;
       return {
         role: "user" as const,
-        content: m.content,
+        content,
         timestamp: Date.now(),
       } satisfies UserMessage;
-    });
+    }));
 
     let system = resolvedSystem;
 
@@ -512,6 +528,27 @@ export class AgentExecutor {
 
     let agentTools: AgentTool[] = [];
     const toolAbortControllers = new Map<string, AbortController>();
+
+    // Build the attachment-handle resolver for this turn. The content-builder
+    // emits `ez-attachment://<id>` handles in the LLM-visible text; when the
+    // LLM echoes them back in tool args, this resolver substitutes the real
+    // `data:<mime>;base64,<bytes>` URI before the extension subprocess sees
+    // them. Includes BOTH this turn's staged attachments AND all attachments
+    // from earlier user messages in the branch, so handles emitted on any
+    // prior turn remain resolvable in a later tool call.
+    const attachmentArgsResolver = await (async () => {
+      const currentTurn = options.attachments ?? [];
+      if (currentTurn.length === 0 && allPastAttachments.length === 0) return null;
+      const { buildAttachmentHandleResolver, toResolvableAttachments } =
+        await import("../chat/attachments/handle-resolver");
+      // Dedupe by id so we don't double-read bytes when the current turn's
+      // attachment is also present in history (can happen if the caller
+      // resends the same files verbatim).
+      const byId = new Map<string, typeof allPastAttachments[number]>();
+      for (const a of allPastAttachments) byId.set(a.id, a);
+      for (const a of currentTurn) byId.set(a.id, a);
+      return buildAttachmentHandleResolver(toResolvableAttachments(Array.from(byId.values())));
+    })();
     let builtinToolDefsMap = new Map<string, import("./tools/types").BuiltinToolDef>();
     let unsubModeChange: (() => void) | undefined;
 
@@ -623,6 +660,7 @@ export class AgentExecutor {
               if (this._stateMediator) toolExec.setStateMediator(this._stateMediator);
               toolExec.setExecutor(this);
               toolExec.setSpawnQuota(this._spawnQuota);
+              if (attachmentArgsResolver) toolExec.setArgsResolver(attachmentArgsResolver);
               // Thread the conversation owner's id into the tool executor
               // so bundled extensions (ai-kit) can act on-behalf-of the
               // real user when they call back into this server.
@@ -680,6 +718,7 @@ export class AgentExecutor {
             if (this._stateMediator) toolExec.setStateMediator(this._stateMediator);
             toolExec.setExecutor(this);
             toolExec.setSpawnQuota(this._spawnQuota);
+            if (attachmentArgsResolver) toolExec.setArgsResolver(attachmentArgsResolver);
             // See comment above — ai-kit and friends need the conversation
             // owner's id to create rows on their behalf, plus the CURRENT
             // TURN's model + provider (options.*, falling back to the
@@ -882,6 +921,7 @@ export class AgentExecutor {
                   if (this._stateMediator) toolExec.setStateMediator(this._stateMediator);
                   toolExec.setExecutor(this);
                   toolExec.setSpawnQuota(this._spawnQuota);
+                  if (attachmentArgsResolver) toolExec.setArgsResolver(attachmentArgsResolver);
                   if (convRecord?.userId) toolExec.setCurrentUserId(convRecord.userId);
                   toolExec.setCurrentModel(options.model ?? convRecord?.model);
                   toolExec.setCurrentProvider(options.provider ?? convRecord?.provider);

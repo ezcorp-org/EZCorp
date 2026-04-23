@@ -34,7 +34,7 @@ function matchRateLimitRoute(pathname: string, method: string): RateLimitRoute |
 describe("middleware: payload size enforcement", () => {
   test("rejects POST with Content-Length exceeding 1MB default", () => {
     const size = 2 * 1024 * 1024; // 2MB
-    const max = getMaxPayload("/api/conversations");
+    const max = getMaxPayload("/api/agents/run");
     expect(size > max).toBe(true);
 
     const response = payloadTooLarge(max);
@@ -43,7 +43,7 @@ describe("middleware: payload size enforcement", () => {
 
   test("accepts POST within 1MB default", () => {
     const size = 500 * 1024; // 500KB
-    const max = getMaxPayload("/api/conversations");
+    const max = getMaxPayload("/api/agents/run");
     expect(size <= max).toBe(true);
   });
 

@@ -119,12 +119,17 @@ describe("hooks middleware - rate limiter integration", () => {
 
 describe("hooks middleware - payload size check", () => {
   test("returns default 1MB for normal routes", () => {
-    expect(getMaxPayload("/api/conversations")).toBe(1024 * 1024);
     expect(getMaxPayload("/api/agents/run")).toBe(1024 * 1024);
+    expect(getMaxPayload("/api/account")).toBe(1024 * 1024);
   });
 
   test("returns 50MB for knowledge-base routes", () => {
     expect(getMaxPayload("/api/knowledge-base")).toBe(50 * 1024 * 1024);
     expect(getMaxPayload("/api/knowledge-base/upload")).toBe(50 * 1024 * 1024);
+  });
+
+  test("returns 100MB for conversation routes (multi-modal chat attachments)", () => {
+    expect(getMaxPayload("/api/conversations")).toBe(100 * 1024 * 1024);
+    expect(getMaxPayload("/api/conversations/abc/messages")).toBe(100 * 1024 * 1024);
   });
 });

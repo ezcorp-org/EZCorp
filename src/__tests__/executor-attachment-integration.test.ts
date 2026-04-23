@@ -18,6 +18,7 @@ import { stubAssistantMessage } from "./helpers/mock-pi-ai";
 import { resolve, join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import type { Model, Api } from "@mariozechner/pi-ai";
 import type { AgentEvents } from "../types";
 
 mockDbConnection();
@@ -45,18 +46,27 @@ mock.module("../providers/credentials", () => ({
   getApiKey: async () => "test-key",
 }));
 
+// Annotated with Model<Api> so new required fields in pi-ai surface as
+// compile errors here rather than runtime surprises. "image" in `input` is
+// load-bearing — content-builder reads it to pick the handle-ref delivery
+// strategy.
+const MOCK_MODEL: Model<Api> = {
+  id: "test-model",
+  name: "test-model",
+  provider: "anthropic",
+  api: "anthropic-messages",
+  baseUrl: "",
+  reasoning: false,
+  input: ["text", "image"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 200000,
+  maxTokens: 4096,
+};
+
 mock.module("@mariozechner/pi-ai", () => ({
   stream: () => ({ [Symbol.asyncIterator]: async function* () {}, result: async () => stubAssistantMessage() }),
   complete: async () => stubAssistantMessage(),
-  getModel: () => ({
-    id: "test-model", provider: "anthropic", api: "anthropic-messages",
-    baseUrl: "", reasoning: false,
-    // Must include "image" so the content-builder emits ImageContent + handle
-    // ref block. Matches what `getCapabilities` reads to pick delivery strategy.
-    input: ["text", "image"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200000, maxTokens: 4096,
-  }),
+  getModel: () => MOCK_MODEL,
   getModels: () => [],
   getProviders: () => ["anthropic", "openai", "google"],
   getEnvApiKey: () => undefined,

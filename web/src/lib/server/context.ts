@@ -4,6 +4,7 @@ import { AgentExecutor } from "$server/runtime/executor";
 import { PipelineExecutor } from "$server/runtime/pipeline-executor";
 import { loadYamlPipelines } from "$server/runtime/pipeline-loader";
 import { initDb } from "$server/db/connection";
+import { validateEnv } from "$server/env-validation";
 import { loadDbPipelines } from "$server/db/queries/pipelines";
 import { startBackups, stopBackups } from "$server/db/backup";
 import { ensureBundledExtensions } from "$server/extensions/bundled";
@@ -45,6 +46,7 @@ export async function ensureInitialized(): Promise<void> {
   if (initialized) return;
   initialized = true;
 
+  validateEnv();
   await initDb();
   startBackups();
   const registry = ExtensionRegistry.getInstance();

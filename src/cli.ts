@@ -7,6 +7,7 @@ import { formatAgentList } from "./ui/format";
 import { connectToEventBus } from "./ui/terminal";
 import type { AgentEvents } from "./types";
 import { initDb } from "./db/connection";
+import { validateEnv } from "./env-validation";
 import { getProjectByName } from "./db/queries/projects";
 import { loadDbPipelines } from "./db/queries/pipelines";
 import { installFromLocal, installWithDependencies, updateExtension as updateExt, removeExtension as removeExt, checkForUpdates } from "./extensions/installer";
@@ -297,6 +298,7 @@ async function findDependents(targetName: string, allExts?: Awaited<ReturnType<t
 // ── CLI entry ───────────────────────────────────────────────────────
 
 export async function cli(args: string[]): Promise<void> {
+  validateEnv();
   const parsed = parseArgs(args);
   const agentsDir = import.meta.dir + "/agents";
 

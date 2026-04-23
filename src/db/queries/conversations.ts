@@ -1,8 +1,11 @@
 import { eq, desc, asc, sql, and, or, isNull, inArray, notInArray } from "drizzle-orm";
 import { getDb } from "../connection";
-import { conversations, messages, toolCalls, agentConfigs, runs } from "../schema";
+import { conversations, messages, toolCalls, runs } from "../schema";
 import { listAttachmentsForMessages } from "./attachments";
 import { getSetting } from "./settings";
+import { logger } from "../../logger";
+
+const log = logger.child("db.queries.conversations");
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -451,7 +454,15 @@ export async function cloneTurnsIntoNewConversation(
   } catch (err) {
     // Best-effort rollback: ON DELETE CASCADE wipes the child messages and
     // tool_calls rows we just inserted, so the database is left consistent.
-    await db.delete(conversations).where(eq(conversations.id, newConv.id)).catch(() => {});
+    try {
+      await db.delete(conversations).where(eq(conversations.id, newConv.id));
+    } catch (rollbackErr) {
+      log.error("Clone rollback failed - database may be inconsistent", {
+        conversationId: newConv.id,
+        originalError: String(err),
+        rollbackError: String(rollbackErr),
+      });
+    }
     throw err;
   }
 }
@@ -482,6 +493,9 @@ export async function updateMessageContent(
 }
 
 export async function getLatestLeaf(conversationId: string): Promise<Message | null> {
+  if (!conversationId || typeof conversationId !== "string") {
+    throw new Error("conversationId must be a non-empty string");
+  }
   const db = getDb();
   // Deterministic tiebreak on id DESC — when two leaves share the same
   // created_at timestamp (common in tight-loop test inserts or fast

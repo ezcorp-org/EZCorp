@@ -1618,4 +1618,29 @@ export class AgentExecutor {
       this.runs.delete(oldest);
     }
   }
+
+  /**
+   * Release process-level resources owned by this executor:
+   * - the periodic orphan-cleanup interval (only set when persist=true)
+   * - any per-run watchdog/heartbeat intervals (defensive — these are
+   *   normally cleared in the run-completion finally block at ~line 1527)
+   * - all in-flight AbortControllers, so streaming runs unwind cleanly
+   *
+   * Safe to call multiple times. Intended for test teardown and (eventually)
+   * graceful process shutdown — SIGTERM/SIGINT wiring is deliberately NOT
+   * added here; that lives one layer up.
+   */
+  destroy(): void {
+    if (this.orphanInterval !== undefined) {
+      clearInterval(this.orphanInterval);
+      this.orphanInterval = undefined;
+    }
+    for (const timer of this.heartbeats.values()) {
+      clearInterval(timer);
+    }
+    this.heartbeats.clear();
+    for (const ctrl of this.controllers.values()) {
+      if (!ctrl.signal.aborted) ctrl.abort();
+    }
+  }
 }

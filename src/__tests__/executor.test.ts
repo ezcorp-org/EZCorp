@@ -1,4 +1,4 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, afterAll } from "bun:test";
 import { AgentExecutor } from "../runtime/executor";
 import { EventBus } from "../runtime/events";
 import { loadAgentsStatic } from "../runtime/loader";
@@ -16,6 +16,23 @@ function makeAgent(
   };
 }
 
+// Track every AgentExecutor created in this file so `afterAll` can
+// release the orphan-cleanup interval + per-run watchdog timers + any
+// pending AbortControllers. Without this, leaked timers from one test
+// file keep Bun's worker alive and bleed into the rest of the suite.
+// Pattern: replace bare `new AgentExecutor(...)` with `track(new AgentExecutor(...))`
+// in any new test that constructs one.
+const executors: AgentExecutor[] = [];
+function track(exec: AgentExecutor): AgentExecutor {
+  executors.push(exec);
+  return exec;
+}
+
+afterAll(() => {
+  for (const exec of executors) exec.destroy();
+  executors.length = 0;
+});
+
 describe("AgentExecutor", () => {
   test("successful run returns status success with result", async () => {
     const agents = loadAgentsStatic([
@@ -25,7 +42,7 @@ describe("AgentExecutor", () => {
       })),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     const run = await exec.runAgent("echo", { msg: "hello" });
 
@@ -43,7 +60,7 @@ describe("AgentExecutor", () => {
       }),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     const run = await exec.runAgent("fail", {});
 
@@ -53,7 +70,7 @@ describe("AgentExecutor", () => {
 
   test("throws if agent not found", async () => {
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(new Map(), bus);
+    const exec = track(new AgentExecutor(new Map(), bus));
 
     expect(exec.runAgent("nope", {})).rejects.toThrow("Agent not found: nope");
   });
@@ -71,7 +88,7 @@ describe("AgentExecutor", () => {
     bus.on("run:log", () => events.push("log"));
     bus.on("run:complete", () => events.push("complete"));
 
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
     await exec.runAgent("logger", {});
 
     expect(events).toEqual(["start", "log", "complete"]);
@@ -83,7 +100,7 @@ describe("AgentExecutor", () => {
       makeAgent("b", async () => ({ success: true, output: null })),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     expect(exec.listAgents()).toHaveLength(2);
   });
@@ -93,7 +110,7 @@ describe("AgentExecutor", () => {
       makeAgent("x", async () => ({ success: true, output: null })),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     await exec.runAgent("x", {});
     await exec.runAgent("x", {});
@@ -108,7 +125,7 @@ describe("AgentExecutor", () => {
       makeAgent("x", async () => ({ success: true, output: null })),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     const run = await exec.runAgent("x", {});
     expect(await exec.getRun(run.id)).toBe(run);
@@ -132,7 +149,7 @@ describe("AgentExecutor", () => {
     const cancelEvents: unknown[] = [];
     bus.on("run:cancel", (data) => cancelEvents.push(data));
 
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     const runPromise = exec.runAgent("slow", {});
     await new Promise((r) => setTimeout(r, 10));
@@ -152,7 +169,7 @@ describe("AgentExecutor", () => {
       makeAgent("x", async () => ({ success: true, output: null })),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     const firstRun = await exec.runAgent("x", {});
 
@@ -166,7 +183,7 @@ describe("AgentExecutor", () => {
 
   test("registerAgent and unregisterAgent", async () => {
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(new Map(), bus);
+    const exec = track(new AgentExecutor(new Map(), bus));
 
     expect(exec.listAgents()).toHaveLength(0);
 
@@ -194,7 +211,7 @@ describe("AgentExecutor", () => {
       }),
     ]);
     const bus = new EventBus<AgentEvents>();
-    const exec = new AgentExecutor(agents, bus);
+    const exec = track(new AgentExecutor(agents, bus));
 
     const run = await exec.runAgent("parent", {});
 

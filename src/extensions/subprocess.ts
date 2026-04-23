@@ -1,8 +1,11 @@
 import { JsonRpcTransport } from "./json-rpc";
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, ToolCallResult } from "./types";
 import { incrementFailures, disableExtension, resetFailures } from "../db/queries/extensions";
+import { logger } from "../logger";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+
+const log = logger.child("extensions/subprocess");
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_CALL_TIMEOUT_MS = 30 * 1000; // 30 seconds
@@ -177,7 +180,9 @@ export class ExtensionProcess {
             if (done) break;
           }
         } catch { /* stream closed — nothing to drain */ }
-      })();
+      })().catch((err) => {
+        log.debug("Unexpected error draining stderr", { extensionId: this.extensionId, error: String(err) });
+      });
     }
 
     this.transport = new JsonRpcTransport(
@@ -192,22 +197,26 @@ export class ExtensionProcess {
     this.resetIdleTimer();
 
     // Monitor for unexpected exit
-    this.proc.exited.then(async (_exitCode) => {
-      if (this.killed) return; // Expected kill, not a crash
-      activeProcesses.delete(this);
-      this.proc = null;
-      this.transport = null;
+    this.proc.exited
+      .then(async (_exitCode) => {
+        if (this.killed) return; // Expected kill, not a crash
+        activeProcesses.delete(this);
+        this.proc = null;
+        this.transport = null;
 
-      // Crash detected -- increment failures
-      try {
-        const count = await incrementFailures(this.extensionId);
-        if (count >= AUTO_DISABLE_THRESHOLD) {
-          await disableExtension(this.extensionId);
+        // Crash detected -- increment failures
+        try {
+          const count = await incrementFailures(this.extensionId);
+          if (count >= AUTO_DISABLE_THRESHOLD) {
+            await disableExtension(this.extensionId);
+          }
+        } catch {
+          // DB may not be available in tests
         }
-      } catch {
-        // DB may not be available in tests
-      }
-    });
+      })
+      .catch((err) => {
+        log.error("Extension process exit handler failed", { extensionId: this.extensionId, error: String(err) });
+      });
   }
 
   /** Send a JSON-RPC call and wait for the response. */
@@ -305,12 +314,28 @@ export class ExtensionProcess {
     if (!this.transport || !this.pendingRequestHandler) return;
     const handler = this.pendingRequestHandler;
     this.transport.onRequest = (req) => {
-      handler(req).then((response) => {
-        if (this.proc?.stdin) {
-          const data = JSON.stringify(response) + "\n";
-          (this.proc.stdin as { write(d: string): number }).write(data);
-        }
-      });
+      handler(req)
+        .then((response) => {
+          if (this.proc?.stdin) {
+            const data = JSON.stringify(response) + "\n";
+            (this.proc.stdin as { write(d: string): number }).write(data);
+          }
+        })
+        .catch((err) => {
+          log.error("Reverse-RPC request handler failed", { extensionId: this.extensionId, error: String(err) });
+          if (this.proc?.stdin) {
+            const errorResp = JSON.stringify({
+              jsonrpc: "2.0",
+              id: req.id,
+              error: { code: -32603, message: String(err) },
+            }) + "\n";
+            try {
+              (this.proc.stdin as { write(d: string): number }).write(errorResp);
+            } catch (writeErr) {
+              log.debug("Failed to write error response to subprocess stdin", { extensionId: this.extensionId, error: String(writeErr) });
+            }
+          }
+        });
     };
   }
 
@@ -350,8 +375,11 @@ export class ExtensionProcess {
   }
 
   private resetIdleTimer(): void {
-    if (this.persistent) return;
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.persistent) {
+      this.idleTimer = null;
+      return;
+    }
     this.idleTimer = setTimeout(() => {
       this.kill();
     }, this.idleTimeoutMs);

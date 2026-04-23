@@ -3,6 +3,9 @@ import { validateTimeout } from "./validate";
 import type { BuiltinToolDef } from "./types";
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import { buildStreamTruncationMarker, getToolOutputLimit } from "./output-limits";
+import { logger } from "../../logger";
+
+const log = logger.child("shell-tool");
 
 // Shell's cap lives in TOOL_OUTPUT_LIMITS (output-limits.ts) — keep this a
 // reference, not a hardcoded value, so the description and runtime agree.
@@ -47,7 +50,7 @@ export function createShellTool(projectPath: string): BuiltinToolDef {
       required: ["command"],
     }),
     execute: async (_toolCallId, params: any, signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
-      console.log("[shell-audit]", { command: params.command, cwd: projectPath, timestamp: new Date().toISOString() });
+      log.debug("shell-audit", { command: params.command, cwd: projectPath, timestamp: new Date().toISOString() });
 
       const blocked = DANGEROUS_COMMAND_PATTERNS.find((p) => p.test(params.command));
       if (blocked) {
@@ -70,20 +73,22 @@ export function createShellTool(projectPath: string): BuiltinToolDef {
         let output = "";
         let stderr = "";
         let truncated = false;
-        let timedOut = false;
 
         // Race: process completion vs timeout vs external abort
         const result = await Promise.race([
           // Main path: read streams and wait for exit
           (async () => {
-            // Read stdout + stderr concurrently
+            // Read stdout + stderr concurrently. Both streams are bounded by
+            // MAX_OUTPUT_BYTES so an unbounded stderr producer can't OOM us.
+            // stderr is silent — no streaming callback, so the UI updates
+            // remain stdout-only.
             const [stdoutText, stderrText] = await Promise.all([
               readStream(proc.stdout, MAX_OUTPUT_BYTES, onUpdate),
-              new Response(proc.stderr).text(),
+              readStream(proc.stderr, MAX_OUTPUT_BYTES),
             ]);
             output = stdoutText.text;
-            truncated = stdoutText.truncated;
-            stderr = stderrText;
+            truncated = stdoutText.truncated || stderrText.truncated;
+            stderr = stderrText.text;
             const exitCode = await proc.exited;
             return { type: "done" as const, exitCode };
           })(),
@@ -98,7 +103,6 @@ export function createShellTool(projectPath: string): BuiltinToolDef {
         ]);
 
         if (result.type === "timeout") {
-          timedOut = true;
           proc.kill();
           return {
             content: [{ type: "text" as const, text: `Command timed out after ${timeout}ms\n${output}` }],

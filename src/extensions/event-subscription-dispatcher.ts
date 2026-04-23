@@ -33,6 +33,9 @@ import { createRateLimiter } from "./rate-limit";
 import { capabilityToolsDisabled } from "./capability-flags";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
+import { logger } from "../logger";
+
+const log = logger.child("event-subscription-dispatcher");
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -177,15 +180,29 @@ export class EventSubscriptionDispatcher {
         continue;
       }
       let proc: ReturnType<ExtensionRegistry["getProcessIfRunning"]>;
-      try { proc = this.registry.getProcessIfRunning(extId); } catch { continue; }
+      try {
+        proc = this.registry.getProcessIfRunning(extId);
+      } catch (err) {
+        log.warn("getProcessIfRunning threw; skipping subscriber", {
+          extensionId: extId,
+          eventType,
+          error: String(err),
+        });
+        continue;
+      }
       if (!proc) continue;
       try {
         proc.sendNotification(
           `ezcorp/event/${eventType}`,
           sanitize(eventType, payload),
         );
-      } catch {
-        // sendNotification already swallows; belt-and-suspenders.
+      } catch (err) {
+        // sendNotification already swallows internally; belt-and-suspenders.
+        log.debug("sendNotification threw despite internal swallow", {
+          extensionId: extId,
+          eventType,
+          error: String(err),
+        });
       }
     }
   }

@@ -180,6 +180,10 @@ export async function reloadPipelines(): Promise<void> {
 export function reset(): void {
   if (extractionUnsub) extractionUnsub();
   extractionUnsub = null;
+  // Tear down executor-owned timers + in-flight runs before dropping
+  // the reference; otherwise the orphan-cleanup interval keeps the
+  // singleton (and its closures) alive for the lifetime of the process.
+  if (executor) executor.destroy();
   executor = null;
   pipelineExecutor = null;
   bus = null;

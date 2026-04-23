@@ -27,7 +27,9 @@ mockDbConnection();
 
 import {
   insertAttachment,
+  getAttachment,
   listAttachmentsForMessage,
+  listAttachmentsForMessages,
   listAttachmentsForConversation,
   deleteAttachmentsForMessage,
   deleteAttachmentsForConversation,
@@ -123,6 +125,38 @@ describe("attachments queries", () => {
     const deleted = await deleteAttachmentsForConversation(tempConv.id);
     expect(deleted.length).toBe(1);
     expect(await listAttachmentsForConversation(tempConv.id)).toEqual([]);
+  });
+
+  test("getAttachment returns a row by id, null for unknown id", async () => {
+    const row = await insertAttachment({
+      messageId, conversationId,
+      filename: "solo.png", mimeType: "image/png", sizeBytes: 5,
+      storagePath: "/tmp/solo.png", kind: "image",
+    });
+    const hit = await getAttachment(row.id);
+    expect(hit?.id).toBe(row.id);
+    expect(hit?.filename).toBe("solo.png");
+    const miss = await getAttachment("00000000-0000-0000-0000-000000000000");
+    expect(miss).toBeNull();
+  });
+
+  test("listAttachmentsForMessages: empty input → [] without DB hit", async () => {
+    const out = await listAttachmentsForMessages([]);
+    expect(out).toEqual([]);
+  });
+
+  test("listAttachmentsForMessages: returns rows for each id, omits unknown ids", async () => {
+    const extraMsg = await createMessage(conversationId, { role: "user", content: "extra" });
+    await insertAttachment({
+      messageId: extraMsg.id, conversationId,
+      filename: "extra.png", mimeType: "image/png", sizeBytes: 7,
+      storagePath: "/tmp/extra.png", kind: "image",
+    });
+    const rows = await listAttachmentsForMessages([messageId, extraMsg.id, "nope-id"]);
+    const ids = new Set(rows.map((r) => r.messageId));
+    expect(ids.has(messageId)).toBe(true);
+    expect(ids.has(extraMsg.id)).toBe(true);
+    expect(ids.has("nope-id")).toBe(false);
   });
 
   test("cascade: deleting conversation removes attachments via FK ON DELETE CASCADE", async () => {

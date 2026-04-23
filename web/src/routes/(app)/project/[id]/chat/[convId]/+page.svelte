@@ -66,6 +66,8 @@
 	import MentionText from "$lib/components/MentionText.svelte";
 	import InlineToolForm from "$lib/components/InlineToolForm.svelte";
 	import PermissionModeIndicator from "$lib/components/PermissionModeIndicator.svelte";
+	import ContextUsageIndicator from "$lib/components/ContextUsageIndicator.svelte";
+	import { pickLastTurnInputTokens } from "$lib/context-usage-logic";
 	import ModeFormModal from "$lib/components/ModeFormModal.svelte";
 	import SkeletonLoader from "$lib/components/SkeletonLoader.svelte";
 	import Tooltip from "$lib/components/Tooltip.svelte";
@@ -477,6 +479,7 @@
 		typeof localStorage !== "undefined" ? (localStorage.getItem("ezcorp-thinking-level") ?? "medium") : "medium",
 	);
 	let modelSupportsReasoning = $state(false);
+	let selectedModelContextWindow = $state<number | null>(null);
 	let availableModes = $state<Mode[]>([]);
 	let selectedMode = $state<Mode | null>(null);
 	let showCreateModeModal = $state(false);
@@ -580,6 +583,10 @@
 	}
 
 	let lastMessageIsUser = $derived(messages.length > 0 && messages[messages.length - 1]?.role === "user");
+
+	// Context usage: input tokens from the most recent assistant message on the active branch.
+	// Represents what fit in the prompt last turn — null until the first assistant reply lands.
+	let lastTurnInputTokens = $derived(pickLastTurnInputTokens(messages));
 
 	// Memory injection dedup: the backend re-runs hybrid search every turn, so `memoriesUsed`
 	// gets populated on every assistant message even when the retrieved set didn't change.
@@ -1724,6 +1731,10 @@
 		modelSupportsReasoning = reasoning;
 	}
 
+	function handleContextWindowChange(contextWindow: number | null) {
+		selectedModelContextWindow = contextWindow;
+	}
+
 	function handleModeChange(mode: Mode | null) {
 		selectedMode = mode;
 		updateConversation(convId, { modeId: mode?.id ?? null }).catch(() => {});
@@ -1931,6 +1942,8 @@
 				<MentionText text={currentConversation?.title ?? "Chat"} />
 			</span>
 			<div class="flex items-center gap-1 shrink-0">
+				<!-- Context usage -->
+				<ContextUsageIndicator usedTokens={lastTurnInputTokens} contextWindow={selectedModelContextWindow} />
 				<!-- Permission mode indicator -->
 				<Tooltip position="bottom" text="How tool-use permission is granted for this project (ask / auto / deny)">
 					<PermissionModeIndicator {projectId} conversationId={convId} onmodechange={(mode) => { permissionModeOverride = mode; }} />
@@ -2401,6 +2414,7 @@
 				onthinkinglevelchange={handleThinkingLevelChange}
 				{modelSupportsReasoning}
 				onreasoningchange={handleReasoningChange}
+				oncontextwindowchange={handleContextWindowChange}
 				conversationId={convId}
 				{projectId}
 				ontoolinvoke={handleToolInvoke}

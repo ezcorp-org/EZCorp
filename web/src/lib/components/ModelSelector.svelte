@@ -12,6 +12,7 @@
 		reasoning?: boolean;
 		displayName?: string;
 		available: boolean;
+		contextWindow?: number;
 	}
 
 	const MAX_RETRIES = 3;
@@ -20,11 +21,13 @@
 		selected,
 		onselect,
 		onreasoningchange,
+		oncontextwindowchange,
 		onautoselect,
 	}: {
 		selected: { provider: string; model: string } | null;
 		onselect: (provider: string, model: string) => void;
 		onreasoningchange?: (reasoning: boolean) => void;
+		oncontextwindowchange?: (contextWindow: number | null) => void;
 		onautoselect?: (provider: string, model: string) => void;
 	} = $props();
 
@@ -69,6 +72,7 @@
 				if (selected) {
 					const m = models.find((m) => m.provider === selected!.provider && m.model === selected!.model);
 					onreasoningchange?.(!!m?.reasoning);
+					oncontextwindowchange?.(m?.contextWindow ?? null);
 				} else if (models.length > 0) {
 					onautoselect?.(models[0]!.provider, models[0]!.model);
 				}
@@ -89,6 +93,7 @@
 		if (selected && models.length > 0) {
 			const m = models.find((m) => m.provider === selected!.provider && m.model === selected!.model);
 			onreasoningchange?.(!!m?.reasoning);
+			oncontextwindowchange?.(m?.contextWindow ?? null);
 		}
 	});
 
@@ -127,6 +132,7 @@
 		highlightIndex = -1;
 		const m = models.find((m) => m.provider === provider && m.model === model);
 		onreasoningchange?.(!!m?.reasoning);
+		oncontextwindowchange?.(m?.contextWindow ?? null);
 	}
 
 	function toggleOpen() {

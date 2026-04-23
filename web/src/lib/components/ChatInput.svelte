@@ -43,6 +43,7 @@
 		onthinkinglevelchange,
 		modelSupportsReasoning = false,
 		onreasoningchange,
+		oncontextwindowchange,
 		conversationId = '',
 		projectId,
 		ontoolinvoke,
@@ -64,6 +65,7 @@
 		onthinkinglevelchange?: (level: string) => void;
 		modelSupportsReasoning?: boolean;
 		onreasoningchange?: (reasoning: boolean) => void;
+		oncontextwindowchange?: (contextWindow: number | null) => void;
 		conversationId?: string;
 		/**
 		 * Active project id from the URL (`page.params.id`). Required for
@@ -527,7 +529,7 @@
 				<div class="flex items-center gap-3">
 					<div class="flex flex-col">
 						<span class="toolbar-label" data-tip="Choose which AI model powers this conversation">Model</span>
-						<ModelSelector selected={selectedModel} onselect={onmodelchange} {onreasoningchange} {onautoselect} />
+						<ModelSelector selected={selectedModel} onselect={onmodelchange} {onreasoningchange} {oncontextwindowchange} {onautoselect} />
 					</div>
 					{#if modelSupportsReasoning && onthinkinglevelchange}
 						<div class="flex flex-col">

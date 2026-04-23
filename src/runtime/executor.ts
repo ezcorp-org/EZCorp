@@ -198,10 +198,15 @@ export class AgentExecutor {
 
     try {
       const result = await agent.execute(ctx);
-      run.status = "success";
-      run.result = result;
-      run.finishedAt = Date.now();
-      this.bus.emit("run:complete", { run });
+      // Don't overwrite if cancelRun() already set status — an agent that
+      // resolves normally on abort (rather than throwing) would otherwise
+      // flip "cancelled" back to "success".
+      if (run.status !== "cancelled") {
+        run.status = "success";
+        run.result = result;
+        run.finishedAt = Date.now();
+        this.bus.emit("run:complete", { run });
+      }
     } catch (err) {
       // Don't overwrite if already cancelled
       if (run.status !== "cancelled") {

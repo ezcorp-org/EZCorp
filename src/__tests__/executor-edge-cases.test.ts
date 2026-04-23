@@ -198,4 +198,35 @@ describe("AgentExecutor edge cases", () => {
     // Newest-first: last-started should be at index 0.
     expect(listed[0]!.id).toBe(runs[runs.length - 1]!.id);
   });
+
+  test("cancelRun wins over a normal resolve in the agent's success branch", async () => {
+    // Regression for the quirk surfaced in Wave 19: a "well-behaved"
+    // cancellable agent throws on abort and the error branch's
+    // !cancelled guard preserves the cancelled status. But an agent
+    // that swallows the abort and resolves normally would otherwise
+    // flip status back to "success" on the success branch. Both
+    // branches must guard.
+    const agents = loadAgentsStatic([
+      makeAgent("swallows-abort", async (ctx) => {
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 60_000);
+          ctx.signal.addEventListener("abort", () => {
+            clearTimeout(t);
+            resolve(); // swallow — do NOT throw
+          });
+        });
+        return { success: true, output: "should-not-stick" };
+      }),
+    ]);
+    const exec = track(new AgentExecutor(agents, new EventBus<AgentEvents>()));
+
+    const runP = exec.runAgent("swallows-abort", {});
+    await new Promise((r) => setTimeout(r, 10));
+    const [active] = await exec.listRuns();
+    expect(exec.cancelRun(active!.id)).toBe(true);
+    await runP;
+    // Status must remain "cancelled" — the success branch must respect
+    // the prior cancelRun() write.
+    expect(active!.status).toBe("cancelled");
+  });
 });

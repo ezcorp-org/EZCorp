@@ -14,7 +14,6 @@ import type {
 } from "../types";
 import type { EventBus } from "./events";
 import { Agent, type AgentTool, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { stream, complete, type Context } from "@mariozechner/pi-ai";
 import { resolveModel, ProviderUnavailableError } from "../providers/router";
 import { resolveOAuthModel } from "../providers/registry";
 import { getCredential } from "../providers/credentials";
@@ -36,6 +35,8 @@ import { toolCalls, conversations } from "../db/schema";
 import { persistToolCall } from "../db/queries/tool-calls";
 import { and, eq, isNull } from "drizzle-orm";
 import * as activeRunsDb from "../db/queries/active-runs";
+import { WatchdogManager } from "./executor-watchdog";
+import { createPiLlmAdapter, persistErrorMessage } from "./executor-helpers";
 
 export interface ExecutorOptions {
   shell?: ShellProvider;
@@ -46,14 +47,6 @@ export interface ExecutorOptions {
 // ── AgentExecutor ───────────────────────────────────────────────────
 
 const MAX_RUNS = 100;
-
-// Watchdog thresholds (activity-based heartbeat).
-// - WATCHDOG_TICK_MS: how often the watchdog polls activity
-// - WATCHDOG_IDLE_MS: if no progress signal for this long (and no pending permission), kill the run
-// - HEARTBEAT_REFRESH_MS: how often the watchdog refreshes active_runs.last_heartbeat while alive
-const WATCHDOG_TICK_MS = 15_000;
-const WATCHDOG_IDLE_MS = 90_000;
-const HEARTBEAT_REFRESH_MS = 30_000;
 
 interface PendingPermissionInfo {
   conversationId: string;
@@ -69,18 +62,16 @@ export class AgentExecutor {
   private controllers = new Map<string, AbortController>();
   private activeAgents = new Map<string, Agent>();
   private runConversations = new Map<string, string>();
-  private heartbeats = new Map<string, ReturnType<typeof setInterval>>();
-  // Last time a run emitted a real progress signal (token, tool event, agent event, turn).
-  // Used by the watchdog to distinguish "actually working" from "leaked promise".
-  private lastActivityAt = new Map<string, number>();
-  // Last time the watchdog wrote active_runs.last_heartbeat for a run, so we can
-  // throttle DB writes to HEARTBEAT_REFRESH_MS while still running the tick at WATCHDOG_TICK_MS.
-  private lastHeartbeatWriteAt = new Map<string, number>();
   private pendingPermissions = new Map<string, PendingPermissionInfo>();
-  private orphanInterval: ReturnType<typeof setInterval> | undefined;
   private shell: ShellProvider;
   private file: FileProvider;
   private persist: boolean;
+  private bus: EventBus<AgentEvents>;
+  // Activity-based liveness: heartbeat refresh, idle detection, orphan cleanup.
+  // Owns its own state; this class holds the reference and delegates.
+  // Constructed with a WatchdogHost view that exposes only the maps the
+  // watchdog needs to read — no state duplication, surface unchanged.
+  private watchdog: WatchdogManager;
   private _stateMediator?: ExtensionStateMediator;
   /** Process-wide spawn quota shared across all ToolExecutor instances
    *  spawned from this executor. Tracks hourly / concurrent caps per
@@ -95,53 +86,31 @@ export class AgentExecutor {
 
   constructor(
     private agents: Map<string, AgentDefinition>,
-    private bus: EventBus<AgentEvents>,
+    bus: EventBus<AgentEvents>,
     opts?: ExecutorOptions,
   ) {
+    this.bus = bus;
     this.shell = opts?.shell ?? createShellProvider();
     this.file = opts?.file ?? createFileProvider();
     this.persist = opts?.persist ?? false;
     this._spawnQuota = createSpawnQuota(this.bus);
     startCollector(this.bus);
 
-    if (this.persist) {
-      // Clean up orphaned runs on startup and periodically.
-      // Also cancel any in-memory runs whose DB record was marked interrupted.
-      // On fresh startup, ALL "running" DB entries are orphaned — interrupt them immediately
-      activeRunsDb.interruptAllRuns().then((count) => {
-        if (count > 0) log.info("Interrupted orphaned runs from previous process", { count });
-      }).catch((err) => {
-        log.error("interruptAllRuns on startup failed", { error: String(err) });
-      });
-
-      const cleanupOrphans = async () => {
-        const cleaned = await activeRunsDb.cleanupOrphanedRuns(5);
-        if (cleaned > 0) {
-          log.info("Cleaned up orphaned runs", { count: cleaned });
-          // Cancel in-memory controllers for cleaned-up runs
-          for (const [runId, ctrl] of this.controllers) {
-            if (!ctrl.signal.aborted) {
-              const convId = this.runConversations.get(runId);
-              if (convId) {
-                const dbRun = await activeRunsDb.getActiveRun(convId);
-                if (!dbRun || dbRun.status !== "running") {
-                  log.info("Aborting orphaned in-memory run", { runId });
-                  ctrl.abort();
-                }
-              }
-            }
-          }
-        }
-      };
-      cleanupOrphans().catch((err) => {
-        log.error("Orphan cleanup on startup failed", { error: String(err) });
-      });
-      this.orphanInterval = setInterval(() => {
-        cleanupOrphans().catch((err) => {
-          log.error("Periodic orphan cleanup failed", { error: String(err) });
-        });
-      }, 60_000);
-    }
+    // Per-run liveness + orphan cleanup are delegated to WatchdogManager.
+    // It reads our maps by reference (single shared state) and owns its
+    // own timer/activity state — see src/runtime/executor-watchdog.ts.
+    // The host view is the *only* surface the watchdog uses; we expose
+    // it inline rather than making instance fields public.
+    this.watchdog = new WatchdogManager({
+      runs: this.runs,
+      controllers: this.controllers,
+      activeAgents: this.activeAgents,
+      runConversations: this.runConversations,
+      pendingPermissions: this.pendingPermissions,
+      bus: this.bus,
+      persist: this.persist,
+    });
+    this.watchdog.startOrphanCleanup();
   }
 
   async resolveInput(
@@ -194,33 +163,7 @@ export class AgentExecutor {
     };
 
     // Build a pi-ai-backed LLM wrapper for code-based agents
-    const piLlm = {
-      async complete(messages: any[], options?: any) {
-        const resolved = await resolveModel(options?.provider, options?.model);
-        const cred = await getCredential(resolved.provider);
-        const context: Context = {
-          systemPrompt: options?.system,
-          messages: messages.map((m: any) => ({ role: m.role, content: m.content, timestamp: Date.now() })),
-        };
-        const result = await complete(resolved.piModel, context, { apiKey: cred.token });
-        const text = result.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        return { text, usage: { inputTokens: result.usage.input, outputTokens: result.usage.output } };
-      },
-      async *stream(messages: any[], options?: any) {
-        const resolved = await resolveModel(options?.provider, options?.model);
-        const cred = await getCredential(resolved.provider);
-        const context: Context = {
-          systemPrompt: options?.system,
-          messages: messages.map((m: any) => ({ role: m.role, content: m.content, timestamp: Date.now() })),
-        };
-        const s = stream(resolved.piModel, context, { apiKey: cred.token, signal: options?.signal });
-        for await (const event of s) {
-          if (event.type === "text_delta") yield { type: "token", text: event.delta };
-          if (event.type === "done") yield { type: "done", usage: { inputTokens: event.message.usage.input, outputTokens: event.message.usage.output } };
-          if (event.type === "error") yield { type: "error", error: event.error.content?.map((c: any) => c.type === "text" ? c.text : "").join("") ?? "Stream error" };
-        }
-      },
-    };
+    const piLlm = createPiLlmAdapter();
 
     const ctx: AgentContext = {
       input: resolvedInput,
@@ -354,76 +297,6 @@ export class AgentExecutor {
     const conversationId = this.runConversations.get(id);
     this.bus.emit("run:cancel", { run, conversationId });
     return true;
-  }
-
-  /** Bump the last-activity timestamp for a run. Called on every real progress signal
-   *  (token, tool start/complete/error, agent spawn/complete, turn boundaries). The watchdog
-   *  uses this to distinguish "actually working" from "leaked promise that keeps the run alive". */
-  private bumpActivity(runId: string): void {
-    this.lastActivityAt.set(runId, Date.now());
-  }
-
-  /** Start the activity-based watchdog for a run. Replaces the old setInterval-based heartbeat.
-   *  Ticks every WATCHDOG_TICK_MS. If idle > WATCHDOG_IDLE_MS (with no pending permission),
-   *  marks the run interrupted in the DB and emits run:error. Otherwise refreshes
-   *  active_runs.last_heartbeat at most once per HEARTBEAT_REFRESH_MS and optionally writes
-   *  the latest partial response. */
-  private startWatchdog(
-    runId: string,
-    conversationId: string,
-    getPartialResponse: () => string,
-  ): void {
-    if (!this.persist) return;
-    this.bumpActivity(runId);
-    this.lastHeartbeatWriteAt.set(runId, Date.now());
-    const tick = async () => {
-      const run = this.runs.get(runId);
-      if (!run || run.status !== "running") return;
-      const last = this.lastActivityAt.get(runId) ?? run.startedAt;
-      const idleMs = Date.now() - last;
-      const hasPendingPermission = [...this.pendingPermissions.values()].some(
-        (p) => p.conversationId === conversationId,
-      );
-      if (hasPendingPermission) {
-        // Permission gates are legitimate idle — keep the run alive and don't count as stuck.
-        this.bumpActivity(runId);
-        await activeRunsDb.updateHeartbeat(runId).catch(() => {});
-        this.lastHeartbeatWriteAt.set(runId, Date.now());
-        return;
-      }
-      if (idleMs >= WATCHDOG_IDLE_MS) {
-        const reason = `Watchdog: no activity for ${Math.round(idleMs / 1000)}s`;
-        log.error("Watchdog tripped, interrupting run", { runId, conversationId, idleMs });
-        try {
-          await activeRunsDb.markInterrupted(runId);
-        } catch (err) {
-          log.error("Watchdog markInterrupted failed", { error: String(err) });
-        }
-        run.status = "error";
-        run.result = { success: false, output: null, error: reason };
-        run.finishedAt = Date.now();
-        this.bus.emit("run:error", { run, error: reason, conversationId });
-        // Abort the in-memory controller so any remaining awaits unblock.
-        const controller = this.controllers.get(runId);
-        if (controller && !controller.signal.aborted) controller.abort();
-        this.activeAgents.get(runId)?.abort();
-        return;
-      }
-      // Still making progress — refresh heartbeat + partial response at the throttled cadence.
-      const lastWrite = this.lastHeartbeatWriteAt.get(runId) ?? 0;
-      if (Date.now() - lastWrite >= HEARTBEAT_REFRESH_MS) {
-        await activeRunsDb.updateHeartbeat(runId).catch(() => {});
-        const partial = getPartialResponse();
-        if (partial) {
-          await activeRunsDb.updatePartialResponse(runId, partial).catch(() => {});
-        }
-        this.lastHeartbeatWriteAt.set(runId, Date.now());
-      }
-    };
-    const timer = setInterval(() => {
-      tick().catch((err) => log.error("Watchdog tick failed", { runId, error: String(err) }));
-    }, WATCHDOG_TICK_MS);
-    this.heartbeats.set(runId, timer);
   }
 
   async streamChat(
@@ -982,7 +855,7 @@ export class AgentExecutor {
     // Start the activity-based watchdog. Replaces the dumb setInterval heartbeat — it only
     // refreshes last_heartbeat while progress signals are bumping activity, and auto-cancels
     // the run if it stays idle for WATCHDOG_IDLE_MS (90s) with no pending permission.
-    this.startWatchdog(run.id, conversationId, () => allTurnsText);
+    this.watchdog.startWatchdog(run.id, conversationId, () => allTurnsText);
 
     const pendingAutoSpinUp = (run as any)._pendingAutoSpinUp;
     const mentionedAgents = (run as any)._mentionedAgents as Array<{ name: string; id: string; description: string }> | undefined;
@@ -1145,7 +1018,7 @@ export class AgentExecutor {
     const pendingToolArgs = new Map<string, Record<string, unknown>>();
     const unsub = piAgent.subscribe((event: AgentEvent) => {
       // Any pi-agent-core event counts as progress for the watchdog — LLM is actively producing output.
-      this.bumpActivity(run.id);
+      this.watchdog.bumpActivity(run.id);
       switch (event.type) {
         case "turn_start":
           turnText = "";
@@ -1337,13 +1210,13 @@ export class AgentExecutor {
     // signals and won't kill the outer turn.
     const unsubAgentActivity = [
       this.bus.on("agent:spawn", (data) => {
-        if ((data as { runId?: string }).runId === run.id) this.bumpActivity(run.id);
+        if ((data as { runId?: string }).runId === run.id) this.watchdog.bumpActivity(run.id);
       }),
       this.bus.on("agent:status", (data) => {
-        if ((data as { runId?: string }).runId === run.id) this.bumpActivity(run.id);
+        if ((data as { runId?: string }).runId === run.id) this.watchdog.bumpActivity(run.id);
       }),
       this.bus.on("agent:complete", (data) => {
-        if ((data as { runId?: string }).runId === run.id) this.bumpActivity(run.id);
+        if ((data as { runId?: string }).runId === run.id) this.watchdog.bumpActivity(run.id);
       }),
     ];
 
@@ -1505,14 +1378,14 @@ export class AgentExecutor {
           });
           run.result = { success: false, output: null, error: errorPayload };
           run.finishedAt = Date.now();
-          await this.persistErrorMessage(conversationId, `Error: ${errorPayload}`, { ...options, parentMessageId: lastSavedMessageId ?? options.parentMessageId }, run.id);
+          await persistErrorMessage(conversationId, `Error: ${errorPayload}`, { ...options, parentMessageId: lastSavedMessageId ?? options.parentMessageId }, run.id, this.persist);
           this.bus.emit("run:error", { run, error: errorPayload, conversationId });
         } else {
           const message = err instanceof Error ? err.message : String(err);
           run.status = "error";
           run.result = { success: false, output: null, error: message };
           run.finishedAt = Date.now();
-          await this.persistErrorMessage(conversationId, `Error: ${message}`, { ...options, parentMessageId: lastSavedMessageId ?? options.parentMessageId }, run.id);
+          await persistErrorMessage(conversationId, `Error: ${message}`, { ...options, parentMessageId: lastSavedMessageId ?? options.parentMessageId }, run.id, this.persist);
           this.bus.emit("run:error", { run, error: message, conversationId });
         }
       }
@@ -1523,10 +1396,7 @@ export class AgentExecutor {
       for (const off of unsubAgentActivity) off();
       toolAbortControllers.clear();
       // Clear watchdog interval + activity tracking
-      const hb = this.heartbeats.get(run.id);
-      if (hb) { clearInterval(hb); this.heartbeats.delete(run.id); }
-      this.lastActivityAt.delete(run.id);
-      this.lastHeartbeatWriteAt.delete(run.id);
+      this.watchdog.clearRun(run.id);
       this.controllers.delete(run.id);
       this.activeAgents.delete(run.id);
       this.runConversations.delete(run.id);
@@ -1553,7 +1423,7 @@ export class AgentExecutor {
         run.status = "error";
         run.result = { success: false, output: null, error: message };
         run.finishedAt = Date.now();
-        await this.persistErrorMessage(conversationId, `Error: ${message}`, options, run.id);
+        await persistErrorMessage(conversationId, `Error: ${message}`, options, run.id, this.persist);
         this.bus.emit("run:error", { run, error: message, conversationId });
       }
       // Abort the controller so any in-flight sub-agents (auto-spin-up) get cancelled
@@ -1570,44 +1440,6 @@ export class AgentExecutor {
     }
 
     return run;
-  }
-
-  private async persistErrorMessage(
-    conversationId: string,
-    errorContent: string,
-    options: { model?: string; provider?: string; parentMessageId?: string },
-    runId: string,
-  ): Promise<void> {
-    if (!this.persist) return;
-    try {
-      const { createMessage } = await import("../db/queries/conversations");
-      const errorMsg = await createMessage(conversationId, {
-        role: "assistant",
-        content: errorContent,
-        model: options.model,
-        provider: options.provider,
-        runId,
-        parentMessageId: options.parentMessageId,
-      });
-
-      // Fix tool call anchoring for error messages too
-      await getDb()
-        .update(toolCalls)
-        .set({ messageId: errorMsg.id })
-        .where(and(
-          eq(toolCalls.conversationId, conversationId),
-          eq(toolCalls.messageId, runId),
-        ));
-      await getDb()
-        .update(toolCalls)
-        .set({ messageId: errorMsg.id })
-        .where(and(
-          eq(toolCalls.conversationId, conversationId),
-          isNull(toolCalls.messageId),
-        ));
-    } catch (err) {
-      log.error("Failed to persist error message", { error: String(err) });
-    }
   }
 
   private storeRun(run: AgentRun): void {
@@ -1631,14 +1463,7 @@ export class AgentExecutor {
    * added here; that lives one layer up.
    */
   destroy(): void {
-    if (this.orphanInterval !== undefined) {
-      clearInterval(this.orphanInterval);
-      this.orphanInterval = undefined;
-    }
-    for (const timer of this.heartbeats.values()) {
-      clearInterval(timer);
-    }
-    this.heartbeats.clear();
+    this.watchdog.destroy();
     for (const ctrl of this.controllers.values()) {
       if (!ctrl.signal.aborted) ctrl.abort();
     }

@@ -64,6 +64,12 @@ data/extensions/
 # playwright mcp
 .playwright-mcp/
 
+# playwright output (run artifacts, last-run cache, traces)
+test-results/
+
+# ad-hoc debug screenshots saved at repo root
+/mobile-*.png
+
 # test project workspace
 TESTENV/
 web/e2e/.docker-auth.json

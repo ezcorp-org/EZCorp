@@ -28,5 +28,15 @@ export default defineConfig({
 		include: ["src/**/*.component.test.{ts,svelte.ts}", "src/**/*.server.test.ts"],
 		setupFiles: ["./src/__tests__/vitest-setup.ts"],
 		globals: true,
+		// Force inline-transform Zod so the CJS `exports.z = z` assignment
+		// runs before the test reads `z`. Without this, vitest's CJS-ESM
+		// interop snapshots the exports object too early and `z` resolves
+		// to undefined — breaking every server test that imports from
+		// `$lib/server/security/validation`.
+		server: {
+			deps: {
+				inline: ["zod"],
+			},
+		},
 	},
 });

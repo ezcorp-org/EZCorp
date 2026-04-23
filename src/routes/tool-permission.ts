@@ -40,7 +40,8 @@ export async function handleToolPermission(
 ): Promise<Response> {
   let body: { approved?: boolean };
   try {
-    body = await req.json();
+    const raw = (await req.json()) as unknown;
+    body = (raw && typeof raw === "object" ? raw : {}) as { approved?: boolean };
   } catch {
     return json({ error: "Invalid JSON body" }, 400);
   }
@@ -89,7 +90,11 @@ export async function handleSetPermissionMode(
 ): Promise<Response> {
   let body: { mode?: string; conversationId?: string };
   try {
-    body = await req.json();
+    const raw = (await req.json()) as unknown;
+    body = (raw && typeof raw === "object" ? raw : {}) as {
+      mode?: string;
+      conversationId?: string;
+    };
   } catch {
     return json({ error: "Invalid JSON body" }, 400);
   }

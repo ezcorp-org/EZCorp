@@ -100,12 +100,13 @@ beforeEach(() => {
 	mockDocument._activeElement = null;
 	mockDocument._keydownHandler = null;
 
-	// @ts-ignore - mock document.activeElement
+	// Mock document surfaces only `activeElement` for focus-trap tests;
+	// cast through `unknown` since the stub is far narrower than Document.
 	globalThis.document = {
 		get activeElement() {
-			return mockDocument._activeElement;
+			return mockDocument._activeElement as Element | null;
 		},
-	};
+	} as unknown as Document;
 });
 
 afterEach(() => {

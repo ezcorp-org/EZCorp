@@ -2,6 +2,13 @@ import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
 const API_URL = "/api/tool-invoke";
 
+// Bun's `Mock<…>` doesn't satisfy the full `typeof fetch` (missing
+// `preconnect`), so we assign through `unknown` — the mock only needs to
+// stand in for the call site, not match every static method.
+function mockFetch(impl: () => Promise<Response>): typeof globalThis.fetch {
+  return mock(impl) as unknown as typeof globalThis.fetch;
+}
+
 function makeBody(overrides: Record<string, unknown> = {}) {
   return {
     extensionName: "test-ext",
@@ -48,7 +55,7 @@ afterEach(() => {
 describe("inline tool invocation API contract", () => {
   test("POST returns result for valid tool call", async () => {
     const expected = successResponse();
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(JSON.stringify(expected), { status: 200, headers: { "Content-Type": "application/json" } })
     );
 
@@ -70,7 +77,7 @@ describe("inline tool invocation API contract", () => {
 
   test("POST returns 404 for unknown extension", async () => {
     const body = makeBody({ extensionName: "nonexistent" });
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(
         JSON.stringify({ success: false, error: "Tool not found: nonexistent.do-thing" }),
         { status: 404, headers: { "Content-Type": "application/json" } },
@@ -97,7 +104,7 @@ describe("inline tool invocation API contract", () => {
       // Remove the key entirely
       delete (body as Record<string, unknown>)[field];
 
-      globalThis.fetch = mock(async () =>
+      globalThis.fetch = mockFetch(async () =>
         new Response(
           JSON.stringify({ success: false, error: "Missing required fields: extensionName, toolName, conversationId, invocationId" }),
           { status: 400, headers: { "Content-Type": "application/json" } },
@@ -118,7 +125,7 @@ describe("inline tool invocation API contract", () => {
   });
 
   test("POST returns 400 for invalid JSON body", async () => {
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(
         JSON.stringify({ success: false, error: "Invalid JSON body" }),
         { status: 400, headers: { "Content-Type": "application/json" } },
@@ -138,7 +145,7 @@ describe("inline tool invocation API contract", () => {
 
   test("auto-retry: success response with retryCount > 0 indicates retries occurred", async () => {
     const expected = successResponse({ retryCount: 2, durationMs: 300 });
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(JSON.stringify(expected), { status: 200, headers: { "Content-Type": "application/json" } })
     );
 
@@ -156,7 +163,7 @@ describe("inline tool invocation API contract", () => {
 
   test("auto-retry: failure after max retries returns error with retryCount", async () => {
     const expected = errorResponse({ retryCount: 2 });
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(JSON.stringify(expected), { status: 200, headers: { "Content-Type": "application/json" } })
     );
 
@@ -175,7 +182,7 @@ describe("inline tool invocation API contract", () => {
 
   test("tool events include source=inline discriminator in response metadata", async () => {
     const expected = successResponse({ source: "inline" });
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(JSON.stringify(expected), { status: 200, headers: { "Content-Type": "application/json" } })
     );
 
@@ -197,7 +204,7 @@ describe("GET /api/extensions/:name/tools contract", () => {
       { name: "other-tool", description: "Other", inputSchema: { type: "object", properties: {} } },
     ];
 
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(JSON.stringify({ tools: toolDefs }), { status: 200, headers: { "Content-Type": "application/json" } })
     );
 
@@ -210,7 +217,7 @@ describe("GET /api/extensions/:name/tools contract", () => {
   });
 
   test("returns 404 for unknown extension", async () => {
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = mockFetch(async () =>
       new Response(JSON.stringify({ error: "Extension not found" }), { status: 404, headers: { "Content-Type": "application/json" } })
     );
 

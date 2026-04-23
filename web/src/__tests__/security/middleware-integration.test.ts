@@ -198,7 +198,9 @@ describe("middleware: Bearer token extraction", () => {
   });
 
   test("handles null Authorization header", () => {
-    const header: string | null = null;
+    // Annotate via accessor-typed local so TS doesn't narrow to the literal
+    // `null`, which would collapse the `!== null` guard to `never`.
+    const header = null as string | null;
     const isBearer = header !== null && header.startsWith("Bearer ");
     expect(isBearer).toBe(false);
   });

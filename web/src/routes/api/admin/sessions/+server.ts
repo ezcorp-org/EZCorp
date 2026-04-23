@@ -8,6 +8,23 @@ import {
   revokeSession,
   revokeAllUserSessions,
 } from "$server/db/queries/sessions";
+
+// Row shape mirrors the `select({...})` projection in
+// `src/db/queries/sessions.ts#listAllSessions`. Declared here so web's tsc
+// can type the `.filter`/`.map` callbacks — Drizzle's inferred result type
+// doesn't flow through cleanly across the backend/web project boundary.
+type SessionRow = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  userAgent: string | null;
+  ipAddress: string | null;
+  expiresAt: Date;
+  lastActiveAt: Date;
+  createdAt: Date;
+  userName: string | null;
+  userEmail: string | null;
+};
 import { validationError } from "$lib/server/security/validation";
 import { errorJson } from "$lib/server/http-errors";
 
@@ -30,10 +47,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     let sessions = await listAllSessions();
 
     if (filterUserId) {
-      sessions = sessions.filter((s) => s.userId === filterUserId);
+      sessions = sessions.filter((s: SessionRow) => s.userId === filterUserId);
     }
 
-    const mapped = sessions.map((s) => ({
+    const mapped = sessions.map((s: SessionRow) => ({
       id: s.id,
       userId: s.userId,
       userName: s.userName,

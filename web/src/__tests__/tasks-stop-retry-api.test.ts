@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach, mock } from "bun:test";
 import type {
   TaskSnapshot,
+  TaskStatus,
   TrackedTask,
   TaskAssignment,
 } from "../../../src/runtime/task-tracking-host";
@@ -382,7 +383,9 @@ describe("POST /api/conversations/[id]/tasks/[taskId]/assignments/[assignmentId]
       agentRunId: "run-only",
     });
     taskStore.tasks[0].assignments = [assignment];
-    taskStore.tasks[0].status = "active";
+    // Cast through the union so TS doesn't narrow the property to the
+    // literal "active" — POST_stop will later mutate it back to "pending".
+    taskStore.tasks[0].status = "active" as TaskStatus;
     taskStore.activeTaskId = "task-1";
 
     const res = await POST_stop(makeStopEvent("conv-1", "task-1", "assign-1"));

@@ -18,16 +18,20 @@ beforeEach(() => {
 	mockCreateElement = mock(() => fakeTextarea);
 	fakeTextarea.value = '';
 
-	// @ts-ignore
+	// Bun's Mock<…> is structurally narrower than the DOM globals (Clipboard,
+	// Node.appendChild, etc); cast through `unknown` so the stubs satisfy the
+	// global shapes without needing `@ts-ignore`.
 	globalThis.navigator = {
-		clipboard: { writeText: mockWriteText },
-	};
-	// @ts-ignore
+		clipboard: { writeText: mockWriteText } as unknown as Clipboard,
+	} as unknown as Navigator;
 	globalThis.document = {
 		createElement: mockCreateElement,
-		body: { appendChild: mock(() => {}), removeChild: mock(() => {}) },
+		body: {
+			appendChild: mock(() => {}) as unknown as <T extends Node>(node: T) => T,
+			removeChild: mock(() => {}) as unknown as <T extends Node>(child: T) => T,
+		},
 		execCommand: mockExecCommand,
-	};
+	} as unknown as Document;
 });
 
 afterEach(() => {

@@ -54,7 +54,7 @@ export const createAgentConfigSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(1000000).optional(),
   outputFormat: z.enum(["text", "json"]).optional(),
-  inputSchema: z.record(z.unknown()).optional(),
+  inputSchema: z.record(z.string(), z.unknown()).optional(),
   // Top-level extensions: IDs of extensions whose tools should be attached to
   // this agent at runtime (see src/runtime/mention-wiring.ts — wired when the
   // agent is @mentioned). Distinct from references.extensions (unused by

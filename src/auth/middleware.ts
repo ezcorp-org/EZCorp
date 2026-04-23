@@ -1,8 +1,16 @@
 import type { AuthUser } from "./types";
 import { getTeamMembership } from "../db/queries/teams";
 
-export function requireAuth(locals: App.Locals): AuthUser {
-  const user = (locals as App.Locals & { user?: AuthUser }).user;
+// Structural shape of SvelteKit's `App.Locals` that these helpers rely on.
+// Declared locally so this module typechecks in the backend build where the
+// SvelteKit `App` namespace is not in scope (see `scripts/typecheck.sh` —
+// backend typecheck excludes `web/` where `app.d.ts` lives). SvelteKit's
+// `App.Locals` is structurally compatible with this, so call sites in
+// `web/src/routes/**` pass without casts.
+type AuthLocals = { user?: AuthUser };
+
+export function requireAuth(locals: AuthLocals): AuthUser {
+  const user = locals.user;
   if (!user) {
     throw new Response(JSON.stringify({ error: "Authentication required" }), {
       status: 401,
@@ -12,7 +20,7 @@ export function requireAuth(locals: App.Locals): AuthUser {
   return user;
 }
 
-export function requireRole(locals: App.Locals, role: "admin"): AuthUser {
+export function requireRole(locals: AuthLocals, role: "admin"): AuthUser {
   const user = requireAuth(locals);
   if (user.role !== role) {
     throw new Response(JSON.stringify({ error: "Insufficient permissions" }), {
@@ -26,7 +34,7 @@ export function requireRole(locals: App.Locals, role: "admin"): AuthUser {
 const ROLE_LEVELS: Record<string, number> = { viewer: 0, editor: 1, owner: 2 };
 
 export async function requireTeamRole(
-  locals: App.Locals,
+  locals: AuthLocals,
   teamId: string,
   minRole: "viewer" | "editor" | "owner",
 ): Promise<AuthUser> {

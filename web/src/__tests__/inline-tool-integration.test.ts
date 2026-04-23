@@ -401,7 +401,8 @@ describe("API contract tests", () => {
         status,
         headers: { "Content-Type": "application/json" },
       })),
-    ) as typeof fetch;
+      // Bun's `Mock<…>` lacks `preconnect`; route through `unknown`.
+    ) as unknown as typeof fetch;
   }
 
   const validBody = {

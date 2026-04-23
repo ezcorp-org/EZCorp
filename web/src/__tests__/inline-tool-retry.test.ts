@@ -5,6 +5,14 @@ import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
  * We test the fetch-based retry contract and the edit-retry callback pattern.
  */
 
+// Bun's `Mock<…>` doesn't satisfy the full `typeof fetch` (missing
+// `preconnect`), so we cast through `unknown`.
+function mockFetch(
+  impl: (url: string | URL | Request, init?: RequestInit) => Promise<Response>,
+): typeof globalThis.fetch {
+  return mock(impl) as unknown as typeof globalThis.fetch;
+}
+
 interface InlineToolCall {
   id: string;
   extensionName: string;
@@ -46,7 +54,7 @@ describe("inline tool retry", () => {
     const call = makeCall();
     let capturedBody: Record<string, unknown> | null = null;
 
-    globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = mockFetch(async (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string);
       return new Response(
         JSON.stringify({ success: true, output: "retried ok", retryCount: 1, durationMs: 50, toolCallId: call.id }),
@@ -81,7 +89,7 @@ describe("inline tool retry", () => {
     const call = makeCall({ id: "unique-inv-42" });
     let capturedBody: Record<string, unknown> | null = null;
 
-    globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = mockFetch(async (_url: string | URL | Request, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string);
       return new Response(
         JSON.stringify({ success: true, output: "ok", retryCount: 0, durationMs: 10, toolCallId: "unique-inv-42" }),

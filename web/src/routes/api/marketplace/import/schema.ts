@@ -16,9 +16,9 @@ export const importManifestSchema = z.object({
     temperature: z.number().optional(),
     maxTokens: z.number().int().optional(),
     outputFormat: z.enum(["text", "json"]).optional(),
-    inputSchema: z.record(z.unknown()).nullish(),
+    inputSchema: z.record(z.string(), z.unknown()).nullish(),
   }).optional(),
-  permissions: z.record(z.unknown()).optional(),
+  permissions: z.record(z.string(), z.unknown()).optional(),
   tags: z.array(z.string()).optional(),
 }).passthrough();
 

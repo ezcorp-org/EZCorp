@@ -165,11 +165,15 @@ describe("auto-scroll effect", () => {
 
 	test("does NOT scroll when sentinel is undefined", () => {
 		let userScrolledUp = false;
-		let sentinel: { scrollIntoView: (_opts?: ScrollIntoViewOptions) => void } | undefined = undefined;
+		// Annotate as a mutable union so TS doesn't narrow to the literal
+		// `undefined` initializer and collapse the truthy branch to `never`.
+		const sentinel: { scrollIntoView: (_opts?: ScrollIntoViewOptions) => void } | undefined =
+			undefined as { scrollIntoView: (_opts?: ScrollIntoViewOptions) => void } | undefined;
 
 		// Should not throw
 		const runEffect = (streamingText: string | undefined) => {
 			void streamingText;
+			void userScrolledUp;
 			if (!userScrolledUp && sentinel) {
 				sentinel.scrollIntoView({ behavior: "instant" as ScrollBehavior });
 			}

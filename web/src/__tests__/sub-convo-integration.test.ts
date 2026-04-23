@@ -141,7 +141,8 @@ describe("Sub-Conversation API Helpers", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
-    globalThis.fetch = mock() as typeof fetch;
+    // Bun's `Mock<…>` lacks `preconnect`; route through `unknown` to satisfy `typeof fetch`.
+    globalThis.fetch = mock() as unknown as typeof fetch;
   });
 
   // Restore after all tests in this describe
@@ -156,7 +157,7 @@ describe("Sub-Conversation API Helpers", () => {
         agentConfigId: "cfg-researcher",
       }),
     } as Response;
-    (globalThis.fetch as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
+    (globalThis.fetch as unknown as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
 
     const { createSubConversation } = await import("../lib/api");
     await createSubConversation("conv-1", {
@@ -167,7 +168,7 @@ describe("Sub-Conversation API Helpers", () => {
     });
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    const [url, opts] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0]! as [string, RequestInit];
+    const [url, opts] = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls[0]! as [string, RequestInit];
     expect(url).toBe("/api/conversations");
     expect(opts.method).toBe("POST");
 
@@ -187,13 +188,13 @@ describe("Sub-Conversation API Helpers", () => {
       status: 200,
       json: async () => ([]),
     } as Response;
-    (globalThis.fetch as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
+    (globalThis.fetch as unknown as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
 
     const { fetchSubConversations } = await import("../lib/api");
     await fetchSubConversations("conv-42");
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    const [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0]! as [string];
+    const [url] = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls[0]! as [string];
     expect(url).toBe("/api/conversations/conv-42/sub-conversations");
 
     globalThis.fetch = originalFetch;
@@ -206,7 +207,7 @@ describe("Sub-Conversation API Helpers", () => {
       statusText: "Internal Server Error",
       headers: new Headers(),
     } as Response;
-    (globalThis.fetch as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
+    (globalThis.fetch as unknown as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
 
     const { fetchSubConversations } = await import("../lib/api");
     await expect(fetchSubConversations("conv-1")).rejects.toThrow("500 Internal Server Error");

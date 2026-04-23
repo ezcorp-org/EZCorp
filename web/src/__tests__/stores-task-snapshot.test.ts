@@ -56,6 +56,13 @@ interface TrackedTask {
 	subtasks: TrackedSubtask[];
 	priority: number;
 	createdAt: string;
+	// Optional timestamps populated on terminal transitions — mirrors the
+	// SDK's `TrackedTask` shape in packages/@ezcorp/sdk/src/runtime/task-events.ts.
+	startedAt?: string;
+	completedAt?: string;
+	failedAt?: string;
+	failureReason?: string;
+	completionSummary?: string;
 }
 
 interface TaskSnapshot {

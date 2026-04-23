@@ -24,9 +24,12 @@ beforeEach(() => {
 		const url = `blob:mock://${++nextId}`;
 		urlMap.set(blob as File, url);
 		return url;
-	});
+	}) as unknown as typeof URL.createObjectURL;
 	revokeSpy = vi.fn();
-	URL.revokeObjectURL = revokeSpy;
+	// vitest's Mock is structurally wider than the DOM's static signature
+	// (Procedure | Constructable vs. (url: string) => void); cast through
+	// `unknown` to pin it to the expected shape.
+	URL.revokeObjectURL = revokeSpy as unknown as typeof URL.revokeObjectURL;
 });
 afterEach(() => cleanup());
 

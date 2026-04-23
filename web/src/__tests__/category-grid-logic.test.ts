@@ -120,13 +120,13 @@ describe("count display", () => {
 	});
 
 	test("plural label for count > 1", () => {
-		const count = 3;
+		const count: number = 3;
 		const label = `${count} ${count === 1 ? "category" : "categories"}`;
 		expect(label).toBe("3 categories");
 	});
 
 	test("plural label for count 0", () => {
-		const count = 0;
+		const count: number = 0;
 		const label = `${count} ${count === 1 ? "category" : "categories"}`;
 		expect(label).toBe("0 categories");
 	});

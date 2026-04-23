@@ -1,5 +1,11 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
+// Bun's `Mock<…>` doesn't satisfy the full `typeof fetch` (missing
+// `preconnect`), so we cast through `unknown`.
+function mockFetch(impl: () => Promise<Response>): typeof globalThis.fetch {
+  return mock(impl) as unknown as typeof globalThis.fetch;
+}
+
 let originalFetch: typeof globalThis.fetch;
 
 beforeEach(() => {
@@ -25,7 +31,7 @@ const sampleTools = [
 
 describe("GET /api/tools contract", () => {
   test("returns tools array and count", async () => {
-    globalThis.fetch = mock(async () => mockToolsResponse(sampleTools));
+    globalThis.fetch = mockFetch(async () => mockToolsResponse(sampleTools));
     const res = await fetch("/api/tools");
     const data = await res.json();
     expect(data.tools).toHaveLength(3);
@@ -33,7 +39,7 @@ describe("GET /api/tools contract", () => {
   });
 
   test("each tool has name, description, and extension", async () => {
-    globalThis.fetch = mock(async () => mockToolsResponse(sampleTools));
+    globalThis.fetch = mockFetch(async () => mockToolsResponse(sampleTools));
     const res = await fetch("/api/tools");
     const data = await res.json();
     for (const tool of data.tools) {
@@ -46,7 +52,7 @@ describe("GET /api/tools contract", () => {
   });
 
   test("returns empty array when no tools loaded", async () => {
-    globalThis.fetch = mock(async () => mockToolsResponse([]));
+    globalThis.fetch = mockFetch(async () => mockToolsResponse([]));
     const res = await fetch("/api/tools");
     const data = await res.json();
     expect(data.tools).toEqual([]);
@@ -73,7 +79,7 @@ describe("GET /api/tools contract", () => {
   });
 
   test("handles fetch failure gracefully", async () => {
-    globalThis.fetch = mock(async () => new Response(null, { status: 500 }));
+    globalThis.fetch = mockFetch(async () => new Response(null, { status: 500 }));
     const res = await fetch("/api/tools");
     expect(res.ok).toBe(false);
   });

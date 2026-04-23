@@ -27,7 +27,7 @@ class MockEventBus {
 function makeStubProcess(result: ToolCallResult = { content: [{ type: "text", text: "ok" }], isError: false }) {
   return {
     callTool: mock(async (_name: string, _args: unknown) => result),
-    setRequestHandler: mock(() => {}),
+    setRequestHandler: mock((_handler: () => void) => {}),
   };
 }
 
@@ -49,9 +49,9 @@ function makeRegistry(opts: {
     getRegisteredTool: mock((name: string) =>
       toolExists ? { extensionId, originalName, name } : null,
     ),
-    getProcess: mock(async () => process),
-    getGrantedPermissions: mock(() => []),
-    getInstallPath: mock(() => "/tmp/ext"),
+    getProcess: mock(async (_id: string) => process),
+    getGrantedPermissions: mock((_id?: string) => []),
+    getInstallPath: mock((_id?: string) => "/tmp/ext"),
     resolveDepTool: mock(() => null),
   };
 }

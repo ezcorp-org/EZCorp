@@ -58,10 +58,10 @@ describe("Sub-Conversation Lifecycle (SUBC-01, SUBC-03, SUBC-04)", () => {
     expect(results.length).toBe(2);
   });
 
-  test.todo("only triggering message passes as initial context");
-  test.todo("sub-conversation uses agent's own system prompt only");
-  test.todo("return to main inserts last agent message as summary");
-  test.todo("sub-conversation has separate message scope");
+  test.todo("only triggering message passes as initial context", () => {});
+  test.todo("sub-conversation uses agent's own system prompt only", () => {});
+  test.todo("return to main inserts last agent message as summary", () => {});
+  test.todo("sub-conversation has separate message scope", () => {});
 });
 
 // ── Client Store Tests ──────────────────────────────────────────────

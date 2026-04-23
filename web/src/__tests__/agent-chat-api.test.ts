@@ -9,8 +9,8 @@ type Conversation = {
   parentConversationId: string | null;
   agentConfigId: string | null;
   systemPrompt: string | null;
-  model?: string;
-  provider?: string;
+  model?: string | null;
+  provider?: string | null;
 };
 
 let mockSubConv: Conversation | null = null;

@@ -31,7 +31,9 @@ describe("SwipeDrawer panel transform logic", () => {
 	});
 
 	test("right drawer off-screen = translateX(100%)", () => {
-		const side = "right";
+		// Cast to the declared union so TS treats `side` as wider than its
+		// literal initializer and keeps the `side === "left"` branch live.
+		const side = "right" as "left" | "right";
 		const entering = false;
 		const dragging = false;
 		const transform = dragging
@@ -82,14 +84,14 @@ describe("SwipeDrawer swipe direction clamping", () => {
 	});
 
 	test("right drawer: only allows positive deltaX (swipe right)", () => {
-		const side = "right";
+		const side = "right" as "left" | "right";
 		const delta = 50;
 		const clamped = side === "left" ? Math.min(0, delta) : Math.max(0, delta);
 		expect(clamped).toBe(50);
 	});
 
 	test("right drawer: clamps negative delta to 0", () => {
-		const side = "right";
+		const side = "right" as "left" | "right";
 		const delta = -30;
 		const clamped = side === "left" ? Math.min(0, delta) : Math.max(0, delta);
 		expect(clamped).toBe(0);

@@ -270,7 +270,8 @@ function mockFetch(status: number, body: unknown) {
         headers: { "Content-Type": "application/json" },
       }),
     ),
-  ) as typeof fetch;
+    // Bun's `Mock<…>` lacks `preconnect`; route through `unknown`.
+  ) as unknown as typeof fetch;
 }
 
 function makeCall(overrides: Partial<InlineToolCall> = {}): InlineToolCall {
@@ -435,7 +436,7 @@ describe("handleChipClick logic", () => {
   });
 
   test("fetch error resets state", async () => {
-    globalThis.fetch = mock(() => Promise.reject(new Error("network"))) as typeof fetch;
+    globalThis.fetch = mock(() => Promise.reject(new Error("network"))) as unknown as typeof fetch;
     const result = await handleChipClickLogic("my-ext", globalThis.fetch);
     expect(result.action).toBe("error");
   });
@@ -562,7 +563,7 @@ describe("handleInlineEditRetry logic", () => {
   });
 
   test("fetch failure returns noop", async () => {
-    globalThis.fetch = mock(() => Promise.reject(new Error("network"))) as typeof fetch;
+    globalThis.fetch = mock(() => Promise.reject(new Error("network"))) as unknown as typeof fetch;
     const call = makeCall();
     const result = await handleInlineEditRetryLogic(call, globalThis.fetch);
     expect(result.action).toBe("noop");

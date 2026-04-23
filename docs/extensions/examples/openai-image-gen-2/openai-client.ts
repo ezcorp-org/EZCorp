@@ -268,11 +268,11 @@ export async function edit(
   for (let i = 0; i < valid.images.length; i++) {
     const ref = valid.images[i]!;
     const { bytes, mimeType } = await fetchImageRef(fetcher, ref);
-    form.append("image[]", new Blob([bytes as BlobPart], { type: mimeType }), `image-${i}.${mimeType.split("/")[1] ?? "png"}`);
+    form.append("image[]", new Blob([bytes], { type: mimeType }), `image-${i}.${mimeType.split("/")[1] ?? "png"}`);
   }
   if (valid.mask) {
     const { bytes, mimeType } = await fetchImageRef(fetcher, valid.mask);
-    form.append("mask", new Blob([bytes as BlobPart], { type: mimeType }), "mask.png");
+    form.append("mask", new Blob([bytes], { type: mimeType }), "mask.png");
   }
 
   const res = await fetcher(IMAGES_EDIT_URL, {

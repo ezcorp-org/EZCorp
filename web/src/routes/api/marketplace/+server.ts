@@ -9,9 +9,10 @@ import type { ExtensionManifestV2 } from "$server/extensions/types";
 import { publishListingSchema } from "./schema";
 import { validationError } from "$lib/server/security/validation";
 import { requireScope } from "$lib/server/security/api-keys";
+import { errorJson } from "$lib/server/http-errors";
 import type { RequestHandler } from "./$types";
 
-export const GET: RequestHandler = async ({ url, locals }) => {
+export const GET: RequestHandler = async ({ url }) => {
   // Browse is public — no auth required
   const q = url.searchParams.get("q") ?? undefined;
   const category = url.searchParams.get("category") ?? undefined;
@@ -48,10 +49,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   const config = await getAgentConfig(agentConfigId);
   if (!config) {
-    return json({ error: "Agent config not found" }, { status: 404 });
+    return errorJson(404, "Agent config not found");
   }
   if (config.userId !== user.id) {
-    return json({ error: "Not found" }, { status: 404 });
+    return errorJson(404, "Not found");
   }
 
   const version = requestedVersion ?? "1.0.0";
@@ -82,7 +83,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   const validation = validateManifestV2(manifest);
   if (!validation.valid) {
-    return json({ error: "Invalid manifest", errors: validation.errors }, { status: 400 });
+    return errorJson(400, "Invalid manifest", { errors: validation.errors });
   }
 
   // Check if listing already exists for this agentConfigId
@@ -93,9 +94,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     // Republish: validate version is higher
     const latestVer = await getLatestVersion(existingListing.id);
     if (latestVer && compareVersions(version, latestVer.version) <= 0) {
-      return json(
-        { error: `Version ${version} must be higher than current ${latestVer.version}` },
-        { status: 400 },
+      return errorJson(
+        400,
+        `Version ${version} must be higher than current ${latestVer.version}`,
       );
     }
 

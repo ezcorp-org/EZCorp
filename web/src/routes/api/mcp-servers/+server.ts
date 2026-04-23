@@ -4,6 +4,7 @@ import { ExtensionRegistry } from "$server/extensions/registry";
 import { McpClient } from "$server/mcp/client";
 import { requireRole } from "$server/auth/middleware";
 import { validationError } from "$lib/server/security/validation";
+import { errorJson } from "$lib/server/http-errors";
 import { installMcpServerSchema } from "./schema";
 import type { RequestHandler } from "./$types";
 
@@ -24,7 +25,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     cachedTools = await client.listTools();
   } catch (e) {
     const message = e instanceof Error ? e.message : "MCP connect failed";
-    return json({ error: `MCP connect failed: ${message}` }, { status: 502 });
+    return errorJson(502, `MCP connect failed: ${message}`);
   } finally {
     await client.close().catch(() => {});
   }
@@ -40,6 +41,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json(ext, { status: 201 });
   } catch (e) {
     const message = e instanceof Error ? e.message : "MCP install failed";
-    return json({ error: message }, { status: 400 });
+    return errorJson(400, message);
   }
 };

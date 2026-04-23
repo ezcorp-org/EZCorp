@@ -17,6 +17,7 @@ import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { getAttachment } from "$server/db/queries/attachments";
 import { getConversation } from "$server/db/queries/conversations";
+import { insertAuditEntry } from "$server/db/queries/audit-log";
 import type { RequestHandler } from "./$types";
 
 function notFound(): Response {
@@ -49,6 +50,20 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const conv = await getConversation(row.conversationId);
 	if (!conv) return notFound();
 	if (conv.userId !== user.id && user.role !== "admin") return notFound();
+
+	// Admins reading another user's attachment is a privileged read — log it
+	// so owners can audit cross-user access. Owner self-reads and the 404
+	// path above are deliberately unlogged.
+	if (user.role === "admin" && conv.userId !== user.id) {
+		try {
+			await insertAuditEntry(user.id, "attachment:admin_read", row.id, {
+				conversationId: row.conversationId,
+				ownerId: conv.userId,
+				filename: row.filename,
+				mimeType: row.mimeType,
+			});
+		} catch { /* swallow */ }
+	}
 
 	const file = Bun.file(row.storagePath);
 	if (!(await file.exists())) return notFound();

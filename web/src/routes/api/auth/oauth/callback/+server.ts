@@ -10,7 +10,7 @@ import { OAUTH_CONFIG } from "$lib/server/oauth-config";
 const VALID_PROVIDERS = ["openai", "google"] as const;
 
 function isValidProvider(p: string): p is (typeof VALID_PROVIDERS)[number] {
-	return VALID_PROVIDERS.includes(p as any);
+	return (VALID_PROVIDERS as readonly string[]).includes(p);
 }
 
 /**

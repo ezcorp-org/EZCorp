@@ -48,86 +48,120 @@ async function promptField(
   const defaultStr = field.default !== undefined ? ` [${field.default}]` : "";
 
   switch (field.type) {
-    case "text": {
-      while (true) {
-        process.stdout.write(`${field.label}${marker} (end with empty line):\n`);
-        const lines: string[] = [];
-        while (true) {
-          const line = await ask(rl, "");
-          if (line === null) return EOF;
-          if (line === "") break;
-          lines.push(line);
-        }
-        const text = lines.join("\n");
-        if (text) return text;
-        if (field.default !== undefined) return field.default as string;
-        if (field.required) {
-          process.stdout.write("This field is required. Please enter a value.\n");
-          continue;
-        }
-        return undefined;
-      }
-    }
+    case "text":
+      return await promptTextField(rl, field, marker);
+    case "number":
+      return await promptNumberField(rl, field, marker, defaultStr);
+    case "boolean":
+      return await promptBooleanField(rl, field, marker);
+    case "select":
+      return await promptSelectField(rl, field, marker, defaultStr);
+    default:
+      return await promptStringField(rl, field, marker, defaultStr);
+  }
+}
 
-    case "number": {
-      while (true) {
-        const raw = await ask(rl, `${field.label}${marker}${defaultStr}: `);
-        if (raw === null) return EOF;
-        if (raw === "" && field.default !== undefined) return field.default;
-        if (raw === "" && !field.required) return undefined;
-        const n = parseFloat(raw);
-        if (!isNaN(n)) return n;
-        process.stdout.write("Please enter a valid number.\n");
-      }
+async function promptTextField(
+  rl: ReturnType<typeof createInterface>,
+  field: InputField,
+  marker: string,
+): Promise<typeof EOF | unknown> {
+  while (true) {
+    process.stdout.write(`${field.label}${marker} (end with empty line):\n`);
+    const lines: string[] = [];
+    while (true) {
+      const line = await ask(rl, "");
+      if (line === null) return EOF;
+      if (line === "") break;
+      lines.push(line);
     }
+    const text = lines.join("\n");
+    if (text) return text;
+    if (field.default !== undefined) return field.default as string;
+    if (field.required) {
+      process.stdout.write("This field is required. Please enter a value.\n");
+      continue;
+    }
+    return undefined;
+  }
+}
 
-    case "boolean": {
-      while (true) {
-        const def = field.default === true ? "Y/n" : field.default === false ? "y/N" : "y/n";
-        const raw = await ask(rl, `${field.label}${marker} (${def}): `);
-        if (raw === null) return EOF;
-        if (raw === "" && field.default !== undefined) return field.default;
-        if (raw === "" && !field.required) return undefined;
-        if (raw === "" && field.required) {
-          process.stdout.write("This field is required. Please enter y or n.\n");
-          continue;
-        }
-        return raw.toLowerCase().startsWith("y");
-      }
-    }
+async function promptNumberField(
+  rl: ReturnType<typeof createInterface>,
+  field: InputField,
+  marker: string,
+  defaultStr: string,
+): Promise<typeof EOF | unknown> {
+  while (true) {
+    const raw = await ask(rl, `${field.label}${marker}${defaultStr}: `);
+    if (raw === null) return EOF;
+    if (raw === "" && field.default !== undefined) return field.default;
+    if (raw === "" && !field.required) return undefined;
+    const n = parseFloat(raw);
+    if (!isNaN(n)) return n;
+    process.stdout.write("Please enter a valid number.\n");
+  }
+}
 
-    case "select": {
-      const opts = field.options ?? [];
-      while (true) {
-        const optList = opts.map((o, i) => `${i + 1}: ${o}`).join(", ");
-        const raw = await ask(rl, `${field.label}${marker} [${optList}]${defaultStr}: `);
-        if (raw === null) return EOF;
-        if (raw === "" && field.default !== undefined) return field.default;
-        if (raw === "" && !field.required) return undefined;
-        const idx = parseInt(raw, 10);
-        if (idx >= 1 && idx <= opts.length) return opts[idx - 1];
-        if (opts.includes(raw)) return raw;
-        if (field.required) {
-          process.stdout.write("Please select a valid option.\n");
-          continue;
-        }
-        return raw;
-      }
+async function promptBooleanField(
+  rl: ReturnType<typeof createInterface>,
+  field: InputField,
+  marker: string,
+): Promise<typeof EOF | unknown> {
+  while (true) {
+    const def = field.default === true ? "Y/n" : field.default === false ? "y/N" : "y/n";
+    const raw = await ask(rl, `${field.label}${marker} (${def}): `);
+    if (raw === null) return EOF;
+    if (raw === "" && field.default !== undefined) return field.default;
+    if (raw === "" && !field.required) return undefined;
+    if (raw === "" && field.required) {
+      process.stdout.write("This field is required. Please enter y or n.\n");
+      continue;
     }
+    return raw.toLowerCase().startsWith("y");
+  }
+}
 
-    default: {
-      // string, file-path, custom fallback
-      while (true) {
-        const raw = await ask(rl, `${field.label}${marker}${defaultStr}: `);
-        if (raw === null) return EOF;
-        if (raw === "" && field.default !== undefined) return field.default;
-        if (raw === "" && !field.required) return undefined;
-        if (raw === "" && field.required) {
-          process.stdout.write("This field is required. Please enter a value.\n");
-          continue;
-        }
-        return raw || undefined;
-      }
+async function promptSelectField(
+  rl: ReturnType<typeof createInterface>,
+  field: InputField,
+  marker: string,
+  defaultStr: string,
+): Promise<typeof EOF | unknown> {
+  const opts = field.options ?? [];
+  while (true) {
+    const optList = opts.map((o, i) => `${i + 1}: ${o}`).join(", ");
+    const raw = await ask(rl, `${field.label}${marker} [${optList}]${defaultStr}: `);
+    if (raw === null) return EOF;
+    if (raw === "" && field.default !== undefined) return field.default;
+    if (raw === "" && !field.required) return undefined;
+    const idx = parseInt(raw, 10);
+    if (idx >= 1 && idx <= opts.length) return opts[idx - 1];
+    if (opts.includes(raw)) return raw;
+    if (field.required) {
+      process.stdout.write("Please select a valid option.\n");
+      continue;
     }
+    return raw;
+  }
+}
+
+// string, file-path, custom fallback
+async function promptStringField(
+  rl: ReturnType<typeof createInterface>,
+  field: InputField,
+  marker: string,
+  defaultStr: string,
+): Promise<typeof EOF | unknown> {
+  while (true) {
+    const raw = await ask(rl, `${field.label}${marker}${defaultStr}: `);
+    if (raw === null) return EOF;
+    if (raw === "" && field.default !== undefined) return field.default;
+    if (raw === "" && !field.required) return undefined;
+    if (raw === "" && field.required) {
+      process.stdout.write("This field is required. Please enter a value.\n");
+      continue;
+    }
+    return raw || undefined;
   }
 }

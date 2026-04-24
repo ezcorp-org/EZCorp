@@ -28,8 +28,8 @@ export function getSecurityNote(category: string | undefined): string {
 
 /** Strip ANSI escape codes from a string for plain-text copy */
 export function stripAnsi(text: string): string {
-	// eslint-disable-next-line no-control-regex
-	return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching the literal ESC (U+001B) byte that begins ANSI escape sequences is the entire purpose of this regex.
+	return text.replace(/\[[0-9;]*[a-zA-Z]/g, '');
 }
 
 /** Parse grep-style output (filepath:lineNum:content) into grouped results */

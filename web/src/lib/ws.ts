@@ -64,13 +64,17 @@ export function createWSClient() {
 		es.onopen = () => {
 			attempt = 0;
 			updateState("connected");
-			subscribers.forEach((fn) => fn({ type: "ws:connected", data: {} }));
+			subscribers.forEach((fn) => {
+				fn({ type: "ws:connected", data: {} });
+			});
 		};
 
 		es.onmessage = (event) => {
 			try {
 				const parsed: WSEvent = JSON.parse(event.data);
-				subscribers.forEach((fn) => fn(parsed));
+				subscribers.forEach((fn) => {
+					fn(parsed);
+				});
 			} catch {
 				// ignore malformed messages or heartbeat comments
 			}
@@ -81,7 +85,9 @@ export function createWSClient() {
 			// end. Close the current source and schedule a reconnect.
 			es?.close();
 			es = null;
-			subscribers.forEach((fn) => fn({ type: "ws:disconnected", data: {} }));
+			subscribers.forEach((fn) => {
+				fn({ type: "ws:disconnected", data: {} });
+			});
 			scheduleReconnect();
 		};
 	}

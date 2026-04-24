@@ -65,9 +65,8 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      # Biome surfaces a small backlog of pre-existing findings (~13 errors /
-      # ~219 warnings) that are tracked as follow-up cleanup. Visible but
-      # non-blocking until that backlog is burned down — same approach the
-      # typecheck job started with.
+      # Biome lint is a hard gate: all 13 pre-existing errors were burned
+      # down in the same wave that flipped this job. Warnings and infos
+      # remain visible (`bun run lint` exits 0 on them) so we can chip
+      # away at them without blocking CI.
       - run: bun run lint
-        continue-on-error: true

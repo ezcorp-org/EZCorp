@@ -45,9 +45,11 @@ const dbStub = {
 		set: (patch: Partial<Row>) => ({
 			where: async () => {
 				calls.push("update");
-				rows = rows.map((r) =>
-					r.userId === patch.userId || true ? { ...r, ...patch } : r,
-				);
+				// Mock applies the patch to every row; the production code
+				// scopes by `where(eq(userId, ...))` but the stub doesn't
+				// model that filter — tests assert on call ordering and
+				// final row contents, not on per-row predicate matching.
+				rows = rows.map((r) => ({ ...r, ...patch }));
 			},
 		}),
 	})),

@@ -37,7 +37,9 @@ describe("ai-kit OBO propagation: _meta.ezOnBehalfOf → X-Ezcorp-On-Behalf-Of",
     const spyFetch = ((input: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       const captured: Record<string, string | null> = {};
-      headers.forEach((v, k) => (captured[k.toLowerCase()] = v));
+      headers.forEach((v, k) => {
+        captured[k.toLowerCase()] = v;
+      });
       capturedHeaders.push(captured);
       return origFetch(input, init);
     }) as unknown as typeof fetch;
@@ -142,7 +144,7 @@ describe("ai-kit model propagation: _meta.ezModel → outbound body", () => {
     const origFetch = fetch;
     const spyFetch = ((input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      let body: unknown = undefined;
+      let body: unknown;
       if (typeof init?.body === "string") {
         try {
           body = JSON.parse(init.body);

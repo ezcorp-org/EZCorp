@@ -97,7 +97,7 @@ export function isLoopbackAddress(remoteAddr: string | undefined | null): boolea
   if (LOOPBACK_SET.has(remoteAddr)) return true;
 
   // Strip IPv6 zone id: `::1%lo0` → `::1`
-  let addr = remoteAddr.replace(/%[^]*$/, "");
+  let addr = remoteAddr.replace(/%.*$/, "");
   if (LOOPBACK_SET.has(addr)) return true;
 
   // Strip bracketed IPv6 port: `[::1]:8080` → `::1`

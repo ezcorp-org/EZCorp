@@ -89,7 +89,11 @@ function validateTask(t: unknown, path: string, errors: string[]): void {
     errors.push(`${path}.status: must be one of ${TASK_STATUSES.join("|")}`);
   }
   if (!Array.isArray(t.assignments)) errors.push(`${path}.assignments: missing or not an array`);
-  else t.assignments.forEach((a, i) => validateAssignment(a, `${path}.assignments[${i}]`, errors));
+  else {
+    t.assignments.forEach((a, i) => {
+      validateAssignment(a, `${path}.assignments[${i}]`, errors);
+    });
+  }
   if (!Array.isArray(t.subtasks)) errors.push(`${path}.subtasks: missing or not an array`);
   if (!isString(t.createdAt)) errors.push(`${path}.createdAt: missing or not a string`);
   if (!isNumber(t.priority)) errors.push(`${path}.priority: missing or not a number`);
@@ -99,7 +103,11 @@ function validateSnapshotPayload(payload: unknown): Validation {
   const errors: string[] = [];
   if (!isObj(payload)) { errors.push("payload: not an object"); return { ok: false, errors }; }
   if (!Array.isArray(payload.tasks)) errors.push("payload.tasks: missing or not an array");
-  else payload.tasks.forEach((t, i) => validateTask(t, `payload.tasks[${i}]`, errors));
+  else {
+    payload.tasks.forEach((t, i) => {
+      validateTask(t, `payload.tasks[${i}]`, errors);
+    });
+  }
   if (payload.activeTaskId !== undefined && !isString(payload.activeTaskId)) {
     errors.push("payload.activeTaskId: must be a string when present");
   }

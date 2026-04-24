@@ -1,4 +1,5 @@
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import { errorJson } from "$lib/server/http-errors";
 import type { RequestHandler } from "./$types";
 import { requireAuth } from "$server/auth/middleware";
@@ -13,6 +14,16 @@ import {
 } from "$server/runtime/task-tracking-host";
 import type { TaskAssignment } from "$server/runtime/task-tracking-host";
 import { isBlocked, unsatisfiedDeps, type ReadonlyTask } from "$server/runtime/task-dependencies";
+
+// Boundary validation. Body is fully optional — the frontend may send
+// `{ model, provider }` to override the parent-turn defaults, but
+// empty/missing body must remain valid (the handler used to swallow
+// JSON-parse errors with try/catch). Both fields are non-empty strings
+// when present; passthrough keeps wire-compat for any future extras.
+const startBodySchema = z.object({
+  model: z.string().min(1).optional(),
+  provider: z.string().min(1).optional(),
+}).passthrough();
 
 /**
  * POST — Start an assignment. Thin HTTP wrapper that performs auth and
@@ -34,14 +45,20 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (scopeErr) return scopeErr;
   const user = requireAuth(locals);
 
-  // Parse optional body for model/provider from frontend
+  // Parse optional body for model/provider from frontend. Empty bodies
+  // are fine; only fail when the body is present-but-malformed (e.g.
+  // `model: 42`) so a typo'd client doesn't get silently ignored.
   let bodyModel: string | undefined;
   let bodyProvider: string | undefined;
-  try {
-    const body = await request.json();
-    bodyModel = body?.model;
-    bodyProvider = body?.provider;
-  } catch { /* empty body is fine */ }
+  const raw = await request.json().catch(() => undefined);
+  if (raw !== undefined) {
+    const parsed = startBodySchema.safeParse(raw);
+    if (!parsed.success) {
+      return errorJson(400, "Invalid body: model and provider must be strings");
+    }
+    bodyModel = parsed.data.model;
+    bodyProvider = parsed.data.provider;
+  }
 
   const conv = await convQueries.getConversation(params.id);
   if (!conv) return errorJson(404, "Not found");

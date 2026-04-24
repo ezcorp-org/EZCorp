@@ -1,4 +1,5 @@
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import { getExtension, updateExtension } from "$server/db/queries/extensions";
 import { ExtensionRegistry } from "$server/extensions/registry";
 import { requireAuth, requireRole } from "$server/auth/middleware";
@@ -9,6 +10,15 @@ import { DIRECT_CARRIER_EVENT_TYPES } from "$server/runtime/sse-conversation-fil
 import type { ExtensionPermissions, ExtensionManifestV2 } from "$server/extensions/types";
 import { errorJson } from "$lib/server/http-errors";
 import type { RequestHandler } from "./$types";
+
+// Boundary validation. PUT body has exactly one field — `permissions`,
+// an object that's then handed to clampToManifest. The existing 400
+// path ("permissions required") fires for missing OR non-object values,
+// so the schema accepts `unknown` and the post-parse runtime check
+// preserves both error message and behaviour exactly.
+const permissionsPutSchema = z.object({
+  permissions: z.unknown(),
+}).passthrough();
 
 // sec-C4: clamp a caller-submitted permission set to the intersection of what
 // the extension's manifest actually requested. Anything beyond the manifest
@@ -121,8 +131,12 @@ export const PUT: RequestHandler = async ({ request, params, locals }) => {
   const ext = await getExtension(params.id);
   if (!ext) return errorJson(404, "Not found");
 
-  const { permissions } = await request.json();
-  if (!permissions || typeof permissions !== "object") {
+  const parsed = permissionsPutSchema.safeParse(await request.json().catch(() => ({})));
+  if (!parsed.success) {
+    return errorJson(400, "permissions required");
+  }
+  const { permissions } = parsed.data;
+  if (!permissions || typeof permissions !== "object" || Array.isArray(permissions)) {
     return errorJson(400, "permissions required");
   }
 

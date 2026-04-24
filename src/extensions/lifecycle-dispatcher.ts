@@ -1,5 +1,5 @@
 import type { EventBus } from "../runtime/events";
-import type { AgentEvents } from "../types";
+import type { AgentEvents, AgentRun } from "../types";
 import type { ExtensionRegistry } from "./registry";
 
 // ── Allowed Hooks ───────────────────────────────────────────────────
@@ -19,6 +19,12 @@ const allowedSet = new Set<string>(ALLOWED_LIFECYCLE_HOOKS);
 
 type Sanitizer = (raw: Record<string, unknown>) => Record<string, unknown>;
 
+/** `run:*` events ship a full `AgentRun` payload — pull only the ids we
+ *  surface to extensions. Partial<AgentRun> covers the rare case of a
+ *  malformed emit where one of the fields is missing; the `String(… ?? "")`
+ *  fallbacks below still give every sanitised payload a stable shape. */
+type RunPayload = { run?: Partial<AgentRun> };
+
 const sanitizers: Record<LifecycleHookName, Sanitizer> = {
   "agent:spawn": (raw) => ({
     agentName: String(raw.agentName ?? ""),
@@ -33,17 +39,23 @@ const sanitizers: Record<LifecycleHookName, Sanitizer> = {
     success: Boolean(raw.success),
     timestamp: Date.now(),
   }),
-  "run:start": (raw) => ({
-    runId: String((raw.run as any)?.id ?? ""),
-    agentName: String((raw.run as any)?.agentName ?? ""),
-    timestamp: Date.now(),
-  }),
-  "run:complete": (raw) => ({
-    runId: String((raw.run as any)?.id ?? ""),
-    agentName: String((raw.run as any)?.agentName ?? ""),
-    status: String((raw.run as any)?.status ?? ""),
-    timestamp: Date.now(),
-  }),
+  "run:start": (raw) => {
+    const run = (raw as RunPayload).run;
+    return {
+      runId: String(run?.id ?? ""),
+      agentName: String(run?.agentName ?? ""),
+      timestamp: Date.now(),
+    };
+  },
+  "run:complete": (raw) => {
+    const run = (raw as RunPayload).run;
+    return {
+      runId: String(run?.id ?? ""),
+      agentName: String(run?.agentName ?? ""),
+      status: String(run?.status ?? ""),
+      timestamp: Date.now(),
+    };
+  },
 };
 
 // ── Lifecycle Hook Dispatcher ───────────────────────────────────────

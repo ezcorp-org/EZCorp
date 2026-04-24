@@ -136,8 +136,6 @@ describe("migration on Postgres-compatible backend", () => {
   });
 
   test("schema objects are queryable after migration", async () => {
-    const { sql } = await import("drizzle-orm");
-
     // Verify we can query each core table without errors
     const tables = [
       "projects", "settings", "runs", "conversations", "messages",

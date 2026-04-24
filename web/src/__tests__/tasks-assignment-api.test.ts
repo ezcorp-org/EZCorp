@@ -120,7 +120,7 @@ mock.module("$lib/server/security/api-keys", () => ({
 // ── Mock event bus ──────────────────────────────────────────────────
 
 const mockBusEmit = mock((..._args: any[]) => {});
-const mockBusOn = mock((_event: string, _cb: Function) => {
+const mockBusOn = mock((_event: string, _cb: (...args: unknown[]) => unknown) => {
   // Return unsubscribe function
   return () => {};
 });
@@ -1228,7 +1228,7 @@ describe("POST /start — __current__ model sentinel resolution", () => {
 
 describe("POST /start — auto-continue with pending messages", () => {
   // Capture the run:complete callback registered by the handler
-  let capturedRunCompleteCallback: Function | null = null;
+  let capturedRunCompleteCallback: ((...args: unknown[]) => unknown) | null = null;
   let capturedRunId: string | null = null;
 
   beforeEach(() => {
@@ -1246,7 +1246,7 @@ describe("POST /start — auto-continue with pending messages", () => {
     );
 
     // Capture the bus.on("run:complete") callback so we can invoke it manually
-    mockBusOn.mockImplementation((event: string, cb: Function) => {
+    mockBusOn.mockImplementation((event: string, cb: (...args: unknown[]) => unknown) => {
       if (event === "run:complete") {
         capturedRunCompleteCallback = cb;
       }

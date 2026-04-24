@@ -5,7 +5,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 let classList: Set<string>;
 let storage: Map<string, string>;
 let matchMediaResult: { matches: boolean };
-let mediaListeners: Map<string, Function[]>;
+let mediaListeners: Map<string, ((...args: unknown[]) => unknown)[]>;
 let metaTags: Map<string, Map<string, string>>;
 
 function setupBrowserMocks() {
@@ -22,12 +22,12 @@ function setupBrowserMocks() {
 		matchMedia: (query: string) => ({
 			matches: matchMediaResult.matches,
 			media: query,
-			addEventListener: (type: string, handler: Function) => {
+			addEventListener: (type: string, handler: (...args: unknown[]) => unknown) => {
 				const key = `${query}:${type}`;
 				if (!mediaListeners.has(key)) mediaListeners.set(key, []);
 				mediaListeners.get(key)!.push(handler);
 			},
-			removeEventListener: (type: string, handler: Function) => {
+			removeEventListener: (type: string, handler: (...args: unknown[]) => unknown) => {
 				const key = `${query}:${type}`;
 				const list = mediaListeners.get(key);
 				if (list) {

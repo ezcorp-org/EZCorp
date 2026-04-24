@@ -130,8 +130,7 @@ try {
         makeDenier("shell", `${id} module`)();
       }
     }
-    // eslint-disable-next-line prefer-rest-params
-    return originalRequire.apply(this, arguments as unknown as [string]);
+    return originalRequire.apply(this, [id]);
   };
 } catch {
   /* Module patch is best-effort; poisoned module objects still provide a backstop. */

@@ -442,7 +442,7 @@ describe("runLoop edge cases", () => {
 describe("start", () => {
   test("two calls do NOT double-attach the stdin loop", async () => {
     const stdin = createStdin();
-    const { writes, stdout } = createStdout();
+    const { stdout } = createStdout();
     const ch = createHostChannelForTests({ stdin: stdin.iterable, stdout });
 
     let nextCalls = 0;

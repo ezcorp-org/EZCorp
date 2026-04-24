@@ -164,6 +164,7 @@ describe("sec-L5: oauth-callback-server hardening", () => {
       // This is the kind of string that, if the pre-fix template literal
       // ever dropped JSON.stringify, would land as unescaped source and
       // execute. After the fix it must be confined to env.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: malicious payload fixture asserting template-like syntax stays inert
       const evilUrl = "http://localhost:5173/auth/callback?x=${process.exit(1)}`;//";
 
       // URL() will accept this (it's just a query string). startOAuthCallbackServer

@@ -153,7 +153,7 @@ describe("ExtensionStateMediator — security", () => {
 
   describe("prototype pollution resistance", () => {
     test("__proto__ key in state does not crash the mediator", () => {
-      const { mediator, events } = setup();
+      const { mediator } = setup();
       mediator.handleNotification(
         "ext-1",
         makeNotification({ __proto__: { polluted: true }, safe: 1 }),
@@ -167,7 +167,7 @@ describe("ExtensionStateMediator — security", () => {
     });
 
     test("constructor key in state does not crash the mediator", () => {
-      const { mediator, events } = setup();
+      const { mediator } = setup();
       expect(() => {
         mediator.handleNotification(
           "ext-1",
@@ -181,7 +181,7 @@ describe("ExtensionStateMediator — security", () => {
     });
 
     test("toString override in state does not crash the mediator", () => {
-      const { mediator, events } = setup();
+      const { mediator } = setup();
       expect(() => {
         mediator.handleNotification(
           "ext-1",

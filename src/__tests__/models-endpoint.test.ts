@@ -26,7 +26,6 @@ function at<T>(arr: readonly T[], i: number, what: string): T {
 }
 
 const ANTHROPIC_MODELS = MOCK_MODELS.filter((m) => m.provider === "anthropic");
-const _OPENAI_MODELS = MOCK_MODELS.filter((m) => m.provider === "openai");
 const GOOGLE_MODELS = MOCK_MODELS.filter((m) => m.provider === "google");
 
 // ── Mock modules ──────────────────────────────────────────────────────
@@ -46,13 +45,7 @@ mock.module("../providers/credentials", () => ({
 }));
 
 mock.module("../providers/registry", () => ({
-  getModelRegistry: mock(async () => {
-    // Include custom models from settings if any
-    const _customModels = mockGetSetting.mock.calls.length > 0
-      ? undefined // handled by the endpoint itself
-      : undefined;
-    return [...MOCK_MODELS];
-  }),
+  getModelRegistry: mock(async () => [...MOCK_MODELS]),
   getModelsForTier: mock(() => []),
   findModelForProviderInTier: mock(() => null),
 }));
@@ -89,10 +82,10 @@ function makeLocals() {
 }
 
 async function callEndpoint(): Promise<ReturnType<typeof mapResult>[]> {
-  const response = await (GET as Function)({
+  const response = (await (GET as (...args: unknown[]) => unknown)({
     locals: makeLocals(),
     request: makeRequest(),
-  });
+  })) as Response;
   return response.json();
 }
 

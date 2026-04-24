@@ -136,7 +136,7 @@ describe("SSE disconnect → reconnect flow", () => {
 
   test("attempt counter increments through reconnection cycle", async () => {
     const origSetTimeout = globalThis.setTimeout;
-    globalThis.setTimeout = ((fn: Function, _delay?: number) => origSetTimeout(fn, 0)) as any;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => unknown, _delay?: number) => origSetTimeout(fn, 0)) as any;
 
     const client = createWSClient();
     latestES().simulateOpen();
@@ -188,7 +188,7 @@ describe("SSE disconnect → reconnect flow", () => {
 describe("SSE permanent failure → manual retry", () => {
   test("10 consecutive failures transition to failed, manualRetry resets", async () => {
     const origSetTimeout = globalThis.setTimeout;
-    globalThis.setTimeout = ((fn: Function, _delay?: number) => origSetTimeout(fn, 0)) as any;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => unknown, _delay?: number) => origSetTimeout(fn, 0)) as any;
 
     const client = createWSClient();
     latestES().simulateOpen();
@@ -222,7 +222,7 @@ describe("SSE permanent failure → manual retry", () => {
 
   test("state passes through reconnecting before reaching failed", async () => {
     const origSetTimeout = globalThis.setTimeout;
-    globalThis.setTimeout = ((fn: Function, _delay?: number) => origSetTimeout(fn, 0)) as any;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => unknown, _delay?: number) => origSetTimeout(fn, 0)) as any;
 
     storeHistory = [];
     const client = createWSClient();

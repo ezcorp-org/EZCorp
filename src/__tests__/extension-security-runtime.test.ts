@@ -741,7 +741,6 @@ describe("auto-disable on repeated failures", () => {
   test("AUTO_DISABLE_THRESHOLD is 3 in subprocess module", async () => {
     // Verify by reading the actual source constant via the spawn args
     // ExtensionProcess exposes getSpawnArgs which includes the entrypoint
-    const { ExtensionProcess } = await import("../extensions/subprocess");
 
     // The threshold is a module-level const; we verify it indirectly via
     // the exited handler behavior. The constant is checked in the crash

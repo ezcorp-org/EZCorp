@@ -12,7 +12,6 @@ mockDbConnection();
 
 const { createUser } = await import("../db/queries/users");
 const { createProject } = await import("../db/queries/projects");
-const { createAgentConfig } = await import("../db/queries/agent-configs");
 
 const BACKFILL_CONVERSATIONS = sql`
   UPDATE conversations SET user_id = (
@@ -119,8 +118,8 @@ describe("Auth Migration — Data backfill", () => {
       sql`INSERT INTO conversations (id, project_id, title, user_id) VALUES (${convId}, ${project.id}, 'owned conv', ${regularUser.id})`
     );
 
-    // Create admin
-    const _admin = await createUser({ email: "admin4@test.com", passwordHash: "hash", name: "Admin", role: "admin" });
+    // Create admin (side effect only; backfill must not reassign to this user)
+    await createUser({ email: "admin4@test.com", passwordHash: "hash", name: "Admin", role: "admin" });
 
     // Run backfill
     await db.execute(BACKFILL_CONVERSATIONS);

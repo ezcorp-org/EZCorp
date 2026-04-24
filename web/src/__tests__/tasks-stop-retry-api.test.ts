@@ -102,7 +102,7 @@ mock.module("$lib/server/security/api-keys", () => ({
 // ── Mock event bus + executor ──────────────────────────────────────
 
 const mockBusEmit = mock((..._args: any[]) => {});
-const mockBusOn = mock((_event: string, _cb: Function) => () => {});
+const mockBusOn = mock((_event: string, _cb: (...args: unknown[]) => unknown) => () => {});
 const mockBus = { emit: mockBusEmit, on: mockBusOn };
 
 const mockCancelRun = mock((_runId: string) => true);

@@ -32,7 +32,7 @@ async function installSseFlapHarness(page: import("@playwright/test").Page) {
 		const originalSetTimeout = window.setTimeout;
 		(window as any).setTimeout = ((fn: TimerHandler, delay?: number, ...args: any[]) => {
 			if (typeof fn === "function" && (delay ?? 0) < 5000) {
-				queueMicrotask(() => (fn as Function)(...args));
+				queueMicrotask(() => (fn as (...args: unknown[]) => unknown)(...args));
 				return 0 as any;
 			}
 			return originalSetTimeout(fn as any, delay, ...args);

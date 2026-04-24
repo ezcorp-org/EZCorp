@@ -243,6 +243,7 @@ steps:
 
     const p = pipelines.find((p) => p.name === "stepinputs");
     expect(p).toBeDefined();
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal template placeholder under test
     expect(p!.steps[0]!.input).toEqual({ url: "${repoUrl}" });
     expect(p!.steps[1]!.dependsOn).toEqual(["fetch"]);
   });

@@ -24,19 +24,19 @@ mock.module("../../web/src/lib/api.js", () => ({
 
 class MockBroadcastChannel {
 	name: string;
-	listeners = new Map<string, Function[]>();
+	listeners = new Map<string, ((...args: unknown[]) => unknown)[]>();
 	closed = false;
 	lastMessage: unknown = null;
 
 	constructor(name: string) {
 		this.name = name;
 	}
-	addEventListener(event: string, fn: Function) {
+	addEventListener(event: string, fn: (...args: unknown[]) => unknown) {
 		const list = this.listeners.get(event) ?? [];
 		list.push(fn);
 		this.listeners.set(event, list);
 	}
-	removeEventListener(event: string, fn: Function) {
+	removeEventListener(event: string, fn: (...args: unknown[]) => unknown) {
 		const list = this.listeners.get(event) ?? [];
 		this.listeners.set(event, list.filter((f) => f !== fn));
 	}

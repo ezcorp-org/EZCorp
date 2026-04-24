@@ -35,7 +35,7 @@ describe("sanitizePath", () => {
 describe("debounce", () => {
 	let originalSetTimeout: typeof globalThis.setTimeout;
 	let originalClearTimeout: typeof globalThis.clearTimeout;
-	let timers: { fn: Function; delay: number; id: number }[];
+	let timers: { fn: (...args: unknown[]) => unknown; delay: number; id: number }[];
 	let nextId: number;
 
 	beforeEach(() => {
@@ -45,7 +45,7 @@ describe("debounce", () => {
 		originalClearTimeout = globalThis.clearTimeout;
 
 		// @ts-expect-error - manual timer mock
-		globalThis.setTimeout = (fn: Function, delay: number) => {
+		globalThis.setTimeout = (fn: (...args: unknown[]) => unknown, delay: number) => {
 			const id = nextId++;
 			timers.push({ fn, delay, id });
 			return id;

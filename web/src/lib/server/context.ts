@@ -12,7 +12,10 @@ import { ExtensionRegistry } from "$server/extensions/registry";
 import { bootstrapBundledCredentials } from "$lib/server/security/bundled-creds";
 import { wireOpenAIExtensionCredentials } from "$lib/server/security/openai-extension-creds";
 import { ExtensionStateMediator } from "$server/extensions/state-mediator";
-import { LifecycleHookDispatcher } from "$server/extensions/lifecycle-dispatcher";
+import {
+  LifecycleHookDispatcher,
+  type LifecycleHookName,
+} from "$server/extensions/lifecycle-dispatcher";
 import { EventSubscriptionDispatcher } from "$server/extensions/event-subscription-dispatcher";
 import { getConversationExtensionIds } from "$server/db/queries/conversation-extensions";
 import { registerExtractionListener } from "$server/memory/extraction";
@@ -81,7 +84,11 @@ export async function ensureInitialized(): Promise<void> {
   lifecycleDispatcher = new LifecycleHookDispatcher(bus, registry);
   for (const [extId, manifest] of registry.getAllManifests()) {
     if (manifest.lifecycleHooks?.length) {
-      lifecycleDispatcher.registerExtension(extId, manifest.lifecycleHooks as any);
+      // manifest.lifecycleHooks is declared as string[] on the manifest
+      // type; the dispatcher validates each entry against ALLOWED_LIFECYCLE_HOOKS
+      // at registration time, so the structural assertion here is narrower
+      // than `any` and preserves runtime behavior.
+      lifecycleDispatcher.registerExtension(extId, manifest.lifecycleHooks as LifecycleHookName[]);
     }
   }
   lifecycleDispatcher.start();

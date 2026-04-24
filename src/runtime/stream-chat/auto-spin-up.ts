@@ -1,6 +1,7 @@
 import { logger } from "../../logger";
 import type { StreamChatContext } from "./context";
 import type { StreamChatHost } from "./host";
+import type { OrchestratedRun } from "./setup-tools";
 
 const log = logger.child("executor.streamChat.autoSpinUp");
 
@@ -23,9 +24,12 @@ export async function applyAutoSpinUp(
   userMessage: string,
 ): Promise<void> {
   const { run, controller } = ctx;
-  const pendingAutoSpinUp = (run as any)._pendingAutoSpinUp;
-  const mentionedAgents = (run as any)._mentionedAgents as Array<{ name: string; id: string; description: string }> | undefined;
-  const teamConfig = (run as any)._teamConfig as { name: string; prompt: string; autoSpinUp?: boolean } | undefined;
+  // Typed view onto the orchestration scratch fields populated by setup-tools.
+  // See OrchestratedRun / RunOrchestrationMeta in ./setup-tools for the shape.
+  const orchRun = run as OrchestratedRun;
+  const pendingAutoSpinUp = orchRun._pendingAutoSpinUp;
+  const mentionedAgents = orchRun._mentionedAgents;
+  const teamConfig = orchRun._teamConfig;
   let autoSpinUpResults: Array<{ name: string; output: string }> | undefined;
 
   if (pendingAutoSpinUp && mentionedAgents?.length) {
@@ -43,7 +47,11 @@ export async function applyAutoSpinUp(
         spinResults.forEach((r, i) => {
           const agentName = mentionedAgents[i]?.name ?? "Unknown";
           if (r.status === "fulfilled") {
-            autoSpinUpResults!.push({ name: agentName, output: (r.value as any)?.content?.[0]?.text ?? "" });
+            // AgentToolResult.content is (TextContent | ImageContent)[].
+            // Only TextContent carries a `text` field — narrow before read.
+            const first = r.value?.content?.[0];
+            const text = first && first.type === "text" ? first.text : "";
+            autoSpinUpResults!.push({ name: agentName, output: text });
           } else {
             log.error("Auto-spin-up agent failed", { agentName, error: String(r.reason) });
             autoSpinUpResults!.push({ name: agentName, output: `[Error: ${r.reason?.message ?? "Unknown error"}]` });
@@ -54,22 +62,22 @@ export async function applyAutoSpinUp(
         log.error("Auto-spin-up failed", { error: String(spinErr), stack: spinErr instanceof Error ? spinErr.stack : undefined });
       }
     }
-    delete (run as any)._pendingAutoSpinUp;
+    delete orchRun._pendingAutoSpinUp;
   }
 
   // Inject orchestrator prompt AFTER auto-spin-up (results available for prompt)
   if (mentionedAgents && mentionedAgents.length > 0) {
     const { buildOrchestratorPrompt, buildTeamOrchestratorPrompt } = await import("../orchestrator-prompt");
-    const teamToolScopeForPrompt = (run as any)._teamToolScope as import("../../types").TeamToolScope | undefined;
+    const teamToolScopeForPrompt = orchRun._teamToolScope;
     const orchestratorBlock = teamConfig
       ? buildTeamOrchestratorPrompt(teamConfig.name, teamConfig.prompt, mentionedAgents, autoSpinUpResults, teamToolScopeForPrompt)
       : buildOrchestratorPrompt(mentionedAgents);
     ctx.system = ctx.system ? `${orchestratorBlock}\n\n${ctx.system}` : orchestratorBlock;
-    delete (run as any)._mentionedAgents;
-    delete (run as any)._teamConfig;
-    delete (run as any)._memberOverrides;
-    delete (run as any)._subAgentMembers;
-    delete (run as any)._teamToolScope;
+    delete orchRun._mentionedAgents;
+    delete orchRun._teamConfig;
+    delete orchRun._memberOverrides;
+    delete orchRun._subAgentMembers;
+    delete orchRun._teamToolScope;
   } else {
     // Non-orchestrator runs: still inject task tracking instructions so single agents
     // can decompose complex work into visible tasks.

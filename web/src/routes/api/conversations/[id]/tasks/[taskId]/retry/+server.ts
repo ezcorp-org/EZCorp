@@ -1,4 +1,5 @@
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import type { RequestHandler } from "./$types";
 import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
@@ -12,6 +13,14 @@ import {
   writeTaskSnapshotForConversation,
 } from "$server/runtime/task-tracking-host";
 import type { TaskAssignment, TaskSnapshot } from "$server/runtime/task-tracking-host";
+
+// Boundary validation. Same shape as the sibling /start endpoint —
+// optional `{ model, provider }` for the auto-spawn path; empty body
+// is a valid retry-without-spawn. Passthrough keeps wire-compat.
+const retryBodySchema = z.object({
+  model: z.string().min(1).optional(),
+  provider: z.string().min(1).optional(),
+}).passthrough();
 
 /**
  * POST — Retry a failed task.
@@ -36,11 +45,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
   let bodyModel: string | undefined;
   let bodyProvider: string | undefined;
-  try {
-    const body = await request.json();
-    bodyModel = body?.model;
-    bodyProvider = body?.provider;
-  } catch { /* empty body is fine */ }
+  const raw = await request.json().catch(() => undefined);
+  if (raw !== undefined) {
+    const parsed = retryBodySchema.safeParse(raw);
+    if (!parsed.success) {
+      return errorJson(400, "Invalid body: model and provider must be strings");
+    }
+    bodyModel = parsed.data.model;
+    bodyProvider = parsed.data.provider;
+  }
 
   const conv = await convQueries.getConversation(params.id);
   if (!conv) return errorJson(404, "Not found");

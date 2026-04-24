@@ -1,10 +1,21 @@
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import { errorJson } from "$lib/server/http-errors";
 import { getExtension, updateExtension, deleteExtension } from "$server/db/queries/extensions";
 import { ExtensionRegistry } from "$server/extensions/registry";
 import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import type { RequestHandler } from "./$types";
+
+// Boundary validation. PATCH only accepts `{ enabled: false }` — the
+// handler explicitly rejects `enabled: true` (that path goes through
+// /activate, which does the manifest-clamped permission review). Any
+// other value of `enabled` (or any other field) is a no-op that returns
+// 400 "No valid update fields provided" today; passthrough preserves
+// that behaviour exactly while pinning the type of `enabled` itself.
+const extensionPatchSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   const scopeErr = requireScope(locals, "read");
@@ -19,8 +30,11 @@ export const PATCH: RequestHandler = async ({ request, params, locals }) => {
   const scopeErr = requireScope(locals, "extensions");
   if (scopeErr) return scopeErr;
   requireAuth(locals);
-  const body = await request.json();
-  const { enabled } = body;
+  const parsed = extensionPatchSchema.safeParse(await request.json().catch(() => ({})));
+  if (!parsed.success) {
+    return errorJson(400, "No valid update fields provided");
+  }
+  const { enabled } = parsed.data;
 
   const ext = await getExtension(params.id);
   if (!ext) return errorJson(404, "Not found");

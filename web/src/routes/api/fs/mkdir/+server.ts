@@ -1,10 +1,19 @@
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import { errorJson } from "$lib/server/http-errors";
 import { mkdir, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import type { RequestHandler } from "./$types";
+
+// Boundary validation. POST mkdir accepts a single `path` field; the
+// non-empty + sandbox-containment checks downstream still drive the
+// "path required" 400 message verbatim so the existing test contract
+// holds. Strict mode rejects unknown keys.
+const postBodySchema = z.object({
+  path: z.string().optional(),
+}).strict();
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   const scopeErr = requireScope(locals, "read");
@@ -14,7 +23,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return errorJson(403, "Access denied: admin role required");
   }
 
-  const body = (await request.json().catch(() => ({}))) as { path?: unknown };
+  const parsed = postBodySchema.safeParse(await request.json().catch(() => ({})));
+  if (!parsed.success) {
+    return errorJson(400, "path required");
+  }
+  const body = parsed.data;
   if (typeof body.path !== "string" || !body.path.trim()) {
     return errorJson(400, "path required");
   }

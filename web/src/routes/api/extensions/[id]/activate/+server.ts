@@ -22,6 +22,7 @@
 // is actively used by the UI, so it can't be repurposed for this.
 
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import { getExtension, updateExtension, resetFailures } from "$server/db/queries/extensions";
 import { ExtensionRegistry } from "$server/extensions/registry";
 import { hasSecurityViolation } from "$server/extensions/security";
@@ -32,6 +33,17 @@ import { DIRECT_CARRIER_EVENT_TYPES } from "$server/runtime/sse-conversation-fil
 import { errorJson } from "$lib/server/http-errors";
 import type { ExtensionPermissions, ExtensionManifestV2 } from "$server/extensions/types";
 import type { RequestHandler } from "./$types";
+
+// Boundary validation. The handler reads exactly one optional field —
+// `grantedPermissions`, an object that's then passed to clampToManifest.
+// We accept any object/undefined here; the existing inline guards
+// (rejecting null/array with 400 "grantedPermissions must be an object")
+// stay so the test contract on that exact message holds. .passthrough()
+// because clampToManifest expects the full Partial<ExtensionPermissions>
+// shape, which has too many nested fields to enumerate locally.
+const activatePostSchema = z.object({
+  grantedPermissions: z.unknown().optional(),
+}).passthrough();
 
 // Keep the clamp logic inline (do not factor into a shared helper — the
 // sec-C4 code review asked for this exact behaviour co-located with the
@@ -134,8 +146,11 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 		);
 	}
 
-	const body = await request.json().catch(() => ({}));
-	const submittedPerms = (body as { grantedPermissions?: unknown }).grantedPermissions;
+	const parsed = activatePostSchema.safeParse(await request.json().catch(() => ({})));
+	if (!parsed.success) {
+		return errorJson(400, "Invalid request body");
+	}
+	const submittedPerms = parsed.data.grantedPermissions;
 
 	const update: { enabled: boolean; grantedPermissions?: ExtensionPermissions } = {
 		enabled: true,

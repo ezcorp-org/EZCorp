@@ -17,7 +17,20 @@ const DB_PATH = process.env.EZCORP_DB_PATH ?? `${DEFAULT_DB_DIR}/ez-corp-db`;
 const IS_MEMORY = DB_PATH === ":memory:";
 const DATABASE_URL = process.env.DATABASE_URL;
 
-let _db: any = null;
+/**
+ * Drizzle adapter handle. Either a `PgliteDatabase` or a `BunSQLDatabase` at
+ * runtime — the two drivers report incompatible HKT result types for
+ * `execute()`, so merging them into a common type rejects the concrete
+ * subclass assignment. We intentionally hold the type as broadly-typed `any`
+ * here; callers consume it through typed helpers (`getDb()`) whose drizzle
+ * DSL methods return concrete types via the drizzle schema.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: drizzle PGlite and bun-sql drivers
+//   return different `execute()` HKT shapes that don't merge; keeping `any`
+//   avoids forcing an intersection cast at every caller site.
+type Database = any;
+
+let _db: Database = null;
 let _pglite: import("@electric-sql/pglite").PGlite | null = null;
 let _initPromise: Promise<void> | null = null;
 
@@ -181,7 +194,10 @@ async function initPostgres(): Promise<void> {
     import("drizzle-orm/pg-core/columns/json"),
   ]);
   const identity = (value: unknown) => value;
+  // biome-ignore lint/suspicious/noExplicitAny: monkey-patching drizzle's private
+  //   `mapToDriverValue` on the column-type prototype; there's no public type for it.
   (PgJsonb.prototype as any).mapToDriverValue = identity;
+  // biome-ignore lint/suspicious/noExplicitAny: see PgJsonb note above.
   (PgJson.prototype as any).mapToDriverValue = identity;
 
   const db = drizzle(DATABASE_URL!, { schema });
@@ -190,8 +206,11 @@ async function initPostgres(): Promise<void> {
   // Wrap execute() so raw SQL results always return { rows: [...] }
   // bun-sql returns arrays directly, but PGlite returns { rows: [...] }.
   // All query code expects the { rows } shape.
-  const origExecute = db.execute.bind(db) as (...a: any[]) => Promise<any>;
-  (db as any).execute = async (...args: any[]) => {
+  const origExecute = db.execute.bind(db) as (...a: unknown[]) => Promise<unknown>;
+  // biome-ignore lint/suspicious/noExplicitAny: replacing `execute` in-place on the
+  //   drizzle instance; the method's overloaded signature can't be expressed here
+  //   without rebuilding the full generic surface.
+  (db as any).execute = async (...args: unknown[]) => {
     const result = await origExecute(...args);
     if (Array.isArray(result)) return { rows: result };
     return result;
@@ -222,13 +241,16 @@ async function initPostgres(): Promise<void> {
 // unwraps the string back into its original object form. Idempotent — once
 // every row is an object/array, subsequent runs are a no-op.
 async function repairDoubleEncodedJsonb(sqlTag: typeof import("drizzle-orm")["sql"]): Promise<void> {
+  if (!_db) throw new Error("Database not initialized");
   const cols = await _db.execute(sqlTag`
     SELECT table_name, column_name
     FROM information_schema.columns
     WHERE table_schema = 'public' AND data_type = 'jsonb'
   `);
-  const rows = (cols as any).rows ?? cols;
-  for (const row of rows as Array<{ table_name: string; column_name: string }>) {
+  // bun-sql returns arrays, PGlite returns { rows }; normalize both shapes.
+  const rawRows = (cols as { rows?: unknown }).rows ?? cols;
+  const rows = rawRows as Array<{ table_name: string; column_name: string }>;
+  for (const row of rows) {
     const table = row.table_name;
     const column = row.column_name;
     if (!/^[a-z_][a-z0-9_]*$/i.test(table) || !/^[a-z_][a-z0-9_]*$/i.test(column)) continue;
@@ -238,12 +260,12 @@ async function repairDoubleEncodedJsonb(sqlTag: typeof import("drizzle-orm")["sq
       // Only unwrap rows whose inner text is a JSON object or array — scalar
       // JSON strings ("yolo", ISO timestamps, encrypted blobs stored in
       // settings.value) are legitimate and must not be touched.
-      const result: any = await _db.execute(sqlTag.raw(
+      const result = await _db.execute(sqlTag.raw(
         `UPDATE ${qTable} SET ${qColumn} = (${qColumn} #>> '{}')::jsonb
          WHERE ${qColumn} IS NOT NULL
            AND jsonb_typeof(${qColumn}) = 'string'
            AND LEFT(LTRIM(${qColumn} #>> '{}'), 1) IN ('{', '[')`,
-      ));
+      )) as { count?: number; rowCount?: number } | undefined;
       const affected = result?.count ?? result?.rowCount ?? 0;
       if (affected > 0) log.info("Repaired double-encoded jsonb", { table, column, rows: affected });
     } catch (err) {
@@ -274,7 +296,7 @@ export async function initDb(): Promise<void> {
   await _initPromise;
 }
 
-export function getDb() {
+export function getDb(): Database {
   if (!_db) throw new Error("Database not initialized — call initDb() first");
   return _db;
 }
@@ -284,7 +306,7 @@ export function getPglite(): import("@electric-sql/pglite").PGlite | null {
 }
 
 /** Execute a raw SQL string with positional $1/$2 params. Works with both PGlite and external Postgres. */
-export async function rawQuery(sql: string, params: (string | null)[] = []): Promise<{ rows: any[] }> {
+export async function rawQuery(sql: string, params: (string | null)[] = []): Promise<{ rows: unknown[] }> {
   if (_pglite) return _pglite.query(sql, params);
   // External Postgres via Bun.sql — use tagged template with raw interpolation
   const { sql: sqlTag } = await import("drizzle-orm");
@@ -292,7 +314,8 @@ export async function rawQuery(sql: string, params: (string | null)[] = []): Pro
     const val = params[parseInt(i, 10) - 1] ?? null;
     return val === null ? "NULL" : `'${val.replace(/'/g, "''")}'`;
   })));
-  return Array.isArray(result) ? { rows: result } : result as any;
+  if (Array.isArray(result)) return { rows: result };
+  return result as { rows: unknown[] };
 }
 
 export function getDbPath(): string {

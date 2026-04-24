@@ -2,8 +2,8 @@
 	import type { ToolCallState } from "$lib/stores.svelte.js";
 	import { slide } from "svelte/transition";
 	import * as Diff2Html from "diff2html";
-	import "$lib/diff2html-patched.css";
-	import "$lib/hljs-theme.css";
+	// diff2html-patched.css + hljs-theme.css are loaded globally via app.css
+	// (Svelte-scoped imports confuse @tailwindcss/vite — issue #16233).
 	import { highlightDiff } from "$lib/highlight-diff.js";
 	import CopyButton from "./CopyButton.svelte";
 	import { extractDiffDetails, generateDiffText, isNewFile as checkNewFile } from "./utils.js";

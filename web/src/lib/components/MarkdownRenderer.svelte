@@ -4,7 +4,8 @@
 	import { highlightDiff } from "$lib/highlight-diff.js";
 	import { lightbox } from "$lib/image-lightbox.svelte.js";
 	import { attachImageFallbacks } from "$lib/image-error-handler.js";
-	import "$lib/hljs-theme.css";
+	// hljs-theme.css is loaded globally via app.css (Svelte-scoped CSS imports
+	// confuse @tailwindcss/vite — issue #16233).
 
 	let { content, streaming = false }: { content: string; streaming?: boolean } = $props();
 

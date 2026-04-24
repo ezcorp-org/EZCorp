@@ -1,4 +1,13 @@
 @import "tailwindcss";
+/* Component-local CSS used to live in `<script>`-level `import` statements
+ * inside Svelte files (DiffCard, DiffSummaryPanel, MarkdownRenderer). That
+ * pattern confused `@tailwindcss/vite` — it followed the CSS imports back
+ * into the .svelte file and tried to parse the whole component as CSS,
+ * choking on TypeScript type annotations. Centralising here sidesteps that
+ * plugin interaction; the styles are global either way. See
+ * https://github.com/tailwindlabs/tailwindcss/issues/16233. */
+@import "./lib/diff2html-patched.css";
+@import "./lib/hljs-theme.css";
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {

@@ -158,7 +158,7 @@ export function validateManifestV2(
   const author = typeof m.author === "object" && m.author !== null
     ? (m.author as Record<string, unknown>)
     : null;
-  if (!author || !author.name || typeof author.name !== "string")
+  if (!author?.name || typeof author.name !== "string")
     errors.push("author.name is required and must be a non-empty string");
 
   // Validate each component type if present

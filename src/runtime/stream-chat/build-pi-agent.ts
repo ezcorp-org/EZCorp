@@ -40,8 +40,10 @@ export function buildPiAgent(
     const oauthModel = resolveOAuthModel(resolved.provider, model.id);
     if (oauthModel) {
       // Keep the original provider name so credential lookups (getApiKey callback)
-      // resolve against "openai"/"google", not "openai-codex"/"google-gemini-cli"
-      model = { ...oauthModel, provider: resolved.provider as any };
+      // resolve against "openai"/"google", not "openai-codex"/"google-gemini-cli".
+      // `Provider = KnownProvider | string` in pi-ai, so the assignment is safe
+      // without a cast.
+      model = { ...oauthModel, provider: resolved.provider };
     } else if (resolved.provider === "google" || resolved.provider === "openai") {
       throw new Error(
         `Model "${model.id}" is not supported with ${resolved.provider} OAuth. ` +
@@ -67,10 +69,13 @@ export function buildPiAgent(
       const freshCred = await getCredential(provider, credentialConversationId);
       return freshCred.token;
     },
-    onPayload: async (body: any) => {
-      // Force reasoning summaries so thinking text is visible to the user
-      if (body?.reasoning && body.reasoning.summary === "auto") {
-        body.reasoning.summary = "detailed";
+    onPayload: async (body) => {
+      // Force reasoning summaries so thinking text is visible to the user.
+      // pi-ai types `body` as `unknown` — narrow to the loose provider
+      // payload shape before poking at the reasoning sub-object.
+      const payload = body as { reasoning?: { summary?: string } } | undefined;
+      if (payload?.reasoning && payload.reasoning.summary === "auto") {
+        payload.reasoning.summary = "detailed";
       }
       return body;
     },

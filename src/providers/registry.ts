@@ -239,6 +239,19 @@ export function resolveModelObject(provider: string, modelId: string, baseUrl?: 
     // fall through
   }
 
+  // OAuth-only models (e.g. gpt-5.5 via ChatGPT subscription) live under
+  // the OAuth provider id ("openai-codex") in LOCAL_OAUTH_OVERRIDES, but
+  // callers commonly pass the public provider id ("openai"). Consult the
+  // OAuth map so capability lookups and model-shape queries return the
+  // full definition (input: ["text", "image"], reasoning: true, correct
+  // api + baseUrl) instead of silently falling through to the generic
+  // text-only fallback below. Without this, any model capability check
+  // for gpt-5.5 under "openai" returned supportsImage=false, causing the
+  // history rehydrator to skip image injection on the one provider that
+  // needed it most.
+  const oauthOverride = resolveOAuthModel(provider, modelId);
+  if (oauthOverride) return oauthOverride;
+
   // Model not in pi-ai registry -- create a custom model entry
   // Assume OpenAI-compatible API for unknown providers
   // Ensure baseUrl ends with /v1 (required by pi-ai's openai-completions API)

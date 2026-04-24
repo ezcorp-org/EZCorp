@@ -1,8 +1,10 @@
 import type { RequestHandler } from "./$types";
 import { getBus } from "$lib/server/context";
 import { requireScope } from "$lib/server/security/api-keys";
+import { requireAuth } from "$server/auth/middleware";
 
 export const GET: RequestHandler = async ({ params, request, locals }) => {
+	requireAuth(locals);
 	const scopeErr = requireScope(locals, "read");
 	if (scopeErr) return scopeErr;
 	const { handleGetPermissionMode } = await import("$server/routes/tool-permission");
@@ -10,6 +12,7 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 };
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
+	requireAuth(locals);
 	const scopeErr = requireScope(locals, "chat");
 	if (scopeErr) return scopeErr;
 	const { handleSetPermissionMode } = await import("$server/routes/tool-permission");

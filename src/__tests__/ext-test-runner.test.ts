@@ -1,4 +1,4 @@
-import { test, describe, expect, beforeEach, mock, afterAll } from "bun:test";
+import { test, describe, expect, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import type { ToolCallResult } from "../extensions/types";
 
@@ -9,9 +9,9 @@ mock.module("../../src/db/connection", () => ({
   getDb: () => ({}),
 }));
 
-const lastSpawnArgs: string[] = [];
-const lastSpawnOpts: Record<string, unknown> = {};
-const mockSpawnExitCode = 0;
+const _lastSpawnArgs: string[] = [];
+const _lastSpawnOpts: Record<string, unknown> = {};
+const _mockSpawnExitCode = 0;
 
 // We can't easily mock Bun.spawn globally, so we test the args-building
 // and env-filtering functions directly.
@@ -40,16 +40,14 @@ afterAll(() => restoreModuleMocks());
 import {
   buildTestSpawnArgs,
   buildTestEnv,
-  type TestRunnerOptions,
 } from "../../src/extensions/sdk/test-runner";
 import {
-  createTestExtension,
   callTool,
   assertToolResult,
 } from "../../src/extensions/sdk/test-helpers";
 import { parseArgs } from "../../src/cli";
 
-const TEST_MANIFEST = {
+const _TEST_MANIFEST = {
   schemaVersion: 2,
   name: "test-ext",
   version: "1.0.0",

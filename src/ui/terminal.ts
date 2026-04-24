@@ -5,7 +5,7 @@ import type { EventBus } from "../runtime/events";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
-const DIM = "\x1b[2m";
+const _DIM = "\x1b[2m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";

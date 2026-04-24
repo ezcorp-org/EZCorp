@@ -1,4 +1,4 @@
-import { test, expect, describe, mock, beforeEach, afterAll } from "bun:test";
+import { test, expect, describe, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 afterAll(() => restoreModuleMocks());

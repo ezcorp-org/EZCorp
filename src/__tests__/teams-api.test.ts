@@ -25,7 +25,7 @@ import { GET as membersGet, POST as membersPost, DELETE as membersDelete } from 
 // ── Query helpers for test setup ─────────────────────────────────
 import { createUser } from "../db/queries/users";
 import { createTeam, addTeamMember } from "../db/queries/teams";
-import { users, teams, teamMembers } from "../db/schema";
+import { teams, teamMembers } from "../db/schema";
 import { getTestDb } from "./helpers/test-pglite";
 
 // ── Test fixtures ────────────────────────────────────────────────

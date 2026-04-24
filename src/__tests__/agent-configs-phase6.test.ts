@@ -8,7 +8,6 @@ import {
   getAgentConfig,
   updateAgentConfig,
   deleteAgentConfig,
-  listAgentConfigs,
   listDbAgentEntries,
 } from "../db/queries/agent-configs";
 
@@ -106,7 +105,7 @@ describe("agent-configs Phase 6", () => {
   });
 
   test("listDbAgentEntries maps capabilities correctly", async () => {
-    const config = await createAgentConfig({
+    const _config = await createAgentConfig({
       name: "multi-cap-agent",
       description: "Agent with multiple caps",
       prompt: "Prompt",

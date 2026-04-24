@@ -6,7 +6,7 @@ import { EMBEDDING_DIMENSIONS } from "../memory/types";
 mockDbConnection();
 
 // Import after mocking
-import { hybridSearch, searchKBChunksForQuery, type HybridSearchResult } from "../memory/retrieval";
+import { hybridSearch, searchKBChunksForQuery, } from "../memory/retrieval";
 
 // Helper: create a deterministic 384-dim vector that has known cosine similarity properties
 function makeVector(seed: number): number[] {

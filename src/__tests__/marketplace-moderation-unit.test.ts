@@ -172,7 +172,7 @@ describe("listFlags filtering", () => {
   beforeAll(async () => {
     const listing = await makeTestListing("Filter Flags Listing");
     filterListingId = listing.id;
-    const f1 = await createFlag(filterListingId, USER_A_ID, "Pending flag", "spam");
+    const _f1 = await createFlag(filterListingId, USER_A_ID, "Pending flag", "spam");
     const f2 = await createFlag(filterListingId, USER_B_ID, "To dismiss", "other");
     await resolveFlag(f2.id, ADMIN_ID, "dismissed");
   });

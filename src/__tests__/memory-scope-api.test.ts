@@ -76,8 +76,8 @@ beforeAll(async () => {
         if (url.searchParams.get("search")) params.search = url.searchParams.get("search");
         if (url.searchParams.get("status")) params.status = url.searchParams.get("status");
         if (url.searchParams.get("category")) params.category = url.searchParams.get("category");
-        if (url.searchParams.get("limit")) params.limit = parseInt(url.searchParams.get("limit")!);
-        if (url.searchParams.get("offset")) params.offset = parseInt(url.searchParams.get("offset")!);
+        if (url.searchParams.get("limit")) params.limit = parseInt(url.searchParams.get("limit")!, 10);
+        if (url.searchParams.get("offset")) params.offset = parseInt(url.searchParams.get("offset")!, 10);
         const results = await searchMemories(params);
         return Response.json(results);
       }

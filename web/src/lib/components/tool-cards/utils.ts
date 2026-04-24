@@ -44,7 +44,7 @@ export interface GrepFileGroup {
 }
 
 export function parseGrepOutput(raw: string): GrepFileGroup[] {
-	if (!raw || !raw.trim()) return [];
+	if (!raw?.trim()) return [];
 
 	const groups: Map<string, GrepMatch[]> = new Map();
 	const lines = raw.split('\n');
@@ -66,7 +66,7 @@ export function parseGrepOutput(raw: string): GrepFileGroup[] {
 
 /** Parse glob-style output (newline-separated file paths) into a list */
 export function parseGlobOutput(raw: string): string[] {
-	if (!raw || !raw.trim()) return [];
+	if (!raw?.trim()) return [];
 	return raw
 		.split('\n')
 		.map(l => l.trim())

@@ -1,7 +1,7 @@
-import { test, expect, describe, beforeAll, afterAll, beforeEach, mock, spyOn } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, mock, } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import { setupTestDb, closeTestDb, mockDbConnection } from "./helpers/test-pglite";
-import type { MemoryCategory, MemoryConfidence, MemoryProvenance } from "../memory/types";
+import type { MemoryProvenance } from "../memory/types";
 import type { AgentEvents } from "../types";
 import { EventBus } from "../runtime/events";
 
@@ -64,7 +64,7 @@ mock.module("../providers/credentials", () => ({
 import { insertMemory, updateMemory, findSimilarMemory, listMemories, getMemoryById } from "../db/queries/memories";
 import { extractMemories, getExtractionModel, EXTRACTION_SYSTEM_PROMPT, registerExtractionListener } from "../memory/extraction";
 import { getDb } from "../db/connection";
-import { memoryAuditLog, memories } from "../db/schema";
+import { memoryAuditLog, } from "../db/schema";
 import { eq } from "drizzle-orm";
 
 import { createProject } from "../db/queries/projects";
@@ -303,7 +303,7 @@ describe("extractMemories", () => {
       provenance,
     });
 
-    const beforeCount = (await listMemories()).length;
+    const _beforeCount = (await listMemories()).length;
 
     // Extract same fact again (different wording but same embedding due to mock)
     const facts = [{ content: "User prefers dark mode", category: "preferences", confidence: "high", messageIds: ["msg-dedup-2"] }];
@@ -318,7 +318,7 @@ describe("extractMemories", () => {
     };
     await extractMemories(run, conversationId);
 
-    const afterCount = (await listMemories()).length;
+    const _afterCount = (await listMemories()).length;
     // The key check: the existing memory was updated, not a new one added alongside
     const updated = await getMemoryById(existing.id);
     expect(updated).toBeDefined();

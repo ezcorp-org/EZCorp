@@ -113,7 +113,7 @@ describe("grep tool", () => {
 
     // Case sensitive (default) - should only match lowercase
     const sensitive = await grep.execute("1", { pattern: "hello", path: "src", caseSensitive: true });
-    const sensitiveText = getText(sensitive);
+    const _sensitiveText = getText(sensitive);
 
     // Case insensitive - should match both hello and HELLO
     const insensitive = await grep.execute("1", { pattern: "hello", path: "src", caseSensitive: false });

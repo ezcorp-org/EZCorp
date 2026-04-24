@@ -416,7 +416,7 @@ describe("updateExtension", () => {
 
 describe("removeExtension", () => {
   test("removes extension from DB and cleans up files", async () => {
-    const ext = await installFromGit(
+    const _ext = await installFromGit(
       `file://${bareRepoDir}@v1.0.0`,
       defaultPerms,
       { extensionsDir: installBase },

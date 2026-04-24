@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import { setupTestDb, closeTestDb, getTestDb, mockDbConnection } from "./helpers/test-pglite";
-import { mockServerAlias, createMockEvent, jsonFromResponse, ADMIN_USER } from "./helpers/mock-request";
+import { mockServerAlias, createMockEvent, jsonFromResponse, } from "./helpers/mock-request";
 import type { AuthUser } from "../auth/types";
 
 // ── Module-level mocks (BEFORE handler imports) ──────────────────

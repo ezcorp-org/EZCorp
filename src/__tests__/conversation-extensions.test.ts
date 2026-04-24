@@ -74,14 +74,14 @@ async function makeExtension(nameSuffix: string) {
 }
 
 let projectId: string;
-let convId: string;
+let _convId: string;
 
 beforeAll(async () => {
   await setupTestDb();
   const project = await createProject({ name: "Ext Test Project", path: "/tmp/ext-test" });
   projectId = project.id;
   const conv = await createConversation(projectId);
-  convId = conv.id;
+  _convId = conv.id;
 });
 
 afterAll(async () => {

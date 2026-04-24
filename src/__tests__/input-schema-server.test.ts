@@ -105,7 +105,7 @@ describe("GET /api/agents inputSchema", () => {
 
     for (const agent of agents) {
       if (!agent.inputSchema) continue;
-      for (const [key, field] of Object.entries(agent.inputSchema) as [string, any][]) {
+      for (const [_key, field] of Object.entries(agent.inputSchema) as [string, any][]) {
         // Every field must have type and label
         expect(field.type).toBeDefined();
         expect(field.label).toBeDefined();
@@ -246,7 +246,7 @@ describe("additional inputSchema and run tests", () => {
 
     for (const agent of agents) {
       if (!agent.inputSchema) continue;
-      for (const [key, field] of Object.entries(agent.inputSchema) as [string, any][]) {
+      for (const [_key, field] of Object.entries(agent.inputSchema) as [string, any][]) {
         expect(VALID_FIELD_TYPES.has(field.type)).toBe(true);
       }
     }

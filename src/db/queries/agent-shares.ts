@@ -1,6 +1,6 @@
-import { eq, and, sql, isNotNull } from "drizzle-orm";
+import { eq, and, sql, } from "drizzle-orm";
 import { getDb } from "../connection";
-import { agentShares, agentConfigs, teams, users, teamMembers } from "../schema";
+import { agentShares, } from "../schema";
 import type { DbAgentConfig } from "./agent-configs";
 
 export async function shareAgent(agentId: string, teamId: string, sharedBy: string, permission: "read" | "edit" = "read"): Promise<void> {

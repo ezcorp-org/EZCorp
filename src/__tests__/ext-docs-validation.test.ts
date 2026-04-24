@@ -19,7 +19,7 @@ async function readText(path: string): Promise<string> {
   return Bun.file(path).text();
 }
 
-async function fileExists(path: string): Promise<boolean> {
+async function _fileExists(path: string): Promise<boolean> {
   return Bun.file(path).exists();
 }
 

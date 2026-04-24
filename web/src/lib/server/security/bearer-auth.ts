@@ -57,7 +57,7 @@ export async function attachBearerAuth(
   event: BearerAuthEvent,
   authHeader: string | null | undefined,
 ): Promise<boolean> {
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
+  if (!authHeader?.startsWith("Bearer ")) return false;
   const raw = authHeader.slice(7);
 
   // Internal, bundled-extension keys route exclusively through

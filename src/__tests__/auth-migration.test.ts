@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from "bun:test";
+import { test, expect, describe, afterAll, beforeEach } from "bun:test";
 import { setupTestDb, closeTestDb, mockDbConnection, getTestDb } from "./helpers/test-pglite";
 import { sql } from "drizzle-orm";
 
@@ -120,7 +120,7 @@ describe("Auth Migration — Data backfill", () => {
     );
 
     // Create admin
-    const admin = await createUser({ email: "admin4@test.com", passwordHash: "hash", name: "Admin", role: "admin" });
+    const _admin = await createUser({ email: "admin4@test.com", passwordHash: "hash", name: "Admin", role: "admin" });
 
     // Run backfill
     await db.execute(BACKFILL_CONVERSATIONS);

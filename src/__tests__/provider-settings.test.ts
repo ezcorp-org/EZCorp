@@ -45,7 +45,7 @@ afterEach(() => {
 const PROVIDERS = ["anthropic", "openai", "google"] as const;
 type Provider = (typeof PROVIDERS)[number];
 
-const ENV_KEYS: Record<Provider, string> = {
+const _ENV_KEYS: Record<Provider, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_API_KEY",

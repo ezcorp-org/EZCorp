@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures/test-base.js";
-import { makeProject, makeConversation, makeMessage, makeMemory } from "./fixtures/data.js";
+import { makeProject, makeConversation, makeMemory } from "./fixtures/data.js";
 
 const proj = makeProject({ id: "proj-1", name: "Memory Project" });
 const conv = makeConversation({ id: "conv-1", projectId: "proj-1" });

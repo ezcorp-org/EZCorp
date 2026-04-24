@@ -20,8 +20,8 @@ const { eq } = await import("drizzle-orm");
 let projectId: string;
 let projectId2: string;
 let conversationId: string;
-let nameMemoryId: string;
-let prefMemoryId: string;
+let _nameMemoryId: string;
+let _prefMemoryId: string;
 let archivedMemoryId: string;
 
 function makeProvenance(): MemoryProvenance {
@@ -66,10 +66,10 @@ beforeAll(async () => {
   conversationId = conv.id;
 
   const nameMem = await insertTestMemory("User's name is Geff", { category: "biographical" });
-  nameMemoryId = nameMem.id;
+  _nameMemoryId = nameMem.id;
 
   const prefMem = await insertTestMemory("Always greet with hi billy", { category: "preferences" });
-  prefMemoryId = prefMem.id;
+  _prefMemoryId = prefMem.id;
 
   const archivedMem = await insertTestMemory("Old forgotten fact", {
     category: "biographical",

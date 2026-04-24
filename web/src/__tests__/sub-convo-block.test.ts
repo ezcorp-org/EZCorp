@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach } from "bun:test";
+import { test, expect, describe, } from "bun:test";
 import { agentColor } from "../lib/agent-color";
 
 // Test the SubConversationBlock logic without Svelte runtime

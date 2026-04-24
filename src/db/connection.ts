@@ -289,7 +289,7 @@ export async function rawQuery(sql: string, params: (string | null)[] = []): Pro
   // External Postgres via Bun.sql — use tagged template with raw interpolation
   const { sql: sqlTag } = await import("drizzle-orm");
   const result = await getDb().execute(sqlTag.raw(sql.replace(/\$(\d+)/g, (_, i: string) => {
-    const val = params[parseInt(i) - 1] ?? null;
+    const val = params[parseInt(i, 10) - 1] ?? null;
     return val === null ? "NULL" : `'${val.replace(/'/g, "''")}'`;
   })));
   return Array.isArray(result) ? { rows: result } : result as any;

@@ -13,7 +13,6 @@
  */
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
-import { logger } from "../logger";
 import type { ExtensionManifestV2 } from "../extensions/types";
 
 // insertAuditEntry is mocked to a no-op because this file uses

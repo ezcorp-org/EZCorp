@@ -18,13 +18,13 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 // ── DB stubs BEFORE importing createTestExtension (transitive queries) ────
 let incrementCalls = 0;
-let resetCalls = 0;
-let disableCalls = 0;
+let _resetCalls = 0;
+let _disableCalls = 0;
 
 mock.module("../db/queries/extensions", () => ({
   incrementFailures: async () => ++incrementCalls,
-  resetFailures: async () => { resetCalls++; },
-  disableExtension: async () => { disableCalls++; },
+  resetFailures: async () => { _resetCalls++; },
+  disableExtension: async () => { _disableCalls++; },
 }));
 
 afterAll(() => restoreModuleMocks());
@@ -49,8 +49,8 @@ describe("todo-tracker SDK integration (createTestExtension + real RPC)", () => 
     originalCwd = process.cwd();
     process.chdir(cwd);
     incrementCalls = 0;
-    resetCalls = 0;
-    disableCalls = 0;
+    _resetCalls = 0;
+    _disableCalls = 0;
   });
 
   afterEach(() => {

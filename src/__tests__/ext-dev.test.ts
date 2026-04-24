@@ -12,7 +12,7 @@ let mockInstallFromLocalCalls: unknown[][] = [];
 let mockDeleteExtensionCalls: string[] = [];
 let mockListExtensionsResult: unknown[] = [];
 let mockReloadCalls = 0;
-let mockKillAllCalls = 0;
+let _mockKillAllCalls = 0;
 
 mock.module("../../src/extensions/installer", () => ({
   installFromLocal: async (...args: unknown[]) => {
@@ -31,7 +31,7 @@ mock.module("../../src/extensions/registry", () => ({
   ExtensionRegistry: {
     getInstance: () => ({
       reload: async () => { mockReloadCalls++; },
-      killAll: () => { mockKillAllCalls++; },
+      killAll: () => { _mockKillAllCalls++; },
       getProcess: async () => ({
         kill: () => {},
         ensureRunning: () => {},
@@ -67,7 +67,7 @@ beforeEach(() => {
   mockDeleteExtensionCalls = [];
   mockListExtensionsResult = [];
   mockReloadCalls = 0;
-  mockKillAllCalls = 0;
+  _mockKillAllCalls = 0;
 });
 
 async function createTempExtDir(): Promise<string> {

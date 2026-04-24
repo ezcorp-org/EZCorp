@@ -3,7 +3,6 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import {
   stubAssistantMessage,
   setupPiAiMocks,
-  mockAgentPromptFn,
   resetMockAgent,
 } from "./helpers/mock-pi-ai";
 import type { AgentEvents } from "../types";
@@ -155,7 +154,6 @@ mock.module("../extensions/registry", () => ({
 mock.module("../extensions/tool-executor", () => ({
   MAX_TOOL_CALLS_PER_TURN: 10,
   ToolExecutor: class {
-    constructor() {}
     createToolsContext() {
       return { invoke: async () => ({}) };
     }
@@ -201,7 +199,6 @@ describe("AgentExecutor.streamChat", () => {
       Agent: class MockAgent {
         state = { error: null };
         private _subs: any[] = [];
-        constructor() {}
         subscribe(cb: any) {
           this._subs.push(cb);
           return () => {};
@@ -231,7 +228,6 @@ describe("AgentExecutor.streamChat", () => {
       Agent: class MockAgent {
         state = { error: null };
         private _subs: any[] = [];
-        constructor() {}
         subscribe(cb: any) {
           this._subs.push(cb);
           return () => {};
@@ -312,7 +308,6 @@ describe("AgentExecutor.streamChat", () => {
       Agent: class MockAgent {
         state = { error: null };
         private _subs: any[] = [];
-        constructor() {}
         subscribe(cb: any) {
           this._subs.push(cb);
           return () => {};
@@ -443,7 +438,6 @@ describe("AgentExecutor.streamChat", () => {
       Agent: class MockAgent {
         state = { error: null };
         private _subs: any[] = [];
-        constructor() {}
         subscribe(cb: any) { this._subs.push(cb); return () => {}; }
         abort() {}
         async prompt() {
@@ -474,7 +468,6 @@ describe("AgentExecutor.streamChat", () => {
       Agent: class MockAgent {
         state = { error: null };
         private _subs: any[] = [];
-        constructor() {}
         subscribe(cb: any) { this._subs.push(cb); return () => {}; }
         abort() {}
         async prompt() {

@@ -448,7 +448,7 @@ export async function setupTools(
               const { getExtensionByName } = await import("../../db/queries/extensions");
               const scratchpadExt = await getExtensionByName("scratchpad");
               const storageGranted = (scratchpadExt?.grantedPermissions as { storage?: boolean } | undefined)?.storage === true;
-              if (!scratchpadExt || !scratchpadExt.enabled || !storageGranted) {
+              if (!scratchpadExt?.enabled || !storageGranted) {
                 log.info("Scratchpad auto-wire skipped: not enabled or storage not granted", {
                   exists: !!scratchpadExt,
                   enabled: scratchpadExt?.enabled ?? false,

@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach } from "bun:test";
+import { test, expect, describe, } from "bun:test";
 import { EventBus } from "../runtime/events";
 import type { AgentEvents } from "../types";
 import type { JsonRpcNotification } from "../extensions/types";

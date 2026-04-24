@@ -10,7 +10,7 @@
 import { test, expect, describe, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import { JsonRpcTransport } from "../extensions/json-rpc";
-import type { JsonRpcRequest, JsonRpcResponse } from "../extensions/types";
+import type { JsonRpcRequest, } from "../extensions/types";
 
 /** Index into an array, throwing if the slot is absent — avoids `!` under noUncheckedIndexedAccess. */
 function at<T>(arr: readonly T[], i: number, what: string): T {

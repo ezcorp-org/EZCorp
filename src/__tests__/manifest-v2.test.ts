@@ -7,8 +7,6 @@ import type {
   SkillDefinition,
   McpServerDefinition,
   AgentComponentDefinition,
-  ScriptDefinition,
-  ExtensionPackageType,
 } from "../extensions/types";
 import { inferPackageType } from "../extensions/types";
 import {

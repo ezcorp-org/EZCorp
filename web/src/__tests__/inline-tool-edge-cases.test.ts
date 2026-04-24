@@ -406,7 +406,7 @@ describe("form validation edge cases", () => {
         case "number":
         case "integer": {
           const n = Number(rawValue);
-          result[key] = isNaN(n) ? rawValue : n;
+          result[key] = Number.isNaN(n) ? rawValue : n;
           break;
         }
         case "boolean":

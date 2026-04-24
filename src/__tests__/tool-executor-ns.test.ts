@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, mock } from "bun:test";
+import { test, expect, describe, mock } from "bun:test";
 import type { RegisteredTool } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
 import type { ToolCallResult } from "../extensions/types";
@@ -41,7 +41,7 @@ function createMockRegistry(tools: RegisteredTool[]) {
 }
 
 // Suppress DB recording errors (no DB in unit tests)
-const noopDb = {
+const _noopDb = {
   insert: () => ({ values: () => Promise.resolve() }),
 };
 

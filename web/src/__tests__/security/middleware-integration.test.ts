@@ -201,7 +201,7 @@ describe("middleware: Bearer token extraction", () => {
     // Annotate via accessor-typed local so TS doesn't narrow to the literal
     // `null`, which would collapse the `!== null` guard to `never`.
     const header = null as string | null;
-    const isBearer = header !== null && header.startsWith("Bearer ");
+    const isBearer = header?.startsWith("Bearer ");
     expect(isBearer).toBe(false);
   });
 });

@@ -127,7 +127,7 @@ test.describe("Tool Call History Display", () => {
 	});
 
 	test("expanding historical tool card fetches full output", async ({ page, mockApi }) => {
-		let outputFetched = false;
+		let _outputFetched = false;
 
 		await mockApi({
 			projects: [proj],
@@ -137,7 +137,7 @@ test.describe("Tool Call History Display", () => {
 				"active-run": () => ({ runId: null }),
 				"withToolCalls": () => withToolCallsResponse([toolCallSuccess]),
 				"/api/tool-calls/tc-1/output": () => {
-					outputFetched = true;
+					_outputFetched = true;
 					return { output: "Full detailed forecast: Sunny, 72F, wind NW 5mph, humidity 45%" };
 				},
 			},

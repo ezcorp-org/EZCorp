@@ -6,7 +6,6 @@
 import { ExtensionProcess, parseMemoryLimit, DEFAULT_MEMORY_LIMIT_MB } from "../subprocess";
 import { buildAllowedEnv } from "../registry";
 import { loadManifest } from "../loader";
-import type { ExtensionManifestV2 } from "../types";
 import type { ToolCallResult } from "../types";
 import { join } from "node:path";
 

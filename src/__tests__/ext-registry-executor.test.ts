@@ -9,7 +9,7 @@
  *   handlePiFs, handlePiInvoke, createToolsContext using mock registry + mock process objects.
  */
 
-import { test, expect, describe, beforeEach, afterEach, afterAll, mock, spyOn } from "bun:test";
+import { test, expect, describe, afterEach, afterAll, mock, spyOn } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 afterAll(() => restoreModuleMocks());

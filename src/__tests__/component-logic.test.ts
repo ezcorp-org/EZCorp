@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { isBannerVisible, bannerColorClass, type ConnectionState } from "../../web/src/lib/connection-banner-logic";
+import { isBannerVisible, bannerColorClass, } from "../../web/src/lib/connection-banner-logic";
 import { isChatDisabled, chatPlaceholder } from "../../web/src/lib/chat-input-logic";
 import { statusColor, statusLabel, type SubsystemStatus } from "../../web/src/lib/system-health-logic";
 

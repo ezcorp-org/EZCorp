@@ -53,7 +53,7 @@ function makeEvent(conversationId: string, opts: { user?: typeof mockUser } = {}
   } as any;
 }
 
-function snap(overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
+function _snap(overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
   return {
     conversationId: "conv-1",
     tasks: [],

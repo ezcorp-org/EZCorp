@@ -24,12 +24,12 @@ mock.module("@huggingface/transformers", () => {
 import { generateEmbedding, generateEmbeddings, resetEmbeddingProvider } from "../memory/embeddings";
 
 describe("schema", () => {
-  let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
+  let _db: Awaited<ReturnType<typeof setupTestDb>>["db"];
   let pglite: Awaited<ReturnType<typeof setupTestDb>>["pglite"];
 
   beforeAll(async () => {
     const setup = await setupTestDb();
-    db = setup.db as any;
+    _db = setup.db as any;
     pglite = setup.pglite;
   });
 

@@ -239,7 +239,7 @@ export async function wireOrchestrationToolsForTurn(
     invokeAgentTool.inputSchema as Record<string, unknown>,
   );
   const props = schemaOverride.properties as Record<string, Record<string, unknown>> | undefined;
-  if (props && props.agentConfigId) {
+  if (props?.agentConfigId) {
     props.agentConfigId = {
       ...props.agentConfigId,
       enum: uniqueAgentIds,

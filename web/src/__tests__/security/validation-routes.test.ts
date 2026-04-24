@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { z, type ZodError } from "zod";
+import { z, } from "zod";
 import { validationError } from "../../lib/server/security/validation";
 import { loginSchema } from "../../routes/api/auth/login/schema";
 import { createMessageSchema } from "../../routes/api/conversations/[id]/messages/schema";

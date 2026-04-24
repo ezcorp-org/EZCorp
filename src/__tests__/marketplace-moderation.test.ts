@@ -17,7 +17,7 @@ import { GET as pendingFlagsGET } from "../../web/src/routes/api/marketplace/fla
 import { GET as flagHistoryGET, PATCH as flagResolvePATCH } from "../../web/src/routes/api/marketplace/[id]/flags/+server";
 import { DELETE as hardDELETE } from "../../web/src/routes/api/marketplace/[id]/delete/+server";
 import { getDb } from "../db/connection";
-import { users, marketplaceListings, marketplaceFlags } from "../db/schema";
+import { users, marketplaceListings, } from "../db/schema";
 import {
   createFlag,
   countPendingFlagsByUser,

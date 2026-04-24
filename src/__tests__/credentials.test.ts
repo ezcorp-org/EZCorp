@@ -9,7 +9,7 @@ const FAKE_ACCESS_TOKEN = "oauth-access-token-123";
 const FAKE_REFRESH_TOKEN = "oauth-refresh-token-456";
 const FAKE_REFRESHED_API_KEY = "refreshed-api-key-789";
 const FAKE_API_KEY = "sk-test-api-key-abc";
-const FAKE_ENCRYPTED_API_KEY = "enc:sk-test-api-key-abc";
+const _FAKE_ENCRYPTED_API_KEY = "enc:sk-test-api-key-abc";
 
 /** Build pi-ai OAuthCredentials JSON string */
 function makeTokenData(overrides: Partial<{
@@ -90,7 +90,7 @@ const {
 } = await import("../providers/credentials");
 
 // Store original env
-const originalEnv = { ...process.env };
+const _originalEnv = { ...process.env };
 
 beforeEach(() => {
   settingsStore = {};

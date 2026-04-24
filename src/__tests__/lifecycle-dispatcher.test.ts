@@ -3,8 +3,6 @@ import { EventBus } from "../runtime/events";
 import type { AgentEvents } from "../types";
 import {
   LifecycleHookDispatcher,
-  ALLOWED_LIFECYCLE_HOOKS,
-  type LifecycleHookName,
 } from "../extensions/lifecycle-dispatcher";
 
 // ── Helpers ─────────────────────────────────────────────────────────

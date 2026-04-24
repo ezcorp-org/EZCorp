@@ -86,7 +86,7 @@ describe("GET /api/agents -- enriched agent list", () => {
   test("config agent matching a file agent has source:'config' with enriched fields", async () => {
     const res = await fetch(`${baseUrl}/api/agents`);
     const agents = (await res.json()) as any[];
-    const configAgent = agents.find((a: any) => a.name === agentName);
+    const _configAgent = agents.find((a: any) => a.name === agentName);
     // Only present if the file agent shares the same name; otherwise it won't appear
     // since the endpoint maps over file agents only.
     // Test the DB entries directly for full coverage:

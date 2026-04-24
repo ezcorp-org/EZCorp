@@ -370,7 +370,7 @@ export async function removeExtension(name: string): Promise<void> {
   if (instPath && !instPath.startsWith("/")) {
     // Relative path like data/extensions/... — safe to remove
     await rm(instPath, { recursive: true, force: true }).catch(() => {});
-  } else if (instPath && instPath.includes("/extensions/")) {
+  } else if (instPath?.includes("/extensions/")) {
     // Absolute path containing /extensions/ — safe to remove
     await rm(instPath, { recursive: true, force: true }).catch(() => {});
   }

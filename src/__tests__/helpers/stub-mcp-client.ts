@@ -25,8 +25,6 @@ export function resetMcpStubHooks(): void {
 
 export class McpClient {
   isConnected = false;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_spec: unknown) {}
   async connect(): Promise<void> {
     mcpStubHooks.connectCalls++;
     await mcpStubHooks.connect();

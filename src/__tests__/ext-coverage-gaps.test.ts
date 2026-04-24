@@ -37,7 +37,7 @@ afterAll(() => restoreModuleMocks());
 import { checkFilesystemPermission, diffPermissions } from "../extensions/permissions";
 import type { ExtensionPermissions } from "../extensions/types";
 import { computePackageChecksums, verifyPackageChecksums } from "../extensions/checksum";
-import { ExtensionProcess, parseMemoryLimit, DEFAULT_MEMORY_LIMIT_MB } from "../extensions/subprocess";
+import { ExtensionProcess, DEFAULT_MEMORY_LIMIT_MB } from "../extensions/subprocess";
 import { JsonRpcTransport } from "../extensions/json-rpc";
 import { runExtensionTests } from "../extensions/sdk/test-runner";
 import { createTestExtension, callTool } from "../extensions/sdk/test-helpers";
@@ -704,7 +704,7 @@ main();
     proc = await createTestExtension(tempDir, { sandbox: false });
 
     // Apply the same JIT workaround
-    const origEnsure = proc.ensureRunning;
+    const _origEnsure = proc.ensureRunning;
     (proc as any).ensureRunning = function (this: any) {
       if (this.proc && !this.killed) return;
       this.killed = false;

@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, mock, afterAll } from "bun:test";
+import { test, expect, describe, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import type { RegisteredTool } from "../extensions/registry";
 import { ToolExecutor, PermissionDeniedError } from "../extensions/tool-executor";
@@ -206,7 +206,7 @@ describe("Registry namespacing", () => {
 
 describe("Executor namespace stripping", () => {
   const searchA = makeTool("ext-a", "search", "id-a", "Search A");
-  const searchB = makeTool("ext-b", "search", "id-b", "Search B");
+  const _searchB = makeTool("ext-b", "search", "id-b", "Search B");
 
   test("executeToolCall calls proc.callTool with originalName, not namespaced", async () => {
     const registry = createMockRegistry([searchA]);

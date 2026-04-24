@@ -48,8 +48,6 @@ import {
 } from "../db/queries/conversations";
 import { createProject } from "../db/queries/projects";
 import { getDb } from "../db/connection";
-import { conversations } from "../db/schema";
-import { eq } from "drizzle-orm";
 
 let projectId: string;
 let agentConfigId: string;

@@ -98,7 +98,7 @@ async function promptNumberField(
     if (raw === "" && field.default !== undefined) return field.default;
     if (raw === "" && !field.required) return undefined;
     const n = parseFloat(raw);
-    if (!isNaN(n)) return n;
+    if (!Number.isNaN(n)) return n;
     process.stdout.write("Please enter a valid number.\n");
   }
 }

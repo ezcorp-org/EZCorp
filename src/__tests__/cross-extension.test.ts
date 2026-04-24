@@ -1,7 +1,7 @@
-import { test, expect, describe, mock, beforeEach } from "bun:test";
+import { test, expect, describe, beforeEach } from "bun:test";
 import { JsonRpcTransport } from "../extensions/json-rpc";
 import { ExtensionProcess } from "../extensions/subprocess";
-import { ExtensionRegistry, type RegisteredTool } from "../extensions/registry";
+import { ExtensionRegistry, } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
 import { parseArgs } from "../cli";
 import type { JsonRpcRequest, JsonRpcResponse, ExtensionManifestV2, DependencySpec } from "../extensions/types";
@@ -244,7 +244,7 @@ describe("ToolExecutor.handlePiInvoke", () => {
     const calls: Array<{ toolName: string; callerExtensionId?: string }> = [];
 
     // Override executeToolCall to capture calls
-    const origExecute = executor.executeToolCall.bind(executor);
+    const _origExecute = executor.executeToolCall.bind(executor);
     executor.executeToolCall = async (toolName, input, conversationId, messageId, opts?) => {
       calls.push({ toolName, callerExtensionId: opts?.callerExtensionId });
       return { content: [{ type: "text" as const, text: "result" }], isError: false };

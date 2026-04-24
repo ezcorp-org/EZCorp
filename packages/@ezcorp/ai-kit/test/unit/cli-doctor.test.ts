@@ -1,6 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { startStubServer, type StubServer } from "../fixtures/stub-server";
-import { doctor, type CheckResult } from "../../src/cli/doctor";
+import { doctor, } from "../../src/cli/doctor";
 
 // Capture console output so assertions can inspect it without polluting test output
 function captureConsole(): { logs: string[]; restore: () => void } {

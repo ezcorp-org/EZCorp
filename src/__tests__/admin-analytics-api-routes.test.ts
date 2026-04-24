@@ -122,9 +122,9 @@ describe("GET /api/admin/analytics", () => {
   });
 
   test("respects days query parameter", async () => {
-    let capturedDays: number | undefined;
+    let _capturedDays: number | undefined;
     // Override mock to capture the days param
-    const origChatActivity = mockAnalytics.chatActivity;
+    const _origChatActivity = mockAnalytics.chatActivity;
     mockAnalytics.chatActivity = [{ date: "2026-03-20", count: 5 }];
 
     const event = createMockEvent({

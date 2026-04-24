@@ -87,7 +87,6 @@ export async function browseMarketplace(opts: BrowseOptions): Promise<Marketplac
     case "rating":
       orderBy = sql`(${marketplaceListings.ratingPositive} * 100) / (${marketplaceListings.ratingTotal} + 1) DESC`;
       break;
-    case "newest":
     default:
       orderBy = desc(marketplaceListings.createdAt);
       break;

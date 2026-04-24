@@ -46,7 +46,7 @@ const mockDocument: {
 };
 
 function makeContainer(children: MockElement[]) {
-	const selector =
+	const _selector =
 		'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 	const container = {

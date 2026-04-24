@@ -1,7 +1,6 @@
 import { mock, test, expect, describe, beforeEach, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import {
-  stubAssistantMessage,
   setupPiAiMocks,
   resetMockAgent,
 } from "./helpers/mock-pi-ai";
@@ -346,7 +345,6 @@ describe("WebSocket event flow (end-to-end)", () => {
       Agent: class MockAgent {
         state = { error: null };
         private _subs: any[] = [];
-        constructor() {}
         subscribe(cb: any) { this._subs.push(cb); return () => {}; }
         abort() {}
         async prompt() {

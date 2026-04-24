@@ -27,7 +27,6 @@ function setupAgentMock(textChunks: string[] = ["anchored"]) {
     Agent: class MockAgent {
       private _subs: any[] = [];
       state: Record<string, any> = {};
-      constructor() {}
       subscribe(cb: any) { this._subs.push(cb); return () => {}; }
       abort() {}
       async prompt(message: string) {
@@ -200,7 +199,6 @@ mock.module("../extensions/tool-executor", () => ({
   MAX_TOOL_CALLS_PER_TURN: 10,
   extensionToAgentTool: () => ({}),
   ToolExecutor: class {
-    constructor() {}
     createToolsContext() { return { invoke: async () => ({}) }; }
     setPermissionChecker() {}
     async executeToolCall() { return { content: [{ text: "result" }] }; }
@@ -276,7 +274,6 @@ describe("tool call anchoring", () => {
       Agent: class MockAgent {
         private _subs: any[] = [];
         state: Record<string, any> = {};
-        constructor() {}
         subscribe(cb: any) { this._subs.push(cb); return () => {}; }
         abort() {}
         async prompt() {

@@ -102,7 +102,7 @@ export async function getTaskSnapshotForConversation(
 ): Promise<TaskSnapshot | undefined> {
   const extId = await getTaskTrackingExtensionId();
   const row = await getStorageValue(extId, "conversation", conversationId, STORAGE_KEY);
-  if (!row || !row.value) return undefined;
+  if (!row?.value) return undefined;
   const v = row.value as Partial<PersistedSnapshot> & { activeTaskId?: string };
   return {
     conversationId,

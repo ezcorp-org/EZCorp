@@ -26,7 +26,7 @@ function at<T>(arr: readonly T[], i: number, what: string): T {
 }
 
 const ANTHROPIC_MODELS = MOCK_MODELS.filter((m) => m.provider === "anthropic");
-const OPENAI_MODELS = MOCK_MODELS.filter((m) => m.provider === "openai");
+const _OPENAI_MODELS = MOCK_MODELS.filter((m) => m.provider === "openai");
 const GOOGLE_MODELS = MOCK_MODELS.filter((m) => m.provider === "google");
 
 // ── Mock modules ──────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ mock.module("../providers/credentials", () => ({
 mock.module("../providers/registry", () => ({
   getModelRegistry: mock(async () => {
     // Include custom models from settings if any
-    const customModels = mockGetSetting.mock.calls.length > 0
+    const _customModels = mockGetSetting.mock.calls.length > 0
       ? undefined // handled by the endpoint itself
       : undefined;
     return [...MOCK_MODELS];

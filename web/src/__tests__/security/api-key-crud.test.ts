@@ -16,7 +16,7 @@ mock.module("$server/db/queries/settings", () => ({
   getAllSettings: async () => ({ ...mockSettings }),
 }));
 
-import { generateApiKey, hashApiKey, verifyApiKey, type ApiKeyScope } from "../../lib/server/security/api-keys";
+import { generateApiKey, hashApiKey, verifyApiKey, } from "../../lib/server/security/api-keys";
 import { createApiKeySchema, deleteApiKeySchema } from "../../routes/api/settings/developer/schema";
 import { validationError } from "../../lib/server/security/validation";
 

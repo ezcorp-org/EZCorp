@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures/test-base.js";
-import { makeProject, makeAgent, makeAgentConfig } from "./fixtures/data.js";
+import { makeProject, makeAgent, } from "./fixtures/data.js";
 
 const mobile = { width: 375, height: 812 };
 const desktop = { width: 1280, height: 800 };

@@ -15,14 +15,14 @@ mockServerAlias();
 // Route handlers
 import { POST as flagPOST } from "../../web/src/routes/api/marketplace/[id]/flag/+server";
 import { GET as pendingFlagsGET } from "../../web/src/routes/api/marketplace/flags/+server";
-import { GET as flagHistoryGET, PATCH as flagResolvePATCH } from "../../web/src/routes/api/marketplace/[id]/flags/+server";
+import { PATCH as flagResolvePATCH } from "../../web/src/routes/api/marketplace/[id]/flags/+server";
 import { DELETE as hardDELETE } from "../../web/src/routes/api/marketplace/[id]/delete/+server";
-import { GET as sharesGET, POST as sharesPOST, DELETE as sharesDELETE } from "../../web/src/routes/api/agents/[id]/share/+server";
+import { POST as sharesPOST, DELETE as sharesDELETE } from "../../web/src/routes/api/agents/[id]/share/+server";
 
 // DB queries
 import { createListing, browseMarketplace } from "../db/queries/marketplace";
-import { createFlag, getFlagHistory } from "../db/queries/marketplace-ratings";
-import { shareAgentWithUser, getSharedAgentsForUser, getAgentShares } from "../db/queries/agent-shares";
+import { getFlagHistory } from "../db/queries/marketplace-ratings";
+import { getSharedAgentsForUser, getAgentShares } from "../db/queries/agent-shares";
 import { createAgentConfig } from "../db/queries/agent-configs";
 import { createUser } from "../db/queries/users";
 

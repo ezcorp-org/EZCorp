@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import type { ExtensionPermissions, JsonRpcRequest } from "../extensions/types";
+import type { JsonRpcRequest } from "../extensions/types";
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -36,7 +36,6 @@ afterAll(() => restoreModuleMocks());
 
 import { ToolExecutor } from "../extensions/tool-executor";
 import { ExtensionRegistry } from "../extensions/registry";
-import { denyAndDisable } from "../extensions/security";
 
 // ── Fixtures ─────────────────────────────────────────────────────
 

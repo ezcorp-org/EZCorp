@@ -9,6 +9,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   if (scopeErr) return scopeErr;
   requireAuth(locals);
   const days = parseInt(url.searchParams.get("days") ?? "30", 10);
-  const stats = await getGlobalStats({ days: isNaN(days) ? 30 : days });
+  const stats = await getGlobalStats({ days: Number.isNaN(days) ? 30 : days });
   return json(stats);
 };

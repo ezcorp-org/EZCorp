@@ -79,7 +79,6 @@ function latestES(): MockEventSource {
 // Import after mocks are set up
 import {
   createWSClient,
-  getBackoffDelay,
   MAX_ATTEMPTS,
   type WSEvent,
 } from "../../web/src/lib/ws";

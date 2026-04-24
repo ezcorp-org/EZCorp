@@ -60,7 +60,6 @@ function badgeColorClass(color?: BadgeColor): string {
 		case "red":    return "bg-red-500/20 text-red-300";
 		case "yellow": return "bg-yellow-500/20 text-yellow-300";
 		case "purple": return "bg-purple-500/20 text-purple-300";
-		case "gray":
 		default:       return "bg-[var(--color-surface-tertiary)] text-[var(--color-text-muted)]";
 	}
 }
@@ -71,7 +70,6 @@ function statusDotClass(s: StatusState): string {
 		case "success": return "bg-green-500";
 		case "error":   return "bg-red-500";
 		case "warning": return "bg-yellow-500";
-		case "idle":
 		default:        return "bg-[var(--color-surface-tertiary)] border border-[var(--color-border)]";
 	}
 }
@@ -81,7 +79,6 @@ function listStatusIcon(s?: ListItemStatus): string {
 		case "active":    return "\u25B6";
 		case "completed": return "\u2713";
 		case "failed":    return "\u2717";
-		case "pending":
 		default:          return "\u25CB";
 	}
 }
@@ -91,7 +88,6 @@ function listStatusColor(s?: ListItemStatus): string {
 		case "active":    return "text-blue-400";
 		case "completed": return "text-green-400";
 		case "failed":    return "text-red-400";
-		case "pending":
 		default:          return "text-[var(--color-text-muted)]";
 	}
 }
@@ -100,7 +96,6 @@ function textVariantClass(v?: TextVariant): string {
 	switch (v) {
 		case "muted":    return "text-[var(--color-text-muted)]";
 		case "emphasis": return "text-[var(--color-text-primary)] font-medium";
-		case "default":
 		default:         return "text-[var(--color-text-secondary)]";
 	}
 }

@@ -32,13 +32,13 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 // ── DB stubs BEFORE importing ExtensionProcess (transitive) ────────
 let incrementCalls = 0;
-let resetCalls = 0;
-let disableCalls = 0;
+let _resetCalls = 0;
+let _disableCalls = 0;
 
 mock.module("../db/queries/extensions", () => ({
   incrementFailures: async () => ++incrementCalls,
-  resetFailures: async () => { resetCalls++; },
-  disableExtension: async () => { disableCalls++; },
+  resetFailures: async () => { _resetCalls++; },
+  disableExtension: async () => { _disableCalls++; },
 }));
 
 afterAll(() => restoreModuleMocks());
@@ -110,7 +110,7 @@ describe("github-stats SDK integration ALLOW path (fetchPermitted direct)", () =
     expect(mockFetch.mock.calls.length).toBe(1);
     const calls = mockFetch.mock.calls as unknown as Array<[unknown, RequestInit | undefined]>;
     const init = calls[0]?.[1];
-    if (!init || !init.headers) throw new Error("expected init.headers");
+    if (!init?.headers) throw new Error("expected init.headers");
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer test-token");
     expect(headers["User-Agent"]).toBe("github-stats-ext");

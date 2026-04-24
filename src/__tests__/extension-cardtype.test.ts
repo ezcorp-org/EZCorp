@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 afterAll(() => restoreModuleMocks());
-import type { ToolDefinition, ExtensionManifestV2 } from "../extensions/types";
+import type { ToolDefinition, } from "../extensions/types";
 import { ExtensionRegistry, type RegisteredTool } from "../extensions/registry";
 
 // ── Mock DB layer (registry.loadFromDb calls listExtensions) ─────

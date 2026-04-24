@@ -24,8 +24,8 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 // instead of touching a real DB (which the test harness does not configure).
 
 let incrementCalls = 0;
-let resetCalls = 0;
-let disableCalls = 0;
+let _resetCalls = 0;
+let _disableCalls = 0;
 
 mock.module("../db/queries/extensions", () => ({
   incrementFailures: async () => {
@@ -33,10 +33,10 @@ mock.module("../db/queries/extensions", () => ({
     return incrementCalls;
   },
   resetFailures: async () => {
-    resetCalls++;
+    _resetCalls++;
   },
   disableExtension: async () => {
-    disableCalls++;
+    _disableCalls++;
   },
 }));
 
@@ -64,8 +64,8 @@ describe("task-stack SDK integration (createTestExtension + real RPC)", () => {
     process.chdir(cwd);
 
     incrementCalls = 0;
-    resetCalls = 0;
-    disableCalls = 0;
+    _resetCalls = 0;
+    _disableCalls = 0;
   });
 
   afterEach(() => {

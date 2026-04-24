@@ -17,7 +17,7 @@ import { GET } from "../../web/src/routes/api/quickstart/+server";
 // ── Query helpers for test setup ─────────────────────────────────
 import { createUser } from "../db/queries/users";
 import { getDb } from "../db/connection";
-import { settings, conversations, extensions, agentConfigs, users } from "../db/schema";
+import { settings, conversations, extensions, agentConfigs, } from "../db/schema";
 
 // ── Test fixtures ────────────────────────────────────────────────
 let testUser: AuthUser;

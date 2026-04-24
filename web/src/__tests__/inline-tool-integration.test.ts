@@ -106,7 +106,7 @@ function validate(
 
     if (fieldType === "number") {
       const n = Number(val);
-      if (isNaN(n)) {
+      if (Number.isNaN(n)) {
         errors[key] = "Must be a valid number";
       }
     }

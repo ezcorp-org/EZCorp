@@ -1,5 +1,5 @@
 import { test, expect, describe, mock } from "bun:test";
-import type { AssistantMessageEvent, Tool, ToolCall, AgentContext } from "../types";
+import type { AssistantMessageEvent, Tool, AgentContext } from "../types";
 import { ToolExecutor, MAX_TOOL_CALLS_PER_TURN, PermissionDeniedError } from "../extensions/tool-executor";
 import type { ExtensionRegistry } from "../extensions/registry";
 import type { ToolCallResult } from "../extensions/types";

@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { JsonRpcTransport } from "../extensions/json-rpc";
-import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse } from "../extensions/types";
+import type { JsonRpcNotification, JsonRpcRequest, } from "../extensions/types";
 
 function at<T>(arr: readonly T[], i: number, what: string): T {
   const v = arr[i];

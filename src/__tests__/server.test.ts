@@ -46,7 +46,7 @@ describe("GET /api/agents", () => {
 });
 
 describe("POST /api/agents/:name/run", () => {
-  let runId: string;
+  let _runId: string;
 
   test("triggers execution and returns run", async () => {
     const res = await fetch(`${baseUrl}/api/agents/shell-runner/run`, {
@@ -60,7 +60,7 @@ describe("POST /api/agents/:name/run", () => {
     expect(run.status).toBe("success");
     expect(run.result.success).toBe(true);
     expect(run.result.output.stdout.trim()).toBe("hello");
-    runId = run.id;
+    _runId = run.id;
   });
 
   test("GET /api/runs returns array with the run", async () => {

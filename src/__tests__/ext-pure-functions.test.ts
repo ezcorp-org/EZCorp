@@ -25,7 +25,6 @@ import {
   formatDepTree,
   resolveDependencies,
   type DependencyTreeNode,
-  type ResolvedDep,
 } from "../extensions/dependency-resolver";
 
 import type {

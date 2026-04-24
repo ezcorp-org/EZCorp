@@ -81,7 +81,7 @@ export class ExtensionStateMediator {
 
     // Manifest gate
     const manifest = this.getManifest(extensionId);
-    if (!manifest || !manifest.panel) return;
+    if (!manifest?.panel) return;
 
     // Sanitise string values
     const sanitised = stripHtmlTags(notification.params, 0) as Record<string, unknown>;

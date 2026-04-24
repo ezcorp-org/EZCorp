@@ -281,9 +281,9 @@ describe("testInference", () => {
 
 describe("checkLocalModel", () => {
   test("all checks pass: full success result", async () => {
-    let callCount = 0;
+    let _callCount = 0;
     mockFetch.mockImplementation((url: string, init?: RequestInit) => {
-      callCount++;
+      _callCount++;
       if (url.includes("/v1/models")) {
         return Promise.resolve(jsonResponse({ data: [{ id: "llama3" }] }));
       }

@@ -5,13 +5,13 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 let mockRows: any[] = [];
 let lastInsertValues: any = null;
-let lastDeleteWhere: any = null;
+let _lastDeleteWhere: any = null;
 let shouldThrow = false;
 
 function resetMockState() {
   mockRows = [];
   lastInsertValues = null;
-  lastDeleteWhere = null;
+  _lastDeleteWhere = null;
   shouldThrow = false;
 }
 
@@ -42,7 +42,7 @@ function createChainableDb() {
       return chain;
     },
     where: (args: any) => {
-      if (chain._op === "delete") lastDeleteWhere = args;
+      if (chain._op === "delete") _lastDeleteWhere = args;
       return chain;
     },
     orderBy: (..._args: any[]) => {

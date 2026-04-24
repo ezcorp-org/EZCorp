@@ -1,6 +1,5 @@
 import { test, expect, describe } from "bun:test";
 import {
-	type PermissionMode,
 	PERMISSION_MODES,
 	modeToColor,
 	modeToLabel,

@@ -292,7 +292,7 @@ export class ExtensionRegistry {
   /** Get or create an ExtensionProcess for the given extension ID. */
   async getProcess(extensionId: string, options?: ExtensionProcessOptions): Promise<ExtensionProcess> {
     let proc = this.processes.get(extensionId);
-    if (proc && proc.isRunning) {
+    if (proc?.isRunning) {
       return proc;
     }
 

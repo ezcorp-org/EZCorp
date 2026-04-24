@@ -35,9 +35,9 @@ mock.module("../db/connection", () => ({
     };
 
     // Override select to track which select pass we're on
-    let selectCount = 0;
+    let _selectCount = 0;
     chain.select = () => {
-      selectCount++;
+      _selectCount++;
       return chain;
     };
     chain.from = (table: any) => {

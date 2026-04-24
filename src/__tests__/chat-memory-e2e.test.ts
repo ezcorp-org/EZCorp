@@ -16,7 +16,7 @@ mock.module("../memory/embeddings", () => ({
 
 // Capture what system prompt the Agent is constructed with
 let capturedSystemPrompt: string = "";
-let capturedAgentOpts: any = null;
+let _capturedAgentOpts: any = null;
 
 mock.module("../providers/router", () => ({
   resolveModel: async () => ({
@@ -48,7 +48,7 @@ mock.module("@mariozechner/pi-agent-core", () => ({
   Agent: class MockAgent {
     private _subs: any[] = [];
     constructor(opts: any) {
-      capturedAgentOpts = opts;
+      _capturedAgentOpts = opts;
       capturedSystemPrompt = opts.initialState?.systemPrompt ?? "";
     }
     subscribe(cb: any) { this._subs.push(cb); return () => {}; }

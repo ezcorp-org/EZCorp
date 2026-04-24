@@ -10,7 +10,7 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, writeFile, stat, readFile } from "fs/promises";
+import { mkdtemp, rm, writeFile, stat, } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { existsSync } from "fs";

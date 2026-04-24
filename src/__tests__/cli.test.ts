@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { test, expect, describe, } from "bun:test";
 import { parseArgs } from "../cli";
 
 describe("parseArgs", () => {

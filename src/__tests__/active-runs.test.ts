@@ -8,15 +8,15 @@ afterAll(() => restoreModuleMocks());
 let mockRows: any[] = [];
 let lastInsertValues: any = null;
 let lastUpdateSet: any = null;
-let lastWhereArgs: any = null;
-let lastDeleteWhere: any = null;
+let _lastWhereArgs: any = null;
+let _lastDeleteWhere: any = null;
 
 function resetMockState() {
   mockRows = [];
   lastInsertValues = null;
   lastUpdateSet = null;
-  lastWhereArgs = null;
-  lastDeleteWhere = null;
+  _lastWhereArgs = null;
+  _lastDeleteWhere = null;
 }
 
 function createChainableDb() {
@@ -48,8 +48,8 @@ function createChainableDb() {
       return chain;
     },
     where: (args: any) => {
-      if (chain._op === "delete") lastDeleteWhere = args;
-      else lastWhereArgs = args;
+      if (chain._op === "delete") _lastDeleteWhere = args;
+      else _lastWhereArgs = args;
       // For select, where is terminal (returns thenable)
       if (chain._op === "select") {
         return { then: (resolve: any, reject?: any) => Promise.resolve(mockRows).then(resolve, reject) };

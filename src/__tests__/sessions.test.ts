@@ -5,15 +5,15 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 let mockRows: any[] = [];
 let lastInsertValues: any = null;
-let lastUpdateSet: any = null;
-let lastDeleteWhere: any = null;
+let _lastUpdateSet: any = null;
+let _lastDeleteWhere: any = null;
 let executeResults: any[] = [];
 
 function resetMockState() {
   mockRows = [];
   lastInsertValues = null;
-  lastUpdateSet = null;
-  lastDeleteWhere = null;
+  _lastUpdateSet = null;
+  _lastDeleteWhere = null;
   executeResults = [];
 }
 
@@ -39,7 +39,7 @@ function createChainableDb() {
       return chain;
     },
     set: (vals: any) => {
-      lastUpdateSet = vals;
+      _lastUpdateSet = vals;
       return chain;
     },
     delete: (_table: any) => {
@@ -48,7 +48,7 @@ function createChainableDb() {
     },
     leftJoin: (_table: any, _cond: any) => chain,
     where: (args: any) => {
-      if (chain._op === "delete") lastDeleteWhere = args;
+      if (chain._op === "delete") _lastDeleteWhere = args;
       if (chain._op === "select") {
         return {
           orderBy: (..._args: any[]) => ({ then: (resolve: any, reject?: any) => Promise.resolve(mockRows).then(resolve, reject) }),

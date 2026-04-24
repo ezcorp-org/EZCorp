@@ -203,9 +203,9 @@ export async function listDbAgentEntries(userId?: string): Promise<AgentListEntr
     id: row.id,
     prompt: row.prompt,
     category: row.category ?? null,
-    shared: (row as any).shared ?? false,
-    sharedBy: (row as any).sharedBy,
-    sharedByName: (row as any).sharedByName,
+    shared: row.shared ?? false,
+    sharedBy: row.sharedBy,
+    sharedByName: row.sharedByName,
   }));
 }
 

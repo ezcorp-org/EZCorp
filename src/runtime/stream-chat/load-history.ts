@@ -135,20 +135,57 @@ export async function loadHistory(
 
   // Pre-compute: for each user-message index, the list of ImageContent
   // parts to inject from preceding assistant messages in range.
+  //
+  // We scan TWO sources for ext-files URLs:
+  //   1. the assistant message's text itself (models that echo markdown)
+  //   2. the tool-call outputs anchored to that assistant message (models
+  //      that follow the extension's "don't echo" guidance — the URL only
+  //      lives in tool_calls.output for them)
   const injectedImages = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
-  await Promise.all(Array.from(assistantIndicesToRehydrate).map(async (assistantIdx) => {
-    const nextUserIdx = findNextUserIndex(branchMessages, assistantIdx);
-    if (nextUserIdx === -1) return; // trailing assistant — no follow-up to attach to
-    const parts = await rehydrateAssistantMessageContent(branchMessages[assistantIdx]!.content)
-      .catch(() => [] as import("../../chat/attachments/content-builder").PiContentPart[]);
-    const images = parts.filter((p): p is { type: "image"; data: string; mimeType: string } =>
-      p.type === "image",
-    );
-    if (images.length === 0) return;
-    const existing = injectedImages.get(nextUserIdx) ?? [];
-    existing.push(...images);
-    injectedImages.set(nextUserIdx, existing);
-  }));
+  const rehydrateIds = Array.from(assistantIndicesToRehydrate);
+  if (rehydrateIds.length > 0) {
+    const { listToolCallOutputsForMessages } = await import("../../db/queries/tool-calls");
+    const { extractOutputText } = await import("../../db/queries/conversations");
+
+    const targetMessageIds = rehydrateIds.map((i) => branchMessages[i]!.id);
+    const toolOutputs = await listToolCallOutputsForMessages(targetMessageIds).catch(() => []);
+    const outputsByMessage = new Map<string, string[]>();
+    for (const row of toolOutputs) {
+      const text = extractOutputText(row.output);
+      if (!text) continue;
+      const list = outputsByMessage.get(row.messageId) ?? [];
+      list.push(text);
+      outputsByMessage.set(row.messageId, list);
+    }
+
+    await Promise.all(rehydrateIds.map(async (assistantIdx) => {
+      const nextUserIdx = findNextUserIndex(branchMessages, assistantIdx);
+      if (nextUserIdx === -1) return; // trailing assistant — no follow-up to attach to
+      const assistantMsg = branchMessages[assistantIdx]!;
+      // Join assistant text with each tool output so the single regex pass
+      // in the rehydrator catches URLs wherever they live. `\n\n` separators
+      // keep markdown image syntax from fusing across boundaries.
+      const toolTexts = outputsByMessage.get(assistantMsg.id) ?? [];
+      const combined = [assistantMsg.content, ...toolTexts].filter(Boolean).join("\n\n");
+      const parts = await rehydrateAssistantMessageContent(combined)
+        .catch(() => [] as import("../../chat/attachments/content-builder").PiContentPart[]);
+      const images = parts.filter((p): p is { type: "image"; data: string; mimeType: string } =>
+        p.type === "image",
+      );
+      if (images.length === 0) return;
+      // Dedupe by base64 payload so a model that both echoes AND keeps the
+      // URL in the tool output doesn't produce duplicate image parts.
+      const existing = injectedImages.get(nextUserIdx) ?? [];
+      const seen = new Set(existing.map((i) => i.data));
+      for (const img of images) {
+        if (!seen.has(img.data)) {
+          existing.push(img);
+          seen.add(img.data);
+        }
+      }
+      injectedImages.set(nextUserIdx, existing);
+    }));
+  }
 
   const history: Message[] = await Promise.all(branchMessages.map(async (m, idx): Promise<Message> => {
     if (m.role === "assistant") {

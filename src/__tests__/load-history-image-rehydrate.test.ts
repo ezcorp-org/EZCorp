@@ -35,11 +35,14 @@ import {
 } from "../runtime/stream-chat/load-history";
 import { createProject } from "../db/queries/projects";
 import { createConversation, createMessage } from "../db/queries/conversations";
+import { persistToolCall } from "../db/queries/tool-calls";
+import { createExtension } from "../db/queries/extensions";
 import type { StreamChatContext } from "../runtime/stream-chat/context";
 
 const EXT = "openai-image-gen-2";
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_B64 = Buffer.from(PNG_BYTES).toString("base64");
+const JPG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
 
 let tmpRoot = "";
 // Don't snapshot process.cwd() — sibling tests in the same file run (e.g.
@@ -59,8 +62,21 @@ function mkCtx(): StreamChatContext {
   return { system: undefined } as unknown as StreamChatContext;
 }
 
+let testExtensionId = "";
+
 beforeAll(async () => {
   await setupTestDb();
+  // tool_calls.extension_id has a FK → extensions.id, so seed a minimal
+  // row. persistToolCall silently swallows insert errors (including FK
+  // failures), so without this the tool-output rehydration tests would
+  // see an empty tool_calls table and silently skip the interesting path.
+  const ext = await createExtension({
+    name: "test-image-gen",
+    version: "0.0.0",
+    source: "test",
+    manifest: { schemaVersion: 2, name: "test-image-gen", version: "0.0.0", entrypoint: "x", author: { name: "t" }, tools: [], permissions: {} } as any,
+  });
+  testExtensionId = ext.id;
 });
 
 afterAll(async () => {
@@ -290,9 +306,143 @@ describe("loadHistory image-rehydration", () => {
     expect(allImages).toHaveLength(0);
   });
 
+  // ── Tool-output scanning ────────────────────────────────────────
+  // The extension's SKILL.md tells models NOT to echo the image URL into
+  // their prose reply — the tool card renders it from the tool result
+  // directly. Models following that guidance leave `messages.content`
+  // URL-free, so the rehydrator must also scan `tool_calls.output`.
+  test("assistant with empty text + tool output containing URL → image rehydrated", async () => {
+    const url = writeImage("generated/tool-only.png", PNG_BYTES);
+    const project = await createProject({ name: "ToolOnly", path: tmpRoot });
+    const conv = await createConversation(project.id, { title: "t" });
+    const m1 = await createMessage(conv.id, { role: "user", content: "gen" });
+    // Model produced prose with no URL — perfectly fine per SKILL.md.
+    const m2 = await createMessage(conv.id, { role: "assistant", content: "Done.", parentMessageId: m1.id });
+    // Tool output carries the URL.
+    await persistToolCall({
+      conversationId: conv.id,
+      messageId: m2.id,
+      extensionId: testExtensionId,
+      toolName: "generate",
+      input: { prompt: "x" },
+      output: { content: [{ type: "text", text: `Generated 1 image.\n\n![](${url})` }] },
+      success: true,
+      durationMs: 10,
+    });
+    const m3 = await createMessage(conv.id, { role: "user", content: "edit it", parentMessageId: m2.id });
+
+    const { history } = await loadHistory(mkCtx(), conv.id, {
+      parentMessageId: m3.id,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const parts = partsOf((history[2] as any).content);
+    const images = parts.filter((p) => p.type === "image");
+    expect(images).toHaveLength(1);
+    expect((images[0] as any).data).toBe(PNG_B64);
+  });
+
+  test("assistant echoes URL + same URL in tool output → deduped (one image)", async () => {
+    const url = writeImage("generated/dup.png", PNG_BYTES);
+    const project = await createProject({ name: "Dup", path: tmpRoot });
+    const conv = await createConversation(project.id, { title: "t" });
+    const m1 = await createMessage(conv.id, { role: "user", content: "gen" });
+    const m2 = await createMessage(conv.id, {
+      role: "assistant",
+      content: `Here: ![](${url})`,
+      parentMessageId: m1.id,
+    });
+    await persistToolCall({
+      conversationId: conv.id,
+      messageId: m2.id,
+      extensionId: testExtensionId,
+      toolName: "generate",
+      input: { prompt: "x" },
+      output: { content: [{ type: "text", text: `![](${url})` }] },
+      success: true,
+      durationMs: 10,
+    });
+    const m3 = await createMessage(conv.id, { role: "user", content: "edit", parentMessageId: m2.id });
+
+    const { history } = await loadHistory(mkCtx(), conv.id, {
+      parentMessageId: m3.id,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const parts = partsOf((history[2] as any).content);
+    expect(parts.filter((p) => p.type === "image")).toHaveLength(1);
+  });
+
+  test("multiple tool calls on one assistant → all scanned and injected", async () => {
+    const u1 = writeImage("generated/tool-a.png", PNG_BYTES);
+    const u2 = writeImage("generated/tool-b.png", JPG_BYTES);
+    const project = await createProject({ name: "MultiTool", path: tmpRoot });
+    const conv = await createConversation(project.id, { title: "t" });
+    const m1 = await createMessage(conv.id, { role: "user", content: "gen two" });
+    const m2 = await createMessage(conv.id, { role: "assistant", content: "", parentMessageId: m1.id });
+    await persistToolCall({
+      conversationId: conv.id,
+      messageId: m2.id,
+      extensionId: testExtensionId,
+      toolName: "generate",
+      input: { prompt: "a" },
+      output: { content: [{ type: "text", text: `![](${u1})` }] },
+      success: true,
+      durationMs: 10,
+    });
+    await persistToolCall({
+      conversationId: conv.id,
+      messageId: m2.id,
+      extensionId: testExtensionId,
+      toolName: "generate",
+      input: { prompt: "b" },
+      output: { content: [{ type: "text", text: `![](${u2})` }] },
+      success: true,
+      durationMs: 10,
+    });
+    const m3 = await createMessage(conv.id, { role: "user", content: "combine", parentMessageId: m2.id });
+
+    const { history } = await loadHistory(mkCtx(), conv.id, {
+      parentMessageId: m3.id,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const parts = partsOf((history[2] as any).content);
+    expect(parts.filter((p) => p.type === "image")).toHaveLength(2);
+  });
+
+  test("tool call with non-image output → no-op (nothing injected)", async () => {
+    const project = await createProject({ name: "NonImg", path: tmpRoot });
+    const conv = await createConversation(project.id, { title: "t" });
+    const m1 = await createMessage(conv.id, { role: "user", content: "run" });
+    const m2 = await createMessage(conv.id, { role: "assistant", content: "done", parentMessageId: m1.id });
+    await persistToolCall({
+      conversationId: conv.id,
+      messageId: m2.id,
+      extensionId: testExtensionId,
+      toolName: "search",
+      input: { q: "x" },
+      output: { content: [{ type: "text", text: "3 results found" }] },
+      success: true,
+      durationMs: 10,
+    });
+    const m3 = await createMessage(conv.id, { role: "user", content: "next", parentMessageId: m2.id });
+
+    const { history } = await loadHistory(mkCtx(), conv.id, {
+      parentMessageId: m3.id,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const allImages = history.flatMap((m: any) =>
+      Array.isArray(m.content) ? m.content.filter((p: any) => p.type === "image") : [],
+    );
+    expect(allImages).toHaveLength(0);
+  });
+
   test("multiple images in one assistant message: all land on the next user", async () => {
+    // Distinct bytes so the dedupe-by-base64 logic doesn't collapse them.
     const a = writeImage("generated/a.png", PNG_BYTES);
-    const b = writeImage("generated/b.png", PNG_BYTES);
+    const b = writeImage("generated/b.png", JPG_BYTES);
     const { convId, leafId } = await seedBranch([
       { role: "user", content: "gen two" },
       { role: "assistant", content: `![](${a}) and ![](${b})` },

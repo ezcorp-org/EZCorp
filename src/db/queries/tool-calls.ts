@@ -1,3 +1,4 @@
+import { inArray } from "drizzle-orm";
 import { getDb } from "../connection";
 import { toolCalls } from "../schema";
 import type { ToolCallResult } from "../../extensions/types";
@@ -38,6 +39,32 @@ export interface ToolCallRow {
  * Never throws: the caller has already started returning data to the
  * LLM / user, and a DB glitch must not block that path.
  */
+/**
+ * Bulk-load `(messageId, output)` pairs for a set of message IDs.
+ *
+ * Used by the assistant-message image rehydrator: tool results often carry
+ * `![](…)` markdown pointing at generated images, and models following the
+ * extension's guidance don't echo that URL into their text reply. Scanning
+ * the raw tool output closes that gap.
+ *
+ * Rows whose `messageId` is null (orphan tool calls) are excluded — this
+ * helper is for tool calls anchored to a specific assistant turn.
+ */
+export async function listToolCallOutputsForMessages(
+  messageIds: string[],
+): Promise<Array<{ messageId: string; output: unknown }>> {
+  if (messageIds.length === 0) return [];
+  const db = getDb();
+  const rows: Array<{ messageId: string | null; output: unknown }> = await db
+    .select({ messageId: toolCalls.messageId, output: toolCalls.output })
+    .from(toolCalls)
+    .where(inArray(toolCalls.messageId, messageIds));
+  return rows.filter(
+    (r: { messageId: string | null; output: unknown }): r is { messageId: string; output: unknown } =>
+      r.messageId !== null,
+  );
+}
+
 export async function persistToolCall(row: ToolCallRow): Promise<void> {
   try {
     await getDb().insert(toolCalls).values({

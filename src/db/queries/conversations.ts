@@ -593,28 +593,37 @@ export async function resolveSystemPrompt(
 // ── Tool Call Hydration ───────────────────────────────────────────────
 
 /**
- * Extract text from output JSON, take first line, truncate to maxLen.
+ * Coerce a tool output (string, ToolCallResult, or arbitrary object) to a text
+ * representation. Pulled out of `truncateOutput` so callers can decide whether
+ * to truncate or ship the full text (image-producing tools need the full body).
  */
-export function truncateOutput(output: unknown, maxLen = 120): string | null {
+export function extractOutputText(output: unknown): string | null {
   if (output == null) return null;
-  let text: string;
-  if (typeof output === "string") {
-    text = output;
-  } else if (typeof output === "object" && output !== null) {
+  if (typeof output === "string") return output;
+  if (typeof output === "object") {
     const obj = output as Record<string, unknown>;
     // Handle ToolCallResult shape: { content: [{ type: "text", text: "..." }] }
     if (Array.isArray(obj.content)) {
       const texts = (obj.content as any[])
         .filter((c: any) => c.type === "text" && typeof c.text === "string")
         .map((c: any) => c.text);
-      text = texts.length > 0 ? texts.join("\n") : JSON.stringify(output);
-    } else {
-      const candidate = obj.text ?? obj.content ?? obj.result;
-      text = typeof candidate === 'string' ? candidate : JSON.stringify(output);
+      return texts.length > 0 ? texts.join("\n") : JSON.stringify(output);
     }
-  } else {
-    text = String(output);
+    const candidate = obj.text ?? obj.content ?? obj.result;
+    return typeof candidate === "string" ? candidate : JSON.stringify(output);
   }
+  return String(output);
+}
+
+// Match `![alt](url)` — the signal that a tool output carries a renderable image.
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\([^\)]+\)/;
+
+/**
+ * Extract text from output JSON, take first line, truncate to maxLen.
+ */
+export function truncateOutput(output: unknown, maxLen = 120): string | null {
+  const text = extractOutputText(output);
+  if (text == null) return null;
   const firstLine = text.split("\n")[0] ?? "";
   return firstLine.length > maxLen ? firstLine.slice(0, maxLen) + "..." : firstLine;
 }
@@ -658,18 +667,16 @@ function toolCallRowToSummary(tc: typeof toolCalls.$inferSelect): ToolCallSummar
       : tc.success === false ? "error"
       : "success";
 
-  // For tool calls with cardType, include full output so custom cards can render data.
+  // Ship full output when either
+  //   (a) the tool has a cardType — custom cards render structured data, or
+  //   (b) the output contains markdown image syntax — the UI renders images
+  //       inline, and we need the URL(s) that sit past the first-line truncation.
+  // Image-gen tool outputs are small text+URL payloads, so bandwidth is negligible.
   let fullOutput: string | null = null;
-  if (tc.cardType && tc.output) {
-    const obj = tc.output as Record<string, unknown>;
-    if (Array.isArray(obj.content)) {
-      const texts = (obj.content as any[])
-        .filter((c: any) => c.type === "text" && typeof c.text === "string")
-        .map((c: any) => c.text);
-      fullOutput = texts.length > 0 ? texts.join("\n") : JSON.stringify(tc.output);
-    } else {
-      fullOutput = JSON.stringify(tc.output);
-    }
+  const extractedText = extractOutputText(tc.output);
+  const hasImage = extractedText != null && MARKDOWN_IMAGE_RE.test(extractedText);
+  if (tc.cardType || hasImage) {
+    fullOutput = extractedText;
   }
 
   return {

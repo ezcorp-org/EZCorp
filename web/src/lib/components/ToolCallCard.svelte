@@ -2,6 +2,7 @@
 	import type { ToolCallState } from "$lib/stores.svelte.js";
 	import { slide } from "svelte/transition";
 	import ToolCardRouter from "./tool-cards/ToolCardRouter.svelte";
+	import MarkdownRenderer from "./MarkdownRenderer.svelte";
 
 	let { toolCall, conversationId, onsendmessage }: { toolCall: ToolCallState; conversationId?: string; onsendmessage?: (message: string) => void } = $props();
 
@@ -40,6 +41,11 @@
 		if (!s || s === '{}' || s === '""') return undefined;
 		return s.length > 50 ? s.slice(0, 47) + '...' : s;
 	});
+
+	// Render images from tool output (e.g. openai-image-gen-2 returns `![alt](url)`)
+	// inline below the header so they appear regardless of whether the model echoed
+	// the markdown into its reply and without requiring the user to expand the card.
+	let outputHasImage = $derived(!!displayOutput && /!\[[^\]]*\]\([^\)]+\)/.test(displayOutput));
 
 	async function handleExpand() {
 		expanded = !expanded;
@@ -108,6 +114,13 @@
 			<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
 		</svg>
 	</button>
+
+	<!-- Inline image preview: always visible when output contains markdown images -->
+	{#if outputHasImage && displayOutput}
+		<div class="border-t border-[var(--color-border)] px-3 py-2">
+			<MarkdownRenderer content={displayOutput} />
+		</div>
+	{/if}
 
 	<!-- Expanded details -->
 	{#if expanded}

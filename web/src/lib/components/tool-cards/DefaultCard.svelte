@@ -2,6 +2,7 @@
 	import type { ToolCallState } from "$lib/stores.svelte.js";
 	import { slide } from "svelte/transition";
 	import CopyButton from "./CopyButton.svelte";
+	import MarkdownRenderer from "../MarkdownRenderer.svelte";
 	import { extractInputSummary, formatOutputPreview } from "./utils.js";
 
 	let { toolCall }: { toolCall: ToolCallState } = $props();
@@ -22,6 +23,35 @@
 	});
 
 	let outputPreview = $derived(toolCall.status === 'complete' ? formatOutputPreview(toolCall.output) : undefined);
+
+	// Tools like openai-image-gen-2 return markdown with `![alt](url)` — render via
+	// MarkdownRenderer so images appear inline regardless of whether the model echoed
+	// the markdown into its reply. Plain text/JSON outputs stay in <pre> to preserve
+	// monospace/whitespace.
+	let outputHasImage = $derived(!!displayOutput && /!\[[^\]]*\]\([^\)]+\)/.test(displayOutput));
+
+	// If the tool output contains an image, fetch the full output eagerly so truncated
+	// previews don't chop the URL. Runs once per tool call when it reaches complete+image.
+	let imageOutputLoaded = $state(false);
+	$effect(() => {
+		if (
+			toolCall.status === 'complete' &&
+			outputHasImage &&
+			fullOutput == null &&
+			!imageOutputLoaded &&
+			toolCall.id
+		) {
+			imageOutputLoaded = true;
+			fetch(`/api/tool-calls/${toolCall.id}/output`)
+				.then((r) => (r.ok ? r.json() : null))
+				.then((data) => {
+					if (data?.output != null) {
+						fullOutput = typeof data.output === 'string' ? data.output : JSON.stringify(data.output, null, 2);
+					}
+				})
+				.catch(() => { /* non-critical */ });
+		}
+	});
 
 	async function handleExpand() {
 		expanded = !expanded;
@@ -85,6 +115,12 @@
 		</div>
 	</button>
 
+	{#if outputHasImage && displayOutput}
+		<div class="border-t border-[var(--color-border)] px-3 py-2">
+			<MarkdownRenderer content={displayOutput} />
+		</div>
+	{/if}
+
 	{#if expanded}
 		<div transition:slide={{ duration: 150 }} class="border-t border-[var(--color-border)] px-3 py-2 text-xs">
 			{#if toolCall.input != null}
@@ -106,7 +142,7 @@
 				</div>
 			{:else if displayOutput != null}
 				<div>
-					<p class="font-medium text-[var(--color-text-muted)] mb-1">Output</p>
+					<p class="font-medium text-[var(--color-text-muted)] mb-1">{outputHasImage ? 'Raw output' : 'Output'}</p>
 					<pre class="overflow-x-auto rounded bg-[var(--color-surface-secondary)] p-2 text-[var(--color-text-secondary)] whitespace-pre-wrap break-all max-h-96 overflow-y-auto">{displayOutput}</pre>
 				</div>
 			{/if}

@@ -79,7 +79,14 @@ normalize it; don't inflate.
 
 ## Rendering
 
-The tool result is markdown with a `data:image/<fmt>;base64,…` URI.
-The chat UI renders it inline with lazy-loading, lightbox, and a
-fallback card if the source fails. Just echo the returned markdown in
-your reply — no extra steps.
+The chat UI renders the generated image **directly from the tool
+result** — you do not need to echo the returned markdown. The image
+appears inline on the tool card automatically, with lazy-loading,
+lightbox, and a fallback if the source fails.
+
+Your prose reply is optional narration (what you changed, why, next
+steps). Don't write "here is your image" if you didn't actually call
+the tool — the image only appears when a call succeeded, so claiming
+one was generated without calling produces a reply with no image,
+which is worse than saying nothing. If the call failed, say that
+plainly instead.

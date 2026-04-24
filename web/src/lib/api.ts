@@ -240,6 +240,13 @@ export async function testProviderConnection(provider: string): Promise<{ succes
 	return res.json();
 }
 
+export async function refreshProviderModels(
+	provider: string,
+): Promise<{ success: boolean; count?: number; ids?: string[]; fetchedAt?: string; error?: string }> {
+	const res = await fetch(`${BASE}/api/providers/${provider}/refresh-models`, { method: "POST" });
+	return res.json();
+}
+
 export async function deleteProviderKey(provider: string): Promise<void> {
 	const res = await fetch(`${BASE}/api/providers`, {
 		method: "DELETE",

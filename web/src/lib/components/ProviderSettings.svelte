@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fetchProviders, saveProviderKey, deleteProviderKey, disconnectOAuth, upsertSetting, fetchSettings, testProviderConnection, type ProviderStatus } from "$lib/api.js";
+	import { fetchProviders, saveProviderKey, deleteProviderKey, disconnectOAuth, upsertSetting, fetchSettings, testProviderConnection, refreshProviderModels, type ProviderStatus } from "$lib/api.js";
 	import { startOAuthFlow, completeOAuthWithCode, listenForOAuthResult, type OAuthPending } from "$lib/oauth.js";
 	import { relativeTime } from "$lib/utils/relative-time.js";
 	import AccessModeIcon from "./AccessModeIcon.svelte";
@@ -19,6 +19,8 @@
 	let cardAction = $state<Record<string, string | null>>({});
 	// Per-provider test result or "testing" while in flight
 	let testResults = $state<Record<string, { success: boolean; error?: string } | "testing">>({});
+	// Per-provider model-refresh result or "refreshing" while in flight
+	let refreshResults = $state<Record<string, { success: boolean; count?: number; error?: string } | "refreshing">>({});
 
 	// OAuth code-paste flow state
 	let oauthPending = $state<OAuthPending | null>(null);
@@ -167,6 +169,16 @@
 		}
 	}
 
+	async function handleRefreshModels(provider: string) {
+		refreshResults = { ...refreshResults, [provider]: "refreshing" };
+		try {
+			const result = await refreshProviderModels(provider);
+			refreshResults = { ...refreshResults, [provider]: result };
+		} catch {
+			refreshResults = { ...refreshResults, [provider]: { success: false, error: "Request failed" } };
+		}
+	}
+
 	function handleStartEdit(provider: string) {
 		cardAction = { ...cardAction, [provider]: "editing" };
 		keyInputs = { ...keyInputs, [provider]: "" };
@@ -312,7 +324,8 @@
 
 					<!-- Test button + result -->
 					{#if p.hasKey || p.oauthConnected}
-						<div class="mt-1.5 flex items-center gap-2">
+						{@const refreshResult = refreshResults[p.provider]}
+						<div class="mt-1.5 flex flex-wrap items-center gap-2">
 							<button
 								onclick={() => handleTest(p.provider)}
 								disabled={testResult === "testing"}
@@ -335,6 +348,21 @@
 										</svg>
 										{testResult.error ?? "Failed"}
 									</span>
+								{/if}
+							{/if}
+							<button
+								onclick={() => handleRefreshModels(p.provider)}
+								disabled={refreshResult === "refreshing"}
+								title="Fetch the latest model list from {info.name}"
+								class="rounded-md border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50 transition-colors"
+							>
+								{refreshResult === "refreshing" ? "Fetching..." : "Refresh models"}
+							</button>
+							{#if refreshResult && refreshResult !== "refreshing"}
+								{#if refreshResult.success}
+									<span class="text-xs text-green-400">Loaded {refreshResult.count} models</span>
+								{:else}
+									<span class="text-xs text-red-400" title={refreshResult.error}>Refresh failed</span>
 								{/if}
 							{/if}
 						</div>

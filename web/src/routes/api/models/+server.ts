@@ -58,12 +58,18 @@ export const GET: RequestHandler = async ({ locals }) => {
 	}
 
 	// When providers use OAuth, only show models supported by their OAuth-compatible variant
-	// (e.g. google → google-gemini-cli, openai → openai-codex)
+	// (e.g. google → google-gemini-cli, openai → openai-codex) — plus any models the user
+	// explicitly pulled in via the "Refresh models" button (stored under provider:discoveredModels:*).
 	const oauthFilters = new Map<string, Set<string>>();
 	for (const [provider, credType] of credTypes) {
 		if (credType === "oauth") {
 			const ids = getOAuthModelIds(provider);
-			if (ids) oauthFilters.set(provider, ids);
+			if (!ids) continue;
+			const discovered = (await getSetting(`provider:discoveredModels:${provider}`)) as Array<{ id: string }> | undefined;
+			if (Array.isArray(discovered)) {
+				for (const m of discovered) ids.add(m.id);
+			}
+			oauthFilters.set(provider, ids);
 		}
 	}
 

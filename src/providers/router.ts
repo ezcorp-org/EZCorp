@@ -12,7 +12,7 @@ import {
   type AssistantMessageEventStream,
 } from "@mariozechner/pi-ai";
 import { getCredential } from "./credentials";
-import { resolveModelObject, findModelForProviderInTier } from "./registry";
+import { resolveModelObject, findModelForProviderInTier, resolveDiscoveredModel } from "./registry";
 import { getCircuitBreaker } from "./circuit-breaker";
 import { getSetting } from "../db/queries/settings";
 
@@ -69,6 +69,12 @@ export async function resolveModel(
 
   // Level 1: Explicit provider + model -- passthrough
   if (provider && modelId) {
+    // Prefer a model discovered via /api/providers/:provider/refresh-models — it carries
+    // the correct api + baseUrl for provider-native calls (e.g. openai-responses for gpt-5.x).
+    const discovered = await resolveDiscoveredModel(provider, modelId);
+    if (discovered) {
+      return { provider, model: modelId, piModel: discovered };
+    }
     // Look up custom model's baseUrl so resolveModelObject can set the correct endpoint
     const customModels = (await getSetting("provider:customModels")) as any[] | undefined;
     const custom = customModels?.find((m: any) => (m.id ?? m.modelId) === modelId && m.provider === provider);

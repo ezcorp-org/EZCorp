@@ -12,6 +12,39 @@ import {
 } from "@mariozechner/pi-ai";
 import { getSetting } from "../db/queries/settings";
 
+// Fallback entries for OAuth-only users (ChatGPT Codex login).
+// The OAuth token can't call api.openai.com/v1/models, so discovery can't
+// reach these — we hardcode them until pi-ai's openai-codex list catches up.
+const LOCAL_OAUTH_OVERRIDES: Model<any>[] = [
+  {
+    id: "gpt-5.5",
+    name: "GPT-5.5",
+    api: "openai-codex-responses" as any,
+    provider: "openai-codex" as any,
+    baseUrl: "https://chatgpt.com/backend-api",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 272_000,
+    maxTokens: 128_000,
+  },
+];
+
+// Load discovered models from settings (populated by /api/providers/:provider/refresh-models).
+// Returns a flat list across all providers, with pi-ai-registered IDs filtered out to avoid duplicates.
+async function loadDiscoveredModels(): Promise<Model<any>[]> {
+  const out: Model<any>[] = [];
+  for (const provider of ["openai", "anthropic", "google"]) {
+    const stored = (await getSetting(`provider:discoveredModels:${provider}`)) as Model<any>[] | undefined;
+    if (!Array.isArray(stored)) continue;
+    const piIds = new Set(getModels(provider as KnownProvider).map((m) => m.id));
+    for (const m of stored) {
+      if (!piIds.has(m.id)) out.push(m);
+    }
+  }
+  return out;
+}
+
 // ── ModelEntry: API response shape for the frontend ──────────────────
 
 export interface ModelEntry {
@@ -27,24 +60,52 @@ export interface ModelEntry {
   baseUrl?: string;
 }
 
-// ── Tier/Cost inference from model name ──────────────────────────────
+// ── Tier/Cost inference ──────────────────────────────────────────────
+// Prefers real pricing from the Model's cost field (provided by pi-ai and
+// models.dev discovery). Falls back to name heuristics when cost is 0.
+// Thresholds are blended input+output in USD per 1M tokens:
+//   low    ≤ $3    (nano/flash/mini/haiku class)
+//   medium ≤ $30   (sonnet / gpt-5 / gemini-pro class)
+//   high   > $30   (opus / gpt-5-pro / reasoning tiers)
 
-function inferTier(id: string): { tier: ModelEntry["tier"]; costTier: ModelEntry["costTier"] } {
-  const lower = id.toLowerCase();
+function inferTier(model: Model<any>): { tier: ModelEntry["tier"]; costTier: ModelEntry["costTier"] } {
+  const lower = model.id.toLowerCase();
+  const blended = (model.cost?.input ?? 0) + (model.cost?.output ?? 0);
 
+  let costTier: ModelEntry["costTier"];
+  if (blended <= 0) {
+    // No pricing info — fall back to name hints
+    if (/\bmini\b|nano|flash|lite|haiku/.test(lower)) costTier = "low";
+    else if (/opus|^o[1-9]$|pro|codex-max/.test(lower)) costTier = "high";
+    else costTier = "medium";
+  } else if (blended <= 3) {
+    costTier = "low";
+  } else if (blended <= 30) {
+    costTier = "medium";
+  } else {
+    costTier = "high";
+  }
+
+  let tier: ModelEntry["tier"];
   if (/\bmini\b|nano|flash|lite|haiku/.test(lower)) {
-    return { tier: "fast", costTier: "low" };
+    tier = "fast";
+  } else if (/opus|pro|codex-max|^o[1-9]$/.test(lower)) {
+    tier = "powerful";
+  } else if (costTier === "high") {
+    tier = "powerful";
+  } else if (costTier === "low") {
+    tier = "fast";
+  } else {
+    tier = "balanced";
   }
-  if (/opus|^o[1-9]$|pro|codex-max/.test(lower)) {
-    return { tier: "powerful", costTier: "high" };
-  }
-  return { tier: "balanced", costTier: "medium" };
+
+  return { tier, costTier };
 }
 
 // ── Convert pi-ai Model to local ModelEntry ──────────────────────────
 
 function piModelToEntry(model: Model<any>): ModelEntry {
-  const { tier, costTier } = inferTier(model.id);
+  const { tier, costTier } = inferTier(model);
   return {
     id: model.id,
     provider: model.provider,
@@ -66,6 +127,10 @@ export async function getModelRegistry(): Promise<ModelEntry[]> {
     for (const model of getModels(provider)) {
       entries.push(piModelToEntry(model));
     }
+  }
+
+  for (const model of await loadDiscoveredModels()) {
+    entries.push(piModelToEntry(model));
   }
 
   // Append user-defined custom models from settings (normalize shape)
@@ -132,7 +197,11 @@ const OAUTH_PROVIDER_MAP: Record<string, KnownProvider> = {
 export function getOAuthModelIds(provider: string): Set<string> | null {
   const oauthProvider = OAUTH_PROVIDER_MAP[provider];
   if (!oauthProvider) return null;
-  return new Set(getModels(oauthProvider).map((m) => m.id));
+  const ids = new Set(getModels(oauthProvider).map((m) => m.id));
+  for (const m of LOCAL_OAUTH_OVERRIDES) {
+    if (m.provider === oauthProvider) ids.add(m.id);
+  }
+  return ids;
 }
 
 /**
@@ -143,16 +212,25 @@ export function resolveOAuthModel(provider: string, modelId: string): Model<any>
   const oauthProvider = OAUTH_PROVIDER_MAP[provider];
   if (!oauthProvider) return null;
   try {
-    return getModel(oauthProvider, modelId as never);
+    const found = getModel(oauthProvider, modelId as never);
+    if (found) return found;
   } catch {
-    return null;
+    // fall through to override lookup
   }
+  const override = LOCAL_OAUTH_OVERRIDES.find((m) => m.provider === oauthProvider && m.id === modelId);
+  return override ?? null;
 }
 
 /**
  * Resolve a pi-ai Model object from provider + modelId.
  * Falls back to creating a custom model if not found in registry.
  */
+export async function resolveDiscoveredModel(provider: string, modelId: string): Promise<Model<any> | null> {
+  const stored = (await getSetting(`provider:discoveredModels:${provider}`)) as Model<any>[] | undefined;
+  if (!Array.isArray(stored)) return null;
+  return stored.find((m) => m.id === modelId) ?? null;
+}
+
 export function resolveModelObject(provider: string, modelId: string, baseUrl?: string): Model<any> {
   try {
     const found = getModel(provider as KnownProvider, modelId as never);

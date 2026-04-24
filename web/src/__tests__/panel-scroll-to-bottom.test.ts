@@ -177,7 +177,7 @@ describe("auto-scroll on initial panel open", () => {
 	});
 
 	test("AgentDetailPanel does not re-scroll after initial load", () => {
-		let initialScrollDone = true; // already scrolled
+		const initialScrollDone = true; // already scrolled
 		let scrollCalled = false;
 
 		if (true && true && 5 > 0 && !initialScrollDone) {
@@ -210,7 +210,7 @@ describe("auto-scroll on initial panel open", () => {
 	});
 
 	test("TeamChatPanel timeline does not re-scroll on poll refresh", () => {
-		let timelineInitialScroll = true; // already scrolled
+		const timelineInitialScroll = true; // already scrolled
 		let scrollCalled = false;
 
 		if (true && true && true && 5 > 0 && !timelineInitialScroll) {

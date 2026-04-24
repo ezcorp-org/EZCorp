@@ -62,7 +62,7 @@ describe("adjustHeight logic", () => {
 // ---------------------------------------------------------------------------
 describe("jump-to-bottom button behavior", () => {
 	test("userScrolledUp starts as false", () => {
-		let userScrolledUp = false;
+		const userScrolledUp = false;
 		expect(userScrolledUp).toBe(false);
 	});
 
@@ -126,7 +126,7 @@ describe("jump-to-bottom button behavior", () => {
 // ---------------------------------------------------------------------------
 describe("auto-scroll effect", () => {
 	test("scrolls when userScrolledUp is false and streaming text changes", () => {
-		let userScrolledUp = false;
+		const userScrolledUp = false;
 		const scrollIntoView = mock((_opts?: ScrollIntoViewOptions) => {});
 		const sentinel = { scrollIntoView };
 
@@ -146,7 +146,7 @@ describe("auto-scroll effect", () => {
 	});
 
 	test("does NOT scroll when userScrolledUp is true", () => {
-		let userScrolledUp = true;
+		const userScrolledUp = true;
 		const scrollIntoView = mock((_opts?: ScrollIntoViewOptions) => {});
 		const sentinel = { scrollIntoView };
 
@@ -164,7 +164,7 @@ describe("auto-scroll effect", () => {
 	});
 
 	test("does NOT scroll when sentinel is undefined", () => {
-		let userScrolledUp = false;
+		const userScrolledUp = false;
 		// Annotate as a mutable union so TS doesn't narrow to the literal
 		// `undefined` initializer and collapse the truthy branch to `never`.
 		const sentinel: { scrollIntoView: (_opts?: ScrollIntoViewOptions) => void } | undefined =
@@ -208,7 +208,7 @@ describe("auto-scroll effect", () => {
 	});
 
 	test("scrollIntoView is called with behavior instant during streaming", () => {
-		let userScrolledUp = false;
+		const userScrolledUp = false;
 		const scrollIntoView = mock((_opts?: ScrollIntoViewOptions) => {});
 		const sentinel = { scrollIntoView };
 

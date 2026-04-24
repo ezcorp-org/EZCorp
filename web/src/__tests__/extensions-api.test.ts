@@ -9,7 +9,7 @@ let authUser: { id: string; email: string; name: string; role: string } | null =
 	name: "Admin",
 	role: "admin",
 };
-let apiKeyScopes: string[] | undefined = undefined;
+let apiKeyScopes: string[] | undefined ;
 
 const mockRequireAuth = mock(() => {
 	if (!authUser) {

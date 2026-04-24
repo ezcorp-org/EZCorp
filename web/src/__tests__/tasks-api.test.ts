@@ -26,7 +26,7 @@ mock.module("$server/runtime/task-tracking-host", () => ({
 
 // ── Mock auth + scope middleware ────────────────────────────────────
 
-let mockUser: { id: string; email: string; name: string; role: string } = {
+const mockUser: { id: string; email: string; name: string; role: string } = {
   id: "user-1", email: "test@test.com", name: "Test", role: "member",
 };
 mock.module("$server/auth/middleware", () => ({

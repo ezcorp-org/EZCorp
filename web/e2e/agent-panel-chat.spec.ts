@@ -110,7 +110,7 @@ test.describe("AgentDetailPanel Chat Input", () => {
 	});
 
 	test("sends message via agent-chat endpoint on submit", async ({ page, mockApi, emitWs }) => {
-		let agentChatRequests: { url: string; body: any }[] = [];
+		const agentChatRequests: { url: string; body: any }[] = [];
 
 		await mockApi({
 			projects: [proj],

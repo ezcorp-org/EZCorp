@@ -33,7 +33,7 @@ mock.module("../auth/oauth-callback-server", () => ({
 
 // Mock fetch for token exchange
 const originalFetch = globalThis.fetch;
-let fetchMockFn = mock(() =>
+const fetchMockFn = mock(() =>
   Promise.resolve(
     new Response(
       JSON.stringify({

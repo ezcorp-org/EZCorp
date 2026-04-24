@@ -24,7 +24,7 @@ export interface ModelListEntry {
 
 /** Normalize base URL: strip trailing slashes, colons, and whitespace. */
 function normalizeUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/[\/:]+$/, "");
+  return baseUrl.trim().replace(/[/:]+$/, "");
 }
 
 /**

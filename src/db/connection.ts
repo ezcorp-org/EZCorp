@@ -180,7 +180,7 @@ async function initPostgres(): Promise<void> {
     import("drizzle-orm/pg-core/columns/jsonb"),
     import("drizzle-orm/pg-core/columns/json"),
   ]);
-  const identity = function (value: unknown) { return value; };
+  const identity = (value: unknown) => value;
   (PgJsonb.prototype as any).mapToDriverValue = identity;
   (PgJson.prototype as any).mapToDriverValue = identity;
 

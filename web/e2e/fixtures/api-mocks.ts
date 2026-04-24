@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { makeProject, makeAgent, makeRun, makeConversation, makeMessage, makePipeline, makeAgentConfig, makeMemory, makeKBFile, makeProviderStatus, makeMode, type ModeData } from "./data.js";
+import { makeProject, makeAgent, type makeRun, makeConversation, makeMessage, type makePipeline, makeAgentConfig, makeMemory, type makeKBFile, type makeProviderStatus, makeMode, type ModeData } from "./data.js";
 import { fuzzyScore } from "../../src/lib/fuzzy-match.js";
 
 export interface SubConversationMock {

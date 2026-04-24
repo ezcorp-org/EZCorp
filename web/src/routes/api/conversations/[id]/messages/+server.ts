@@ -137,8 +137,8 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
   const model = body.model ?? conv.model ?? undefined;
 
   // ── Attachment pipeline ──────────────────────────────────────────
-  let stagedAttachments: StagedAttachment[] = [];
-  let attachmentSummaries: AttachmentSummary[] = [];
+  const stagedAttachments: StagedAttachment[] = [];
+  const attachmentSummaries: AttachmentSummary[] = [];
   let userMessage: Awaited<ReturnType<typeof convQueries.createMessage>> | null = null;
 
   if (body.files.length > 0) {

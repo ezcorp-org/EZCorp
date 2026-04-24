@@ -712,7 +712,7 @@ describe("auto-disable on repeated failures", () => {
     // contract that the subprocess uses.
 
     let failureCount = 0;
-    let disabledIds: string[] = [];
+    const disabledIds: string[] = [];
 
     // Simulate the crash handler logic from ExtensionProcess.ensureRunning
     const simulateCrashHandler = async (extensionId: string) => {

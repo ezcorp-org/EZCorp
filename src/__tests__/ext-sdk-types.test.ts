@@ -7,7 +7,7 @@ import { randomUUID } from "crypto";
 /** Write a template's TypeScript output to a temp file, import it, and return the default export (the config object). */
 async function evalTemplateManifest(tsCode: string): Promise<any> {
   const tmpFile = join(tmpdir(), `ezcorp-test-${randomUUID()}.ts`);
-  let rewritten = tsCode
+  const rewritten = tsCode
     // Rewrite the import to point at the real defineExtension
     .replace(
       /from ["']@?ezcorp\/sdk["']/,

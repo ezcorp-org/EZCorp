@@ -57,9 +57,7 @@ export async function setupWsMock(page: Page) {
 		(window as any).__fakeWs = fakeWs;
 		(window as any).__fakeWsListeners = wsListeners;
 
-		(window as any).WebSocket = function () {
-			return fakeWs;
-		};
+		(window as any).WebSocket = () => fakeWs;
 		(window as any).WebSocket.CONNECTING = 0;
 		(window as any).WebSocket.OPEN = 1;
 		(window as any).WebSocket.CLOSING = 2;

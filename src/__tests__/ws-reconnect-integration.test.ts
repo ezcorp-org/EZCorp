@@ -182,7 +182,7 @@ describe("createWSClient state machine", () => {
 
 		// Error triggers reconnect with attempt=0, then attempt becomes 1
 		latestES().simulateError();
-		let val = getStoreValue();
+		const val = getStoreValue();
 		expect(val.state).toBe("reconnecting");
 		expect(val.attempt).toBe(0); // attempt at time of scheduleReconnect before increment
 

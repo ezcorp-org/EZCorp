@@ -26,7 +26,7 @@ let mockAgentConfig: {
   references?: { members?: { agentConfigId: string }[] } | null;
 } | null = null;
 let mockScopeResponse: Response | null = null;
-let mockUser = {
+const mockUser = {
   id: "user-1",
   email: "test@test.com",
   name: "Test",

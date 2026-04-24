@@ -3,9 +3,9 @@ import { describe, expect, test, beforeEach, mock } from "bun:test";
 // Mock settings + encryption + pi-ai env resolver + pi-ai/oauth BEFORE
 // importing the module under test so resolveOpenAIApiKey / resolveOpenAIAccessToken
 // dependencies are deterministic.
-let storedApiKey: unknown = undefined;
-let storedOAuth: unknown = undefined;
-let envApiKey: string | undefined = undefined;
+let storedApiKey: unknown ;
+let storedOAuth: unknown ;
+let envApiKey: string | undefined ;
 let decryptImpl: (s: string) => string = (s) => s;
 let encryptImpl: (s: string) => string = (s) => s;
 let upsertCalls: Array<{ key: string; value: unknown }> = [];

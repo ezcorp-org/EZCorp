@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeAll, afterAll, beforeEach } from "bun:test";
-import { setupTestDb, closeTestDb, mockDbConnection, getTestPglite } from "./helpers/test-pglite";
+import { setupTestDb, closeTestDb, mockDbConnection, type getTestPglite } from "./helpers/test-pglite";
 import { EMBEDDING_DIMENSIONS } from "../memory/types";
 
 // Mock db/connection before any imports that use it

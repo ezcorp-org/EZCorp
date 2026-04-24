@@ -23,7 +23,7 @@
  * details and should not be relied on outside this module (tests in
  * `fuzzy-match.test.ts` assert the ordering, not the exact numbers).
  */
-const BOUNDARY_RE = /[\/_\-.\s]/;
+const BOUNDARY_RE = /[/_\-.\s]/;
 
 export function fuzzyScore(query: string, target: string): number | null {
 	if (query.length === 0) return 0;

@@ -110,7 +110,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	// @ts-ignore
+	// @ts-expect-error
 	delete globalThis.document;
 });
 

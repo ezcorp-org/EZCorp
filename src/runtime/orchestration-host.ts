@@ -33,7 +33,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { getDb } from "../db/connection";
 import { conversationExtensions } from "../db/schema";
 import { getExtensionByName } from "../db/queries/extensions";
-import { ExtensionRegistry } from "../extensions/registry";
+import type { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor, extensionToAgentTool } from "../extensions/tool-executor";
 import type { ExtensionStateMediator } from "../extensions/state-mediator";
 import type { SpawnQuota } from "../extensions/spawn-quota";

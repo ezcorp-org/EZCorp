@@ -44,13 +44,13 @@ describe("debounce", () => {
 		originalSetTimeout = globalThis.setTimeout;
 		originalClearTimeout = globalThis.clearTimeout;
 
-		// @ts-ignore - manual timer mock
+		// @ts-expect-error - manual timer mock
 		globalThis.setTimeout = (fn: Function, delay: number) => {
 			const id = nextId++;
 			timers.push({ fn, delay, id });
 			return id;
 		};
-		// @ts-ignore
+		// @ts-expect-error
 		globalThis.clearTimeout = (id: number) => {
 			timers = timers.filter((t) => t.id !== id);
 		};

@@ -20,7 +20,7 @@ beforeEach(() => {
 
 	// Bun's Mock<…> is structurally narrower than the DOM globals (Clipboard,
 	// Node.appendChild, etc); cast through `unknown` so the stubs satisfy the
-	// global shapes without needing `@ts-ignore`.
+	// global shapes without needing `@ts-expect-error`.
 	globalThis.navigator = {
 		clipboard: { writeText: mockWriteText } as unknown as Clipboard,
 	} as unknown as Navigator;
@@ -35,9 +35,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	// @ts-ignore
+	// @ts-expect-error
 	delete globalThis.navigator;
-	// @ts-ignore
+	// @ts-expect-error
 	delete globalThis.document;
 });
 
@@ -57,7 +57,7 @@ describe("copyToClipboard", () => {
 	});
 
 	test("falls back to execCommand when clipboard API missing", async () => {
-		// @ts-ignore
+		// @ts-expect-error
 		globalThis.navigator = {};
 		const ok = await copyToClipboard("no clipboard");
 		expect(ok).toBe(true);

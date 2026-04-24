@@ -45,7 +45,6 @@ for (const line of lcov.split("\n")) {
     curRec = { totalLines: 0, coveredLines: 0, missed: [] };
     perFile.set(rel, curRec);
   } else if (!curRec) {
-    continue;
   } else if (line === "end_of_record") {
     curRec = null;
   } else if (line.startsWith("DA:")) {

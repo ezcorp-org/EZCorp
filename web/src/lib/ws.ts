@@ -25,7 +25,7 @@ export const BASE_DELAY = 1000;
 export const MAX_DELAY = 30000;
 
 export function getBackoffDelay(attempt: number): number {
-	return Math.min(BASE_DELAY * Math.pow(2, attempt), MAX_DELAY);
+	return Math.min(BASE_DELAY * 2 ** attempt, MAX_DELAY);
 }
 
 /**

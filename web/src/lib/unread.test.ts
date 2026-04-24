@@ -12,7 +12,6 @@ const mockLocalStorage = {
 	key: (i: number) => Object.keys(storage)[i] ?? null,
 };
 
-// @ts-ignore
 globalThis.localStorage = mockLocalStorage;
 
 describe("unread store", () => {

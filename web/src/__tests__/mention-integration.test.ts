@@ -78,7 +78,7 @@ describe("full mention flow: type → search → select → render", () => {
 
 	test("extension mention with prefix filter", async () => {
 		let text = "use !ext:ana";
-		let cursor = 12;
+		const cursor = 12;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "ana", type: "ext", sigil: "!" });
 
@@ -107,7 +107,7 @@ describe("full mention flow: type → search → select → render", () => {
 	test("file mention end-to-end", async () => {
 		// User types "read @s" — detect `@` sigil → file trigger
 		let text = "read @s";
-		let cursor = 7;
+		const cursor = 7;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "s", type: "path", sigil: "@" });
 
@@ -231,8 +231,8 @@ describe("full mention flow: type → search → select → render", () => {
 	});
 
 	test("search API error doesn't break flow", async () => {
-		let text = "hello !co";
-		let cursor = 9;
+		const text = "hello !co";
+		const cursor = 9;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).not.toBeNull();
 
@@ -289,8 +289,8 @@ describe("full mention flow: type → search → select → render", () => {
 	});
 
 	test("mention with special characters in name", async () => {
-		let text = "!my";
-		let cursor = 3;
+		const text = "!my";
+		const cursor = 3;
 
 		const inserted = insertMentionToken(text, cursor, {
 			kind: "ext",

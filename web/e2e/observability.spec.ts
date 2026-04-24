@@ -338,8 +338,8 @@ test.describe("Observability Page", () => {
 			.first();
 		const style = await bar.getAttribute("style");
 		// Browsers may normalize hex to rgb() — match either form at the 80% stop.
-		const inputStop = new RegExp(`(#3b82f6|rgb\\(\\s*59,\\s*130,\\s*246\\s*\\))\\s+80%`, "i");
-		const outputStop = new RegExp(`(#60a5fa|rgb\\(\\s*96,\\s*165,\\s*250\\s*\\))\\s+80%`, "i");
+		const inputStop = /(#3b82f6|rgb\(\s*59,\s*130,\s*246\s*\))\s+80%/i;
+		const outputStop = /(#60a5fa|rgb\(\s*96,\s*165,\s*250\s*\))\s+80%/i;
 		expect(style).toMatch(inputStop);
 		expect(style).toMatch(outputStop);
 	});

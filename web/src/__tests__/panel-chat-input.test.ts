@@ -497,8 +497,8 @@ describe("PanelChatInput mention integration flow", () => {
 	});
 
 	test("team mention flow in panel", async () => {
-		let text = "!team:dev";
-		let cursor = 9;
+		const text = "!team:dev";
+		const cursor = 9;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "dev", type: "team", sigil: "!" });
 
@@ -520,8 +520,8 @@ describe("PanelChatInput mention integration flow", () => {
 	});
 
 	test("file mention flow in panel", async () => {
-		let text = "look @s";
-		let cursor = 7;
+		const text = "look @s";
+		const cursor = 7;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "s", type: "path", sigil: "@" });
 

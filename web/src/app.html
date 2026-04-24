@@ -7,7 +7,7 @@
 		<meta name="color-scheme" content="dark" />
 		<link rel="manifest" href="/manifest.json" />
 		<script>
-			(function() {
+			(() => {
 				var t = localStorage.getItem('ezcorp-theme');
 				var isDark = t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches);
 				if (isDark) {

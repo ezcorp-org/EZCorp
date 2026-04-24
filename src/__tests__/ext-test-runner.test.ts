@@ -9,9 +9,9 @@ mock.module("../../src/db/connection", () => ({
   getDb: () => ({}),
 }));
 
-let lastSpawnArgs: string[] = [];
-let lastSpawnOpts: Record<string, unknown> = {};
-let mockSpawnExitCode = 0;
+const lastSpawnArgs: string[] = [];
+const lastSpawnOpts: Record<string, unknown> = {};
+const mockSpawnExitCode = 0;
 
 // We can't easily mock Bun.spawn globally, so we test the args-building
 // and env-filtering functions directly.

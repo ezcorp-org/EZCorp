@@ -167,7 +167,7 @@ describe("installFromGitHub", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    // @ts-ignore – restore original
+    // @ts-expect-error – restore original
     Bun.spawnSync = originalSpawnSync;
   });
 

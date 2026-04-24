@@ -265,8 +265,8 @@ describe("auto-open: tool count determines form vs picker vs noop", () => {
 describe("integration: type → search → select → auto-open", () => {
 	test("extension with 2 tools: type → select → picker opens", async () => {
 		// Step 1: User types "!pro"
-		let text = "check this !pro";
-		let cursor = 15;
+		const text = "check this !pro";
+		const cursor = 15;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "pro", type: undefined, sigil: "!" });
 
@@ -302,8 +302,8 @@ describe("integration: type → search → select → auto-open", () => {
 	});
 
 	test("extension with 1 tool: type → select → form opens directly", async () => {
-		let text = "!code";
-		let cursor = 5;
+		const text = "!code";
+		const cursor = 5;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "code", type: undefined, sigil: "!" });
 
@@ -328,8 +328,8 @@ describe("integration: type → search → select → auto-open", () => {
 	});
 
 	test("agent: type → select → no auto-open, just chip", async () => {
-		let text = "ask !hel";
-		let cursor = 8;
+		const text = "ask !hel";
+		const cursor = 8;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "hel", type: undefined, sigil: "!" });
 
@@ -356,8 +356,8 @@ describe("integration: type → search → select → auto-open", () => {
 	});
 
 	test("extension with prefix filter: @ext:mark → select → auto-open", async () => {
-		let text = "use !ext:mark";
-		let cursor = 13;
+		const text = "use !ext:mark";
+		const cursor = 13;
 		const trigger = detectMentionTrigger(text, cursor);
 		expect(trigger).toEqual({ active: true, query: "mark", type: "ext", sigil: "!" });
 
@@ -437,8 +437,8 @@ describe("integration: multiple mentions with auto-open", () => {
 		expect(first.chipClickResult!.action).toBe("show-form");
 
 		// Second extension
-		let text = first.text + "also !fmt";
-		let cursor = text.length;
+		const text = first.text + "also !fmt";
+		const cursor = text.length;
 		mockFetch(200, { tools: [makeTool("format"), makeTool("check")] });
 		const second = await handleMentionSelectLogic(
 			{ name: "formatter", kind: "extension" },

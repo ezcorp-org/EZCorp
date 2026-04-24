@@ -17,7 +17,7 @@ let mockSubConv: Conversation | null = null;
 let mockParentConv: Conversation | null = null;
 let mockLatestLeaf: { id: string } | null = null;
 let mockScopeResponse: Response | null = null;
-let mockUser = { id: "user-1", email: "test@test.com", name: "Test", role: "member" };
+const mockUser = { id: "user-1", email: "test@test.com", name: "Test", role: "member" };
 let mockAgentConfig: { id: string; name: string; prompt: string; model?: string; provider?: string } | null = null;
 
 // ── Mock db/query layer ─────────────────────────────────────────────

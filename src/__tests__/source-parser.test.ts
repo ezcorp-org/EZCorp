@@ -129,7 +129,7 @@ describe("parseSource", () => {
 describe("git operations", () => {
   let bareRepoDir: string;
   let tempBase: string;
-  let tempDirs: string[] = [];
+  const tempDirs: string[] = [];
 
   const env = { ...process.env };
   const spawn = (cmd: string[], opts?: { cwd?: string }) =>

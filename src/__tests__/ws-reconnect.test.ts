@@ -28,7 +28,7 @@ describe("getBackoffDelay", () => {
 
 	test("follows exponential pattern", () => {
 		for (let i = 0; i < 5; i++) {
-			expect(getBackoffDelay(i)).toBe(Math.min(1000 * Math.pow(2, i), 30000));
+			expect(getBackoffDelay(i)).toBe(Math.min(1000 * 2 ** i, 30000));
 		}
 	});
 });

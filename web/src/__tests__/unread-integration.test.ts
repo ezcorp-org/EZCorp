@@ -10,7 +10,6 @@ const mockLocalStorage = {
 	get length() { return Object.keys(storage).length; },
 	key: (i: number) => Object.keys(storage)[i] ?? null,
 };
-// @ts-ignore
 globalThis.localStorage = mockLocalStorage;
 
 import { unreadStore } from "../lib/unread.js";

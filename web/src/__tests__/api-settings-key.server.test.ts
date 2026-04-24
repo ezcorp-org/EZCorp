@@ -9,8 +9,20 @@
  * settings query layer, which would need PGlite + drizzle wiring.
  */
 
-import { test, expect, describe } from "vitest";
-import { GET, PUT, DELETE } from "../routes/api/settings/[key]/+server.ts";
+import { test, expect, describe, vi, beforeEach } from "vitest";
+
+vi.mock("$server/db/queries/settings", () => ({
+  getSetting: vi.fn(),
+  upsertSetting: vi.fn(async () => undefined),
+  deleteSetting: vi.fn(async () => true),
+}));
+
+const { getSetting, upsertSetting, deleteSetting } = await import(
+  "$server/db/queries/settings"
+);
+const { GET, PUT, DELETE } = await import(
+  "../routes/api/settings/[key]/+server.ts"
+);
 
 function makeEvent(opts: {
   key: string;
@@ -131,5 +143,77 @@ describe("DELETE /api/settings/[key]", () => {
       }),
     );
     expect(res.status).toBe(403);
+  });
+
+  test("returns 404 when deleteSetting reports no row", async () => {
+    vi.mocked(deleteSetting).mockResolvedValueOnce(false as any);
+    const res = await DELETE(
+      makeEvent({
+        key: "ui:theme",
+        locals: adminLocals,
+        method: "DELETE",
+      }),
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("Not found");
+  });
+
+  test("returns 200 { ok: true } on successful delete", async () => {
+    vi.mocked(deleteSetting).mockResolvedValueOnce(true as any);
+    const res = await DELETE(
+      makeEvent({
+        key: "ui:theme",
+        locals: adminLocals,
+        method: "DELETE",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean };
+    expect(body.ok).toBe(true);
+    expect(deleteSetting).toHaveBeenCalledWith("ui:theme");
+  });
+});
+
+describe("GET /api/settings/[key] — value paths (mocked queries)", () => {
+  beforeEach(() => vi.mocked(getSetting).mockReset());
+
+  test("returns 404 when the key is not stored", async () => {
+    vi.mocked(getSetting).mockResolvedValueOnce(undefined as any);
+    const res = await GET(
+      makeEvent({ key: "ui:theme", locals: adminLocals }),
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("Not found");
+  });
+
+  test("returns 200 with { value } on success", async () => {
+    vi.mocked(getSetting).mockResolvedValueOnce("dark" as any);
+    const res = await GET(
+      makeEvent({ key: "ui:theme", locals: adminLocals }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { value?: unknown };
+    expect(body.value).toBe("dark");
+  });
+});
+
+describe("PUT /api/settings/[key] — value persistence", () => {
+  beforeEach(() => vi.mocked(upsertSetting).mockClear());
+
+  test("returns 200 { ok: true } on successful upsert", async () => {
+    const res = await PUT(
+      makeEvent({
+        key: "ui:theme",
+        locals: adminLocals,
+        method: "PUT",
+        body: { value: "light" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean };
+    expect(body.ok).toBe(true);
+    expect(upsertSetting).toHaveBeenCalledWith("ui:theme", "light");
   });
 });

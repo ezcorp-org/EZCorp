@@ -1,13 +1,22 @@
 /**
  * Server-handler unit tests for /api/mcp-servers/[id]/refresh (+server.ts).
  *
- * The success path hits the real `ExtensionRegistry` singleton and would
- * need a tool-server harness, so we cover only the auth gates and the
- * missing-id pre-check that runs before any registry call.
+ * Covers the auth gates, the missing-id pre-check that runs before any
+ * registry call, and both terminal paths of the try/catch around
+ * `refreshMcpTools` (200 + fresh tool list on success, 502 on failure).
+ * The registry singleton is mocked so no MCP subprocess is launched.
  */
 
-import { test, expect, describe } from "vitest";
-import { POST } from "../routes/api/mcp-servers/[id]/refresh/+server";
+import { test, expect, describe, vi, beforeEach } from "vitest";
+
+const refreshMcpTools = vi.fn();
+vi.mock("$server/extensions/registry", () => ({
+  ExtensionRegistry: {
+    getInstance: () => ({ refreshMcpTools }),
+  },
+}));
+
+const { POST } = await import("../routes/api/mcp-servers/[id]/refresh/+server");
 
 function makeEvent(opts: {
   locals?: Record<string, unknown>;
@@ -23,6 +32,10 @@ function makeEvent(opts: {
 const adminUser = { user: { id: "u1", email: "u@x", name: "u", role: "admin" } };
 
 describe("POST /api/mcp-servers/[id]/refresh", () => {
+  beforeEach(() => {
+    refreshMcpTools.mockReset();
+  });
+
   test("rejects unauthenticated callers with 401", async () => {
     let res: Response | undefined;
     try {
@@ -56,5 +69,48 @@ describe("POST /api/mcp-servers/[id]/refresh", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe("id required");
+  });
+
+  test("returns 400 when id param is missing", async () => {
+    const res = await POST(makeEvent({ locals: adminUser, params: {} }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("id required");
+  });
+
+  test("returns 200 with fresh tool list on success", async () => {
+    const tools = [
+      { name: "echo", description: "echo a string" },
+      { name: "add", description: "add two numbers" },
+    ];
+    refreshMcpTools.mockResolvedValueOnce(tools);
+    const res = await POST(
+      makeEvent({ locals: adminUser, params: { id: "ext-42" } }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id?: string; tools?: unknown[] };
+    expect(body.id).toBe("ext-42");
+    expect(body.tools).toEqual(tools);
+    expect(refreshMcpTools).toHaveBeenCalledWith("ext-42");
+  });
+
+  test("returns 502 when refreshMcpTools throws an Error", async () => {
+    refreshMcpTools.mockRejectedValueOnce(new Error("mcp subprocess died"));
+    const res = await POST(
+      makeEvent({ locals: adminUser, params: { id: "ext-42" } }),
+    );
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("mcp subprocess died");
+  });
+
+  test("returns 502 with generic message when refreshMcpTools throws a non-Error", async () => {
+    refreshMcpTools.mockRejectedValueOnce("pipe closed");
+    const res = await POST(
+      makeEvent({ locals: adminUser, params: { id: "ext-42" } }),
+    );
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("Refresh failed");
   });
 });

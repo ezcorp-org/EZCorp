@@ -2,8 +2,8 @@
  * Server-handler unit tests for /api/providers/[provider]/test (+server.ts).
  *
  * The success path performs a real `complete()` call against the provider
- * API, so we cover only the auth gates and the validation for the
- * provider whitelist.
+ * API, so we cover only the auth/scope gates and the provider-whitelist
+ * validation. The live-LLM roundtrip is left for an integration test.
  */
 
 import { test, expect, describe } from "vitest";
@@ -35,6 +35,17 @@ describe("POST /api/providers/[provider]/test", () => {
     expect(res!.status).toBe(401);
   });
 
+  test("rejects 403 when apiKeyScopes lacks 'admin'", async () => {
+    const res = await POST(
+      makeEvent({ locals: { apiKeyScopes: ["read", "chat"] } }),
+    );
+    expect(res).toBeInstanceOf(Response);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error?: string; required?: string };
+    expect(body.error).toBe("Insufficient scope");
+    expect(body.required).toBe("admin");
+  });
+
   test("returns 400 for unknown provider", async () => {
     const res = await POST(
       makeEvent({ locals: adminUser, params: { provider: "bogus" } }),
@@ -48,6 +59,13 @@ describe("POST /api/providers/[provider]/test", () => {
     const res = await POST(
       makeEvent({ locals: adminUser, params: { provider: "" } }),
     );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toContain("Invalid provider");
+  });
+
+  test("returns 400 when provider param is absent", async () => {
+    const res = await POST(makeEvent({ locals: adminUser, params: {} }));
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toContain("Invalid provider");

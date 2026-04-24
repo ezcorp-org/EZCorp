@@ -4,7 +4,10 @@ import type {
   UserMessage,
 } from "../../types";
 import { getConversationPath, getLatestLeaf, resolveSystemPrompt } from "../../db/queries/conversations";
+import { logger } from "../../logger";
 import type { StreamChatContext } from "./context";
+
+const log = logger.child("executor.loadHistory.rehydrate");
 
 /**
  * Smart-cap limits for rehydrating tool-generated images into history.
@@ -68,8 +71,13 @@ export async function collectRehydratedImages(
   // walker can then read from the map without re-querying per turn.
   const assistantIds = branch.filter((m) => m.role === "assistant").map((m) => m.id);
   const toolOutputsByMessage = new Map<string, string[]>();
+  let toolRowsFound = 0;
   if (assistantIds.length > 0) {
-    const rows = await listToolCallOutputsForMessages(assistantIds).catch(() => []);
+    const rows = await listToolCallOutputsForMessages(assistantIds).catch((err) => {
+      log.warn("listToolCallOutputsForMessages failed", { error: String(err) });
+      return [];
+    });
+    toolRowsFound = rows.length;
     for (const row of rows) {
       const text = extractOutputText(row.output);
       if (!text) continue;
@@ -87,6 +95,8 @@ export async function collectRehydratedImages(
   let imageCount = 0;
   let totalBytes = 0;
 
+  let urlsSeen = 0;
+  let statMisses = 0;
   for (let i = branch.length - 1; i >= 0; i--) {
     if (imageCount >= maxImages || totalBytes >= maxBytes) break;
     const m = branch[i]!;
@@ -100,11 +110,12 @@ export async function collectRehydratedImages(
     const urls: string[] = [];
     for (const s of sources) urls.push(...extractExtFilesUrls(s));
     if (urls.length === 0) continue;
+    urlsSeen += urls.length;
 
     for (const url of urls) {
       if (imageCount >= maxImages || totalBytes >= maxBytes) break;
       const info = await statExtFilesImage(url);
-      if (!info) continue;
+      if (!info) { statMisses++; continue; }
       if (seen.has(info.absPath)) continue; // cross-turn dedupe
       // Stop early if adding this image would blow past the byte cap.
       // We don't "skip and keep scanning" — the walker commits to newest
@@ -120,6 +131,23 @@ export async function collectRehydratedImages(
       totalBytes += info.sizeBytes;
     }
   }
+
+  // Single info-level summary line per turn. One grep target tells you
+  // exactly which stage is zero when rehydration isn't working:
+  //   assistantsInBranch=0  → branch has no assistant turns yet
+  //   toolRowsFound=0       → tool_calls anchoring lost the messageId link
+  //   urlsSeen=0            → tool output format isn't producing ![](url)
+  //   statMisses > 0        → cwd mismatch between save and read, or file GC'd
+  //   imagesInjected=0 with urlsSeen>0 → file-read failed (permissions, etc.)
+  log.info("walked", {
+    assistantsInBranch: assistantIds.length,
+    toolRowsFound,
+    urlsSeen,
+    statMisses,
+    imagesInjected: imageCount,
+    totalBytes,
+    cwd: process.cwd(),
+  });
 }
 
 /** Subset of streamChat's options the load-history phase reads. */
@@ -203,6 +231,16 @@ export async function loadHistory(
   const injectedImages = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
   if (supportsImageInput) {
     await collectRehydratedImages(branchMessages, injectedImages);
+  } else {
+    // Surface the gate state so "no image in context" mysteries are
+    // one grep away from the answer. If this fires unexpectedly, check
+    // that the provider+model registration carries input:["text","image"].
+    log.info("skipped: model lacks image input capability", {
+      provider: options.provider,
+      model: options.model,
+      kinds: pastCaps?.kinds,
+      branchLen: branchMessages.length,
+    });
   }
 
   const history: Message[] = await Promise.all(branchMessages.map(async (m, idx): Promise<Message> => {

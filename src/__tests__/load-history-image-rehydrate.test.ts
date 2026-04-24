@@ -256,6 +256,96 @@ describe("collectRehydratedImages cap arithmetic", () => {
     await collectRehydratedImages(branch, out, { maxImages: 0 });
     expect(out.size).toBe(0);
   });
+
+  // ── Observability: log level on stat misses ──────────────────────
+  //
+  // When an ext-files URL can't be resolved on disk (most often because
+  // a deployment forgot to mount the /app/.ezcorp volume — the real
+  // bug that caused the original outage), the walker must log at warn
+  // level so the failure surfaces above info-noise. Happy-path walks
+  // stay at info.
+
+  function captureStdStreams(): () => { stdout: string[]; stderr: string[] } {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    (process.stdout.write as any) = (chunk: any, ...rest: any[]) => {
+      stdout.push(String(chunk));
+      return origOut(chunk, ...(rest as []));
+    };
+    (process.stderr.write as any) = (chunk: any, ...rest: any[]) => {
+      stderr.push(String(chunk));
+      return origErr(chunk, ...(rest as []));
+    };
+    return () => {
+      (process.stdout.write as any) = origOut;
+      (process.stderr.write as any) = origErr;
+      return { stdout, stderr };
+    };
+  }
+
+  function rehydrateLines(captured: string[]): Array<{ level: string; statMisses?: number; msg: string }> {
+    const out: Array<{ level: string; statMisses?: number; msg: string }> = [];
+    for (const chunk of captured) {
+      for (const line of chunk.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const j = JSON.parse(line);
+          if (j.subsystem === "executor.loadHistory.rehydrate" && j.msg.startsWith("walked")) {
+            out.push({ level: j.level, statMisses: j.statMisses, msg: j.msg });
+          }
+        } catch { /* not JSON, skip */ }
+      }
+    }
+    return out;
+  }
+
+  test("happy path (statMisses=0) logs at info level", async () => {
+    const url = writeUnitImage("generated/ok.png", makeBytes(8, 1));
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${url})` },
+      { id: "c", role: "user", content: "" },
+    ];
+    const stop = captureStdStreams();
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out);
+    const { stdout, stderr } = stop();
+    // Log line must appear somewhere — confirms the observability path ran.
+    const allLines = rehydrateLines([...stdout, ...stderr]);
+    expect(allLines.length).toBeGreaterThan(0);
+    const line = allLines[allLines.length - 1]!;
+    expect(line.level).toBe("info");
+    expect(line.statMisses).toBe(0);
+    // Info lines land on stdout, not stderr.
+    expect(rehydrateLines(stdout).length).toBeGreaterThan(0);
+  });
+
+  test("missing files (statMisses>0) logs at warn level", async () => {
+    // URL points at a file that does NOT exist on disk — mimics the
+    // production bug where the /app/.ezcorp volume wasn't mounted and
+    // the referenced file was wiped by a container restart.
+    const ghostUrl = `/api/ext-files/${EXT}/generated/never-written.png`;
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${ghostUrl})` },
+      { id: "c", role: "user", content: "" },
+    ];
+    const stop = captureStdStreams();
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out);
+    const { stdout, stderr } = stop();
+    const allLines = rehydrateLines([...stdout, ...stderr]);
+    expect(allLines.length).toBeGreaterThan(0);
+    const line = allLines[allLines.length - 1]!;
+    expect(line.level).toBe("warn");
+    expect(line.statMisses).toBeGreaterThan(0);
+    expect(line.msg).toContain("some ext-files URLs could not be resolved");
+    // Warn lines land on stderr, not stdout — confirms routing so
+    // log shippers that split by stream handle them correctly.
+    expect(rehydrateLines(stderr).length).toBeGreaterThan(0);
+  });
 });
 
 describe("findNextUserIndex", () => {

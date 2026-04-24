@@ -1,5 +1,6 @@
 import type { RequestHandler } from "./$types";
 import { json } from "@sveltejs/kit";
+import { z } from "zod";
 import { requireRole } from "$server/auth/middleware";
 import { updateUserStatus, getUserById } from "$server/db/queries/users";
 import { getDb } from "$server/db/connection";
@@ -9,18 +10,31 @@ import { insertAuditEntry } from "$server/db/queries/audit-log";
 import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
 
+// Boundary validation. Handler reads only `status`; the inline 400
+// "Status must be 'active' or 'inactive'" message is test-pinned, so
+// `status` stays a permissive string in the schema and the inline
+// enum check below fires for invalid values.
+const updateUserSchema = z.object({
+  status: z.string().optional(),
+}).strict();
+
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
   const scopeErr = requireScope(locals, "admin");
   if (scopeErr) return scopeErr;
   try {
     const admin = requireRole(locals, "admin");
-    const { status } = (await request.json()) as { status?: "active" | "inactive" };
+    const parsed = updateUserSchema.safeParse(await request.json().catch(() => ({})));
+    if (!parsed.success) {
+      return errorJson(400, "Status must be 'active' or 'inactive'");
+    }
+    const { status } = parsed.data;
 
     if (status && !["active", "inactive"].includes(status)) {
       return errorJson(400, "Status must be 'active' or 'inactive'");
     }
+    const typedStatus = status as "active" | "inactive" | undefined;
 
-    if (status === "inactive") {
+    if (typedStatus === "inactive") {
       if (params.id === admin.id) {
         return errorJson(400, "Cannot deactivate yourself");
       }
@@ -32,9 +46,9 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
         .where(eq(agentConfigs.userId, params.id));
     }
 
-    if (status) {
-      await updateUserStatus(params.id, status);
-      if (status === "inactive") {
+    if (typedStatus) {
+      await updateUserStatus(params.id, typedStatus);
+      if (typedStatus === "inactive") {
         await insertAuditEntry(admin.id, "user:deactivated", params.id);
       }
     }

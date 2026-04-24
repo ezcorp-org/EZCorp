@@ -7,36 +7,23 @@ import { getConversationPath, getLatestLeaf, resolveSystemPrompt } from "../../d
 import type { StreamChatContext } from "./context";
 
 /**
- * Token-spend cap: rehydrate ext-files images from at most the last N
- * assistant messages in the branch. Three covers "edit the image you just
- * made" and a follow-up iteration without re-sending images from every
- * prior turn in a long conversation. Adjust via env if needed — kept local
- * until there's a real reason to expose it.
+ * Smart-cap limits for rehydrating tool-generated images into history.
+ *
+ * We walk assistant turns newest → oldest, accumulating images until
+ * EITHER cap is hit:
+ *   - MAX_IMAGES: total image count across all rehydrated turns
+ *   - MAX_TOTAL_BYTES: cumulative on-disk size (approximate token spend)
+ *
+ * Counting images (not turns) means a chat that generates five variants
+ * across ten turns includes all five; a chat that generates one image
+ * per turn across twenty turns caps at MAX_IMAGES. Bytes is the escape
+ * valve for oversized PNGs — one 20 MB image shouldn't eat the entire
+ * context window while four tiny ones fit easily.
  */
-export const ASSISTANT_IMAGE_REHYDRATE_MAX = 3;
-
-/**
- * Pick the indices of the last `max` assistant messages in `branch`. Used to
- * decide which assistant turns get their ext-files URLs resolved back into
- * `ImageContent` parts. Exported for unit-level coverage of the cap logic —
- * kept small and pure so the integration tests can focus on the wired
- * behavior without re-proving the cap arithmetic.
- */
-export function pickAssistantIndicesToRehydrate(
-  branch: Array<{ role: string }>,
-  max: number,
-): Set<number> {
-  const out = new Set<number>();
-  if (max <= 0) return out;
-  let seen = 0;
-  for (let i = branch.length - 1; i >= 0 && seen < max; i--) {
-    if (branch[i]!.role === "assistant") {
-      out.add(i);
-      seen++;
-    }
-  }
-  return out;
-}
+export const MAX_REHYDRATED_IMAGES = 5;
+/** ~5 MB of image bytes ≈ ~6.7 MB base64 ≈ 10–15k tokens for most vision
+ *  models. Per-request, not per-conversation. */
+export const MAX_REHYDRATED_IMAGE_BYTES = 5 * 1024 * 1024;
 
 /**
  * Find the index of the first user message after `fromIdx`, or -1 if none.
@@ -50,6 +37,89 @@ export function findNextUserIndex(
     if (branch[i]!.role === "user") return i;
   }
   return -1;
+}
+
+/**
+ * Walk assistant turns newest → oldest, resolving ext-files image URLs
+ * found in either the assistant text or any anchored tool-call output.
+ * Each resolved image is attached to the index of the *next* user message
+ * (pi-ai's AssistantMessage content can't hold images).
+ *
+ * Stops accumulating when either `MAX_REHYDRATED_IMAGES` or
+ * `MAX_REHYDRATED_IMAGE_BYTES` is reached. Dedupes across turns by base64
+ * payload so the same URL appearing in multiple places contributes once.
+ *
+ * Exported for focused unit coverage of the cap arithmetic.
+ */
+export async function collectRehydratedImages(
+  branch: Array<{ id: string; role: string; content: string }>,
+  out: Map<number, Array<{ type: "image"; data: string; mimeType: string }>>,
+  limits: { maxImages?: number; maxBytes?: number } = {},
+): Promise<void> {
+  const maxImages = limits.maxImages ?? MAX_REHYDRATED_IMAGES;
+  const maxBytes = limits.maxBytes ?? MAX_REHYDRATED_IMAGE_BYTES;
+
+  const { extractExtFilesUrls, statExtFilesImage, loadExtFilesImage } =
+    await import("../../chat/attachments/history-rehydrate");
+  const { listToolCallOutputsForMessages } = await import("../../db/queries/tool-calls");
+  const { extractOutputText } = await import("../../db/queries/conversations");
+
+  // Index all tool outputs for assistants in the branch up front — the
+  // walker can then read from the map without re-querying per turn.
+  const assistantIds = branch.filter((m) => m.role === "assistant").map((m) => m.id);
+  const toolOutputsByMessage = new Map<string, string[]>();
+  if (assistantIds.length > 0) {
+    const rows = await listToolCallOutputsForMessages(assistantIds).catch(() => []);
+    for (const row of rows) {
+      const text = extractOutputText(row.output);
+      if (!text) continue;
+      const list = toolOutputsByMessage.get(row.messageId) ?? [];
+      list.push(text);
+      toolOutputsByMessage.set(row.messageId, list);
+    }
+  }
+
+  // Global dedupe set across all turns — a URL that appears in turn 5
+  // and turn 3 (e.g. the model re-referenced the same image later)
+  // should land on the model exactly once, attributed to the newest
+  // occurrence.
+  const seen = new Set<string>(); // keyed by resolved absPath
+  let imageCount = 0;
+  let totalBytes = 0;
+
+  for (let i = branch.length - 1; i >= 0; i--) {
+    if (imageCount >= maxImages || totalBytes >= maxBytes) break;
+    const m = branch[i]!;
+    if (m.role !== "assistant") continue;
+    const nextUserIdx = findNextUserIndex(branch, i);
+    if (nextUserIdx === -1) continue; // trailing assistant — no follow-up
+
+    // Gather URL candidates from assistant text + every anchored tool output.
+    const toolTexts = toolOutputsByMessage.get(m.id) ?? [];
+    const sources = [m.content, ...toolTexts].filter(Boolean) as string[];
+    const urls: string[] = [];
+    for (const s of sources) urls.push(...extractExtFilesUrls(s));
+    if (urls.length === 0) continue;
+
+    for (const url of urls) {
+      if (imageCount >= maxImages || totalBytes >= maxBytes) break;
+      const info = await statExtFilesImage(url);
+      if (!info) continue;
+      if (seen.has(info.absPath)) continue; // cross-turn dedupe
+      // Stop early if adding this image would blow past the byte cap.
+      // We don't "skip and keep scanning" — the walker commits to newest
+      // first, and a partial append preserves that ordering guarantee.
+      if (totalBytes + info.sizeBytes > maxBytes) break;
+      const img = await loadExtFilesImage(info.absPath, info.mimeType);
+      if (!img) continue;
+      seen.add(info.absPath);
+      const existing = out.get(nextUserIdx) ?? [];
+      existing.push(img);
+      out.set(nextUserIdx, existing);
+      imageCount++;
+      totalBytes += info.sizeBytes;
+    }
+  }
 }
 
 /** Subset of streamChat's options the load-history phase reads. */
@@ -111,7 +181,7 @@ export async function loadHistory(
   // earlier turns (and their `ez-attachment://` handles) remain visible +
   // resolvable on the current turn. Server-only code path — storagePath
   // never leaks past the pi-ai call below.
-  const { loadPastAttachments, rehydrateUserMessageContent, rehydrateAssistantMessageContent } =
+  const { loadPastAttachments, rehydrateUserMessageContent } =
     await import("../../chat/attachments/history-rehydrate");
   const pastCaps = options.provider && options.model
     ? (await import("../../providers/model-capabilities")).getCapabilities(options.provider, options.model)
@@ -124,67 +194,15 @@ export async function loadHistory(
   // assistant text need their bytes replayed on subsequent turns so the
   // model can describe/edit them. pi-ai's AssistantMessage content can't
   // carry image parts, so we attach each assistant message's resolved
-  // images to the *next* user message in the branch — the model sees them
-  // alongside the user's follow-up prompt (e.g. "edit this"). Capped to
-  // the last N assistant messages to bound token spend on long chats.
-  const supportsImageInput = pastCaps?.kinds.includes("image") === true;
-  const assistantIndicesToRehydrate = pickAssistantIndicesToRehydrate(
-    branchMessages,
-    supportsImageInput ? ASSISTANT_IMAGE_REHYDRATE_MAX : 0,
-  );
-
-  // Pre-compute: for each user-message index, the list of ImageContent
-  // parts to inject from preceding assistant messages in range.
+  // images to the *next* user message in the branch.
   //
-  // We scan TWO sources for ext-files URLs:
-  //   1. the assistant message's text itself (models that echo markdown)
-  //   2. the tool-call outputs anchored to that assistant message (models
-  //      that follow the extension's "don't echo" guidance — the URL only
-  //      lives in tool_calls.output for them)
+  // Walk newest → oldest, counting images + bytes. Stop when either cap
+  // is hit. Prefers recency (the "edit the image you just made" flow)
+  // while still including older images if they fit under the caps.
+  const supportsImageInput = pastCaps?.kinds.includes("image") === true;
   const injectedImages = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
-  const rehydrateIds = Array.from(assistantIndicesToRehydrate);
-  if (rehydrateIds.length > 0) {
-    const { listToolCallOutputsForMessages } = await import("../../db/queries/tool-calls");
-    const { extractOutputText } = await import("../../db/queries/conversations");
-
-    const targetMessageIds = rehydrateIds.map((i) => branchMessages[i]!.id);
-    const toolOutputs = await listToolCallOutputsForMessages(targetMessageIds).catch(() => []);
-    const outputsByMessage = new Map<string, string[]>();
-    for (const row of toolOutputs) {
-      const text = extractOutputText(row.output);
-      if (!text) continue;
-      const list = outputsByMessage.get(row.messageId) ?? [];
-      list.push(text);
-      outputsByMessage.set(row.messageId, list);
-    }
-
-    await Promise.all(rehydrateIds.map(async (assistantIdx) => {
-      const nextUserIdx = findNextUserIndex(branchMessages, assistantIdx);
-      if (nextUserIdx === -1) return; // trailing assistant — no follow-up to attach to
-      const assistantMsg = branchMessages[assistantIdx]!;
-      // Join assistant text with each tool output so the single regex pass
-      // in the rehydrator catches URLs wherever they live. `\n\n` separators
-      // keep markdown image syntax from fusing across boundaries.
-      const toolTexts = outputsByMessage.get(assistantMsg.id) ?? [];
-      const combined = [assistantMsg.content, ...toolTexts].filter(Boolean).join("\n\n");
-      const parts = await rehydrateAssistantMessageContent(combined)
-        .catch(() => [] as import("../../chat/attachments/content-builder").PiContentPart[]);
-      const images = parts.filter((p): p is { type: "image"; data: string; mimeType: string } =>
-        p.type === "image",
-      );
-      if (images.length === 0) return;
-      // Dedupe by base64 payload so a model that both echoes AND keeps the
-      // URL in the tool output doesn't produce duplicate image parts.
-      const existing = injectedImages.get(nextUserIdx) ?? [];
-      const seen = new Set(existing.map((i) => i.data));
-      for (const img of images) {
-        if (!seen.has(img.data)) {
-          existing.push(img);
-          seen.add(img.data);
-        }
-      }
-      injectedImages.set(nextUserIdx, existing);
-    }));
+  if (supportsImageInput) {
+    await collectRehydratedImages(branchMessages, injectedImages);
   }
 
   const history: Message[] = await Promise.all(branchMessages.map(async (m, idx): Promise<Message> => {

@@ -29,9 +29,10 @@ mockDbConnection();
 
 import {
   loadHistory,
-  pickAssistantIndicesToRehydrate,
   findNextUserIndex,
-  ASSISTANT_IMAGE_REHYDRATE_MAX,
+  collectRehydratedImages,
+  MAX_REHYDRATED_IMAGES,
+  MAX_REHYDRATED_IMAGE_BYTES,
 } from "../runtime/stream-chat/load-history";
 import { createProject } from "../db/queries/projects";
 import { createConversation, createMessage } from "../db/queries/conversations";
@@ -110,34 +111,150 @@ function writeImage(relUnderExt: string, bytes: Uint8Array): string {
   return `/api/ext-files/${EXT}/${relUnderExt}`;
 }
 
-// ── Pure-function cap coverage ──────────────────────────────────────
-describe("pickAssistantIndicesToRehydrate", () => {
-  test("picks the last N assistant indices", () => {
-    const branch = [
-      { role: "user" },
-      { role: "assistant" }, // idx 1
-      { role: "user" },
-      { role: "assistant" }, // idx 3
-      { role: "user" },
-      { role: "assistant" }, // idx 5
-      { role: "user" },
-      { role: "assistant" }, // idx 7
+/** Allocate `n` bytes whose first byte is `marker` so the base64 payload
+ *  (and hence the path-key dedupe) is distinct per marker. */
+function makeBytes(n: number, marker: number): Uint8Array {
+  const b = new Uint8Array(n);
+  b[0] = marker;
+  return b;
+}
+
+// ── Pure-function cap coverage (no DB required) ────────────────────
+//
+// `collectRehydratedImages` queries `listToolCallOutputsForMessages`
+// internally, but with an empty DB that returns []. Branches that take only
+// message text (not tool outputs) exercise the cap logic without any DB
+// rows — we verify the newest-first ordering, image count cap, and byte
+// cap independently.
+describe("collectRehydratedImages cap arithmetic", () => {
+  let unitCwd = "";
+  // Setup uses setupTestDb already (beforeAll above) so the queries layer
+  // works even though we don't seed rows here.
+
+  beforeEach(() => {
+    unitCwd = mkdtempSync(join(tmpdir(), "cap-"));
+    process.chdir(unitCwd);
+  });
+
+  afterEach(() => {
+    process.chdir(SAFE_CWD);
+    if (unitCwd) {
+      try { rmSync(unitCwd, { recursive: true, force: true }); } catch {}
+      unitCwd = "";
+    }
+  });
+
+  function writeUnitImage(rel: string, bytes: Uint8Array): string {
+    const abs = join(unitCwd, ".ezcorp", "extension-data", EXT, rel);
+    mkdirSync(join(abs, ".."), { recursive: true });
+    writeFileSync(abs, bytes as any);
+    return `/api/ext-files/${EXT}/${rel}`;
+  }
+
+  test("respects custom maxImages limit", async () => {
+    // 4 assistants each with one unique image; cap to 2.
+    const urls = [
+      writeUnitImage("generated/u0.png", makeBytes(8, 1)),
+      writeUnitImage("generated/u1.png", makeBytes(8, 2)),
+      writeUnitImage("generated/u2.png", makeBytes(8, 3)),
+      writeUnitImage("generated/u3.png", makeBytes(8, 4)),
     ];
-    expect(Array.from(pickAssistantIndicesToRehydrate(branch, 3)).sort((a, b) => a - b)).toEqual([3, 5, 7]);
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${urls[0]})` },
+      { id: "c", role: "user", content: "" },
+      { id: "d", role: "assistant", content: `![](${urls[1]})` },
+      { id: "e", role: "user", content: "" },
+      { id: "f", role: "assistant", content: `![](${urls[2]})` },
+      { id: "g", role: "user", content: "" },
+      { id: "h", role: "assistant", content: `![](${urls[3]})` },
+      { id: "i", role: "user", content: "" },
+    ];
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out, { maxImages: 2 });
+    const total = Array.from(out.values()).flat().length;
+    expect(total).toBe(2);
   });
 
-  test("max=0 → empty set (no rehydration)", () => {
-    const branch = [{ role: "assistant" }, { role: "user" }];
-    expect(pickAssistantIndicesToRehydrate(branch, 0).size).toBe(0);
+  test("respects custom maxBytes limit", async () => {
+    // 3 images of 100 bytes each; cap to 250 bytes → fits exactly 2.
+    const urls = [
+      writeUnitImage("generated/b0.png", makeBytes(100, 1)),
+      writeUnitImage("generated/b1.png", makeBytes(100, 2)),
+      writeUnitImage("generated/b2.png", makeBytes(100, 3)),
+    ];
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${urls[0]})` },
+      { id: "c", role: "user", content: "" },
+      { id: "d", role: "assistant", content: `![](${urls[1]})` },
+      { id: "e", role: "user", content: "" },
+      { id: "f", role: "assistant", content: `![](${urls[2]})` },
+      { id: "g", role: "user", content: "" },
+    ];
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out, { maxImages: 100, maxBytes: 250 });
+    expect(Array.from(out.values()).flat().length).toBe(2);
   });
 
-  test("fewer assistants than max → returns all of them", () => {
-    const branch = [{ role: "user" }, { role: "assistant" }, { role: "user" }];
-    expect(Array.from(pickAssistantIndicesToRehydrate(branch, 5))).toEqual([1]);
+  test("prefers newest: under-cap means the last turn's image is injected first", async () => {
+    const urls = [
+      writeUnitImage("generated/n0.png", makeBytes(8, 1)),
+      writeUnitImage("generated/n1.png", makeBytes(8, 2)),
+    ];
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${urls[0]})` },
+      { id: "c", role: "user", content: "" },
+      { id: "d", role: "assistant", content: `![](${urls[1]})` },
+      { id: "e", role: "user", content: "" }, // idx 4 — nextUser for the last assistant
+    ];
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out, { maxImages: 1 });
+    // Only one image fits; it should be the NEWEST, attached to the final user (idx 4).
+    expect(out.get(4)).toBeDefined();
+    expect(out.get(4)!).toHaveLength(1);
+    // The older turn's image (idx 2 would have received) is absent.
+    expect(out.get(2)).toBeUndefined();
   });
 
-  test("empty branch → empty set", () => {
-    expect(pickAssistantIndicesToRehydrate([], 3).size).toBe(0);
+  test("trailing assistant with no follow-up user: image is NOT consumed by the cap", async () => {
+    // If the last assistant has no next-user, we skip it entirely. The
+    // image doesn't count against the cap, leaving room for an older
+    // in-range image to get in.
+    const urls = [
+      writeUnitImage("generated/t0.png", makeBytes(8, 1)),
+      writeUnitImage("generated/t1.png", makeBytes(8, 2)),
+    ];
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${urls[0]})` },
+      { id: "c", role: "user", content: "" },
+      { id: "d", role: "assistant", content: `![](${urls[1]})` }, // trailing — skipped
+    ];
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out, { maxImages: 1 });
+    // The in-range image at idx 1 → nextUser idx 2 should be injected.
+    expect(out.get(2)).toBeDefined();
+    expect(out.get(2)!).toHaveLength(1);
+  });
+
+  test("empty branch → no-op", async () => {
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages([], out);
+    expect(out.size).toBe(0);
+  });
+
+  test("zero caps → no-op", async () => {
+    const url = writeUnitImage("generated/z.png", makeBytes(8, 1));
+    const branch = [
+      { id: "a", role: "user", content: "" },
+      { id: "b", role: "assistant", content: `![](${url})` },
+      { id: "c", role: "user", content: "" },
+    ];
+    const out = new Map<number, Array<{ type: "image"; data: string; mimeType: string }>>();
+    await collectRehydratedImages(branch, out, { maxImages: 0 });
+    expect(out.size).toBe(0);
   });
 });
 
@@ -234,24 +351,21 @@ describe("loadHistory image-rehydration", () => {
     }
   });
 
-  // ── Case 14 ─────────────────────────────────────────────────────
-  test("last-N cap excludes assistants older than N", async () => {
-    // Generate N+2 assistants; only the last N should get rehydrated.
-    const oldUrl = writeImage("generated/old.png", PNG_BYTES);
-    const freshUrl = writeImage("generated/fresh.png", PNG_BYTES);
-
-    // Assistants beyond the cap: write distinct filler images so we can
-    // later assert they did NOT appear in the injected list.
-    const turns: Array<{ role: "user" | "assistant"; content: string }> = [];
-    // Old (outside cap) — position 1
-    turns.push({ role: "user", content: "u-old-1" });
-    turns.push({ role: "assistant", content: `![](${oldUrl})` });
-    turns.push({ role: "user", content: "u-old-2" });
-    // Fill until the cap boundary by alternating
-    for (let i = 0; i < ASSISTANT_IMAGE_REHYDRATE_MAX; i++) {
-      turns.push({ role: "assistant", content: `![](${freshUrl})` });
-      turns.push({ role: "user", content: `u-fresh-${i}` });
+  // ── Smart cap: image count ─────────────────────────────────────
+  test("image cap stops accumulation at MAX_REHYDRATED_IMAGES", async () => {
+    // Seed MAX+2 assistant turns each with a distinct image.
+    const n = MAX_REHYDRATED_IMAGES + 2;
+    const urls: string[] = [];
+    for (let i = 0; i < n; i++) {
+      // Unique bytes per file so dedupe doesn't interfere with the count.
+      urls.push(writeImage(`generated/cap-${i}.png`, new Uint8Array([i, 2, 3, 4])));
     }
+    const turns: Array<{ role: "user" | "assistant"; content: string }> = [];
+    for (let i = 0; i < n; i++) {
+      turns.push({ role: "user", content: `u-${i}` });
+      turns.push({ role: "assistant", content: `![](${urls[i]})` });
+    }
+    turns.push({ role: "user", content: "final" });
 
     const { convId, leafId } = await seedBranch(turns);
     const { history } = await loadHistory(mkCtx(), convId, {
@@ -259,14 +373,94 @@ describe("loadHistory image-rehydration", () => {
       provider: "anthropic",
       model: "claude-3-5-sonnet-20241022",
     });
-
-    // Collect image parts across every user message.
     const allImages = history.flatMap((m: any) =>
       Array.isArray(m.content) ? m.content.filter((p: any) => p.type === "image") : [],
     );
-    // Exactly ASSISTANT_IMAGE_REHYDRATE_MAX images — the oldest assistant
-    // at turn 1 was excluded by the cap.
-    expect(allImages).toHaveLength(ASSISTANT_IMAGE_REHYDRATE_MAX);
+    expect(allImages).toHaveLength(MAX_REHYDRATED_IMAGES);
+  });
+
+  // ── Smart cap: byte ceiling ────────────────────────────────────
+  test("byte cap stops accumulation before MAX_REHYDRATED_IMAGES is hit", async () => {
+    // Three assistants. Each produces a large image (2 MB). With a
+    // byte cap of ~5 MB, we should fit exactly two — the third would
+    // push cumulative bytes past the limit.
+    const BIG_SIZE = 2 * 1024 * 1024;
+    const bigBytes = new Uint8Array(BIG_SIZE);
+    // Distinct payloads (different first byte) so the dedupe-by-path
+    // set doesn't collapse them.
+    for (let i = 0; i < 3; i++) bigBytes[0] = i + 1;
+    const u0 = writeImage("generated/big-0.png", makeBytes(BIG_SIZE, 1));
+    const u1 = writeImage("generated/big-1.png", makeBytes(BIG_SIZE, 2));
+    const u2 = writeImage("generated/big-2.png", makeBytes(BIG_SIZE, 3));
+    const { convId, leafId } = await seedBranch([
+      { role: "user", content: "u0" },
+      { role: "assistant", content: `![](${u0})` },
+      { role: "user", content: "u1" },
+      { role: "assistant", content: `![](${u1})` },
+      { role: "user", content: "u2" },
+      { role: "assistant", content: `![](${u2})` },
+      { role: "user", content: "now" },
+    ]);
+    const { history } = await loadHistory(mkCtx(), convId, {
+      parentMessageId: leafId,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const allImages = history.flatMap((m: any) =>
+      Array.isArray(m.content) ? m.content.filter((p: any) => p.type === "image") : [],
+    );
+    // 2 * 2MB = 4 MB fits under 5 MB; 3 * 2 MB = 6 MB would exceed.
+    expect(allImages).toHaveLength(2);
+    // Verify the byte ceiling assumption still matches the production constant.
+    expect(MAX_REHYDRATED_IMAGE_BYTES).toBeGreaterThanOrEqual(2 * BIG_SIZE);
+    expect(MAX_REHYDRATED_IMAGE_BYTES).toBeLessThan(3 * BIG_SIZE);
+  });
+
+  // ── Smart cap: old image preserved when caps allow ─────────────
+  test("an old image far back in history IS included when caps aren't hit", async () => {
+    // Image at turn 1, then many text-only turns, then "final" user turn.
+    const url = writeImage("generated/ancient.png", PNG_BYTES);
+    const turns: Array<{ role: "user" | "assistant"; content: string }> = [];
+    turns.push({ role: "user", content: "start" });
+    turns.push({ role: "assistant", content: `![](${url})` });
+    for (let i = 0; i < 10; i++) {
+      turns.push({ role: "user", content: `chat-${i}` });
+      turns.push({ role: "assistant", content: "no image here" });
+    }
+    turns.push({ role: "user", content: "actually, edit the original" });
+    const { convId, leafId } = await seedBranch(turns);
+    const { history } = await loadHistory(mkCtx(), convId, {
+      parentMessageId: leafId,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const allImages = history.flatMap((m: any) =>
+      Array.isArray(m.content) ? m.content.filter((p: any) => p.type === "image") : [],
+    );
+    // The old image is still there — only 1 image in the branch, well under caps.
+    expect(allImages).toHaveLength(1);
+    expect((allImages[0] as any).data).toBe(PNG_B64);
+  });
+
+  // ── Smart cap: cross-turn dedupe ───────────────────────────────
+  test("same URL referenced in two different turns dedupes to one image", async () => {
+    const url = writeImage("generated/same.png", PNG_BYTES);
+    const { convId, leafId } = await seedBranch([
+      { role: "user", content: "gen" },
+      { role: "assistant", content: `first: ![](${url})` },
+      { role: "user", content: "what do you think" },
+      { role: "assistant", content: `still: ![](${url})` },
+      { role: "user", content: "edit it" },
+    ]);
+    const { history } = await loadHistory(mkCtx(), convId, {
+      parentMessageId: leafId,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    });
+    const allImages = history.flatMap((m: any) =>
+      Array.isArray(m.content) ? m.content.filter((p: any) => p.type === "image") : [],
+    );
+    expect(allImages).toHaveLength(1);
   });
 
   // ── Case 15 ─────────────────────────────────────────────────────

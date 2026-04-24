@@ -88,6 +88,64 @@ export interface AssistantRehydrateOptions {
 }
 
 /**
+ * Extract every markdown-image URL from `text` in source order. Returns
+ * raw URL strings — the caller decides which to resolve. Pure (no I/O),
+ * so the smart-cap walker in load-history can cheaply enumerate
+ * candidates before spending file reads.
+ */
+export function extractExtFilesUrls(text: string): string[] {
+	const out: string[] = [];
+	if (!text) return out;
+	for (const m of text.matchAll(MARKDOWN_IMAGE_MATCH)) out.push(m[1]!);
+	return out;
+}
+
+/**
+ * Cheap pre-flight: is `url` a valid, allowlist-passing ext-files URL with
+ * a recognised image extension, and does the file exist on disk? Returns
+ * the resolved path + byte size when so, `null` otherwise. Used by the
+ * smart-cap walker to count bytes before committing to read+encode.
+ *
+ * Never throws.
+ */
+export async function statExtFilesImage(
+	url: string,
+	opts: AssistantRehydrateOptions = {},
+): Promise<{ absPath: string; mimeType: string; sizeBytes: number } | null> {
+	const m = EXT_FILES_URL.exec(url);
+	if (!m) return null;
+	const [, name, relPath] = m;
+	const resolved = resolveExtFilesPath(name, relPath, opts.cwd);
+	if (!resolved) return null;
+	const ext = (resolved.absPath.split(".").pop() ?? "").toLowerCase();
+	if (!(ext in MIME_BY_EXT)) return null;
+	try {
+		const s = await stat(resolved.absPath);
+		if (!s.isFile()) return null;
+		return { absPath: resolved.absPath, mimeType: resolved.mimeType, sizeBytes: s.size };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Read + base64-encode a previously-stat'd ext-files image. Split from
+ * `statExtFilesImage` so the smart-cap walker can stat many but read few.
+ *
+ * Never throws.
+ */
+export async function loadExtFilesImage(absPath: string, mimeType: string): Promise<
+	{ type: "image"; data: string; mimeType: string } | null
+> {
+	try {
+		const bytes = await readFile(absPath);
+		return { type: "image", data: bytes.toString("base64"), mimeType };
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Scan an assistant message text for `![](/api/ext-files/<ext>/<path>)` URLs
  * and return a content-parts array: one text part (the full original text)
  * followed by one `ImageContent` part per successfully-resolved URL.
@@ -106,11 +164,7 @@ export async function rehydrateAssistantMessageContent(
 	opts: AssistantRehydrateOptions = {},
 ): Promise<PiContentPart[]> {
 	const parts: PiContentPart[] = [{ type: "text", text }];
-	if (!text) return parts;
-
-	// Collect matches up front so we can issue file reads in parallel.
-	const urls: string[] = [];
-	for (const m of text.matchAll(MARKDOWN_IMAGE_MATCH)) urls.push(m[1]!);
+	const urls = extractExtFilesUrls(text);
 	if (urls.length === 0) return parts;
 
 	const resolved = await Promise.all(urls.map((u) => resolveUrlToImage(u, opts.cwd)));
@@ -130,30 +184,7 @@ async function resolveUrlToImage(
 	url: string,
 	cwd: string | undefined,
 ): Promise<PiContentPart | null> {
-	const m = EXT_FILES_URL.exec(url);
-	if (!m) return null; // external, data:, bare, etc.
-
-	const [, name, relPath] = m;
-	const resolved = resolveExtFilesPath(name, relPath, cwd);
-	if (!resolved) return null; // allowlist / containment check failed
-
-	// Only rehydrate known image formats. A `.bin` under an ext's dir
-	// might be a sidecar (metadata, archive) the model can't display, and
-	// feeding `application/octet-stream` base64 into an ImageContent part
-	// is worse than silently skipping.
-	const ext = (resolved.absPath.split(".").pop() ?? "").toLowerCase();
-	if (!(ext in MIME_BY_EXT)) return null;
-
-	try {
-		const s = await stat(resolved.absPath);
-		if (!s.isFile()) return null;
-		const bytes = await readFile(resolved.absPath);
-		return {
-			type: "image",
-			data: bytes.toString("base64"),
-			mimeType: resolved.mimeType,
-		};
-	} catch {
-		return null;
-	}
+	const info = await statExtFilesImage(url, { cwd });
+	if (!info) return null;
+	return loadExtFilesImage(info.absPath, info.mimeType);
 }

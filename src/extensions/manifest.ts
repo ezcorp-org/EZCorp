@@ -152,12 +152,13 @@ export function validateManifestV2(
   if (!m.description || typeof m.description !== "string")
     errors.push("description is required and must be a non-empty string");
 
-  if (
-    !m.author ||
-    typeof m.author !== "object" ||
-    !(m.author as any).name ||
-    typeof (m.author as any).name !== "string"
-  )
+  // Narrow `author` to its record form before reading `.name`. The outer
+  // `typeof === "object"` guard already rules out null + primitives but
+  // doesn't give TS access to a `name` field.
+  const author = typeof m.author === "object" && m.author !== null
+    ? (m.author as Record<string, unknown>)
+    : null;
+  if (!author || !author.name || typeof author.name !== "string")
     errors.push("author.name is required and must be a non-empty string");
 
   // Validate each component type if present

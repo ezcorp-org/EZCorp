@@ -289,6 +289,31 @@ export async function setupTools(
             error: String(taskWireErr),
           });
         }
+        // ask-user: auto-wire-every-turn so the LLM can ask the user a
+        // question on any conversation. Wire BEFORE the generic
+        // convExtIds loop below so we can pass `invocationMetadata: {
+        // conversationId }` — the loop omits invocationMetadata, and
+        // the handler needs it. The dedup check at the loop (`some(at
+        // => at.name === t.name)`) prevents the loop from double-wiring
+        // ask_user_question without the metadata.
+        try {
+          const { ensureAskUserWired, wireAskUserToolForTurn } = await import("../ask-user-host");
+          const wired = await ensureAskUserWired(conversationId);
+          if (wired) {
+            await wireAskUserToolForTurn({
+              agentTools: ctx.agentTools,
+              conversationId,
+              runId: run.id,
+              registry: ExtensionRegistry.getInstance(),
+              bus: host.bus,
+              userId: convRecord?.userId ?? undefined,
+            });
+          }
+        } catch (askUserWireErr) {
+          log.warn("ask-user wire failed — ask_user_question unavailable this turn", {
+            error: String(askUserWireErr),
+          });
+        }
         await wireMentionedExtensions(conversationId, userMessage, options.parentMessageId ?? run.id);
         const convExtIds = await getConversationExtensionIds(conversationId);
         if (convExtIds.length > 0) {
@@ -461,14 +486,6 @@ export async function setupTools(
             if (resolvedTeamToolScope) {
               orchRun._teamToolScope = resolvedTeamToolScope;
             }
-
-            // Phase 5 commit 4: ask_human is now wired alongside
-            // invoke_agent inside `wireOrchestrationToolsForTurn`
-            // above — the legacy ask-human built-in factory was
-            // deleted with this commit. See
-            // `src/runtime/orchestration-host.ts` for the injection
-            // and `docs/extensions/examples/orchestration/` for the
-            // handler + subscription.
 
             // Auto-wire the bundled `scratchpad` extension for this
             // conversation. Fail-closed on three independent gates (S7):

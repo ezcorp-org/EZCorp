@@ -48,10 +48,23 @@ export function extensionToAgentTool(
     label: extTool.name,
     description: extTool.description,
     parameters: Type.Unsafe(schemaOverride ?? extTool.inputSchema),
-    execute: async (_toolCallId, params, _signal) => {
+    execute: async (toolCallId, params, _signal) => {
+      // Per-call merge: thread the host-minted `toolCallId` into the
+      // invocation metadata so handlers can use it as a stable gate
+      // key (e.g. `ask-user`'s pending-answer map). Additive —
+      // extensions that don't read the field ignore it.
+      const callMetadata = { ...invocationMetadata, toolCallId };
+      // Pass `toolCallId` as `invocationId` on the `tool:start` bus
+      // event too, so the chat UI's tool-card stream (stores.svelte.ts
+      // `case "tool:start"`) can correlate this call with later
+      // tool:complete / tool:error events. Without this the executor's
+      // own emit at `executeToolCall` would carry no invocationId,
+      // forcing the UI to depend on the parallel pi-agent stream emit
+      // — which carries no `cardType`, breaking specialized cards
+      // like AskUserQuestionCard.
       const result = await toolExecutor.executeToolCall(
         extTool.name, params as Record<string, unknown>, conversationId, messageId,
-        undefined, invocationMetadata,
+        { metadata: { invocationId: toolCallId } }, callMetadata,
       );
       return {
         content: result.content.map(c => ({ type: "text" as const, text: c.text })),

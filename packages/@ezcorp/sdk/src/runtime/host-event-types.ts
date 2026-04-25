@@ -92,16 +92,10 @@ export interface ObsTurnEvent {
   totalDurationMs: number;
   tokenUsage: { input: number; output: number };
 }
-export interface OrchestratorHumanInputEvent {
-  runId: string;
+export interface AskUserAnswerEvent {
+  toolCallId: string;
   conversationId: string;
-  question: string;
-  requestId: string;
-}
-export interface OrchestratorHumanResponseEvent {
-  requestId: string;
-  response: string;
-  conversationId: string;
+  answer: string;
 }
 
 // task:snapshot + task:assignment_update are already typed on the SDK
@@ -120,7 +114,7 @@ export interface TaskAssignmentUpdateEvent {
   assignment: TaskAssignment;
 }
 
-/** The 13 subscribable event types and their payload shapes. Key names
+/** The subscribable event types and their payload shapes. Key names
  *  MUST match `DIRECT_CARRIER_EVENT_TYPES` on the host. */
 export interface SubscribableEventMap {
   "run:complete": RunCompleteEvent;
@@ -133,8 +127,7 @@ export interface SubscribableEventMap {
   "tool:permission_request": ToolPermissionRequestEvent;
   "tool:permission_mode_change": ToolPermissionModeChangeEvent;
   "obs:turn": ObsTurnEvent;
-  "orchestrator:human_input": OrchestratorHumanInputEvent;
-  "orchestrator:human_response": OrchestratorHumanResponseEvent;
+  "ask-user:answer": AskUserAnswerEvent;
   "task:snapshot": TaskSnapshotEvent;
   "task:assignment_update": TaskAssignmentUpdateEvent;
 }

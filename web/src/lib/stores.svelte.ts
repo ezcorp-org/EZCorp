@@ -168,8 +168,6 @@ class AppStore {
 	// can be routed back to the parent conversation the user is watching.
 	subConvToRootRun = $state<Record<string, string>>({});
 	agentRunToRootRun = $state<Record<string, string>>({});
-	// Orchestration: pending human input requests
-	pendingHumanInputs = $state<Record<string, { runId: string; conversationId: string; question: string; requestId: string }>>({});
 	// Tracks the run ID that triggered a memory_unavailable event (null = recovered)
 	memoryUnavailableRunId = $state<string | null>(null);
 	// Track runs that completed before startStreaming was called (race condition)
@@ -422,10 +420,6 @@ export function getStreamingContentBlocks(runId: string): ContentBlock[] {
 
 export function getStreamingAgentCalls(runId: string): AgentCallState[] {
 	return store.streamingAgentCalls[runId] ?? [];
-}
-
-export function getPendingHumanInputs(conversationId: string): Array<{ runId: string; conversationId: string; question: string; requestId: string }> {
-	return Object.values(store.pendingHumanInputs).filter(h => h.conversationId === conversationId);
 }
 
 export function getTaskSnapshot(conversationId: string): TaskSnapshot | undefined {
@@ -908,26 +902,6 @@ export function initStores() {
 				}
 				// Clean up sub-conversation → root run mappings via the pure routing module
 				applyRoutingState(routingUnregisterSpawn(routingSnapshot(), { subConversationId, agentRunId: completeAgentRunId }));
-				break;
-			}
-
-			// ── Orchestration: Human-in-the-Loop ──
-
-			case "orchestrator:human_input": {
-				const { runId, conversationId, question, requestId } = event.data as {
-					runId: string; conversationId: string; question: string; requestId: string;
-				};
-				store.pendingHumanInputs = {
-					...store.pendingHumanInputs,
-					[requestId]: { runId, conversationId, question, requestId },
-				};
-				break;
-			}
-
-			case "orchestrator:human_response": {
-				const { requestId } = event.data as { requestId: string };
-				const { [requestId]: _, ...rest } = store.pendingHumanInputs;
-				store.pendingHumanInputs = rest;
 				break;
 			}
 

@@ -36,7 +36,7 @@ const BUS_EVENTS = [
   "tool:start", "tool:complete", "tool:error", "tool:permission_request",
   "agent:spawn", "agent:status", "agent:complete",
   "task:snapshot", "task:assignment_update",
-  "orchestrator:human_input", "orchestrator:human_response",
+  "ask-user:answer",
   "ext:state",
 ] as const;
 

@@ -12,6 +12,7 @@ export function getCardComponentName(cardType: string | undefined, permissionPen
 		case 'search-results': return 'SearchResultsCard';
 		case 'task-list': return 'TaskListCard';
 		case 'task-detail': return 'TaskDetailCard';
+		case 'ask-user-question': return 'AskUserQuestionCard';
 		default: return 'DefaultCard';
 	}
 }

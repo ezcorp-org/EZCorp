@@ -71,15 +71,24 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
   },
   {
     // Multi-agent orchestration primitives — provides `invoke_agent`
-    // for delegating to a sub-agent within a conversation, and (Phase
-    // 5) `ask_human` for pausing execution to surface a question to the
-    // user. Phase 4 ported `invoke_agent` from the legacy built-in;
-    // Phase 5 adds `ask_human` alongside it in the same extension (no
-    // new extension — §Frozen decisions).
+    // for delegating to a sub-agent within a conversation. Phase 4
+    // ported `invoke_agent` from the legacy built-in; Phase 2 of the
+    // ask-user migration removed the `ask_human` tool that briefly
+    // shipped alongside it (the bundled `ask-user` extension owns
+    // human-in-the-loop now).
     // Wire-on-first-use via orchestration-host.ensureOrchestrationWired
     // — no per-conversation wiring happens at install time. As of
     // commit 5 the executor invokes this extension exclusively; no
     // dual-wired path.
+    //
+    // Migration note: dropping `orchestrator:human_response` from the
+    // declared `eventSubscriptions` is a SHRINK, not a widening — the
+    // S9 re-approval gate in `detectVersionBumpRequiringReapproval`
+    // only checks `[network, filesystem, shell, env, storage,
+    // lifecycleHooks]`, so existing installs are NOT auto-disabled.
+    // The DB-stored grant retains the old `orchestrator:human_response`
+    // entry until the next clean re-install, which is harmless because
+    // the extension's subprocess no longer subscribes to that event.
     name: "orchestration",
     path: "docs/extensions/examples/orchestration",
     permissions: {
@@ -87,15 +96,28 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
       spawnAgents: { maxPerHour: 500, maxConcurrent: 25 },
       // `task:assignment_update` — required by `invoke_agent`'s two-hop
       //   bridge (Phase 4).
-      // `orchestrator:human_response` — required by `ask_human`'s gate
-      //   resolution (Phase 5). Mirrors the manifest at
-      //   docs/extensions/examples/orchestration/ezcorp.config.ts.
-      eventSubscriptions: ["task:assignment_update", "orchestrator:human_response"],
+      eventSubscriptions: ["task:assignment_update"],
       grantedAt: {
         agentConfig: Date.now(),
         spawnAgents: Date.now(),
         eventSubscriptions: Date.now(),
       },
+    },
+  },
+  {
+    // Bundled human-in-the-loop tool. Provides `ask_user_question` —
+    // the LLM-facing surface for pausing a run to ask the user a
+    // question (free-text or multiple-choice). Auto-wired on every
+    // turn by `src/runtime/stream-chat/setup-tools.ts` so it's always
+    // available (the LLM cannot bootstrap a tool that requires its
+    // own use to be wired). Subscribes to `ask-user:answer` so the
+    // POST endpoint at `/api/ask-user/answer` can resolve the
+    // pending-answer gate.
+    name: "ask-user",
+    path: "docs/extensions/examples/ask-user",
+    permissions: {
+      eventSubscriptions: ["ask-user:answer"],
+      grantedAt: { eventSubscriptions: Date.now() },
     },
   },
   {

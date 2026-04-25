@@ -200,7 +200,7 @@ export interface TeamMember {
  * Team-level tool scoping applied to every invoked member of the team.
  * When set (either list non-empty), overrides each member's individual
  * `toolRestriction` / `allowedTools` / `deniedTools`. Orchestration tools
- * (invoke_agent, task tracking, ask_human, scratchpad) are always preserved.
+ * (invoke_agent, task tracking, scratchpad) are always preserved.
  */
 export interface TeamToolScope {
   /** If set & non-empty, only these tool names are available to members. */
@@ -276,17 +276,17 @@ export interface AgentEvents {
     resultPreview: string;
     parentConversationId: string;
   };
-  // ── Orchestration: Human-in-the-Loop ──
-  "orchestrator:human_input": {
-    runId: string;
+  // ── ask-user extension: bundled tool for asking the user a question
+  //    (free-text or multiple-choice). Single direction event: the host
+  //    POST endpoint at `/api/ask-user/answer` emits this when the user
+  //    submits a response, and the extension's subscription handler
+  //    resolves the pending gate keyed on `toolCallId`. The question side
+  //    rides on the regular `tool:start` lifecycle (cardType:
+  //    "ask-user-question") — no separate question event is needed.
+  "ask-user:answer": {
+    toolCallId: string;
     conversationId: string;
-    question: string;
-    requestId: string;
-  };
-  "orchestrator:human_response": {
-    requestId: string;
-    response: string;
-    conversationId: string;
+    answer: string;
   };
   // ── Task Tracking Panel ──
   "task:snapshot": {

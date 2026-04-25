@@ -54,8 +54,7 @@ export const DIRECT_CARRIER_EVENT_TYPES: ReadonlySet<keyof AgentEvents> = new Se
   "tool:permission_request",
   "tool:permission_mode_change",
   "obs:turn",
-  "orchestrator:human_input",
-  "orchestrator:human_response",
+  "ask-user:answer",
   "task:snapshot",
   "task:assignment_update",
 ]);

@@ -133,8 +133,14 @@ mock.module("$server/auth/password", passwordMock);
 mock.module("../../auth/password", passwordMock);
 
 // ── Handler imports (AFTER mocks) ────────────────────────────────
-import { POST as generatePost } from "../../../web/src/routes/api/auth/reset-password/+server";
-import { POST as consumePost } from "../../../web/src/routes/api/auth/reset-password/[token]/+server";
+import {
+  POST as generatePost,
+  __rateLimiter as generateLimiter,
+} from "../../../web/src/routes/api/auth/reset-password/+server";
+import {
+  POST as consumePost,
+  __rateLimiter as consumeLimiter,
+} from "../../../web/src/routes/api/auth/reset-password/[token]/+server";
 
 // SvelteKit handlers may throw a Response on auth failure; unwrap.
 async function call(
@@ -157,6 +163,11 @@ beforeEach(() => {
   tokens = [];
   passwordUpdates = [];
   auditCalls.length = 0;
+  // Generator is keyed by admin id and capped at 5/hour; consumer is
+  // keyed by IP and capped at 10/15min. Without resetting, repeated
+  // issueToken() calls across tests exhaust the admin's per-hour quota.
+  generateLimiter.reset();
+  consumeLimiter.reset();
 });
 
 // Issue a token via the generator, then fish the raw token out of the

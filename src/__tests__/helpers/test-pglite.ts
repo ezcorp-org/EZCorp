@@ -49,11 +49,6 @@ export function mockDbConnection() {
   }));
 }
 
-// Restore all mocks — call in afterAll to prevent cross-file contamination
-export function restoreAllMocks() {
-  mock.restore();
-}
-
 // Restore pristine globalThis.fetch and globalThis.WebSocket (guards against test
 // files that replace them at module level and fail to clean up).
 export function restoreFetch() {

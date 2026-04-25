@@ -690,7 +690,7 @@ export function initStores() {
 					const existing = store.streamingToolCalls[runId] ?? [];
 					store.streamingToolCalls = {
 						...store.streamingToolCalls,
-						[runId]: [...existing, { toolName, status: 'running', input, startedAt: timestamp, extensionId, cardType, category }],
+						[runId]: [...existing, { ...(invocationId ? { id: invocationId } : {}), toolName, status: 'running', input, startedAt: timestamp, extensionId, cardType, category }],
 					};
 					// Insert tool_ref into content blocks
 					const tcBuilder = blockBuilders.get(runId);

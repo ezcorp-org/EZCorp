@@ -268,52 +268,17 @@ test.describe("Team Orchestration", () => {
 		await expect(page.getByText("reviewer")).toBeVisible();
 	});
 
-	// ── Human input card ───────────────────────────────────────────────────
-
-	test("human input card appears and transitions to responded state", async ({ page, mockApi, emitWs }) => {
-		await mockApi({
-			projects: [proj],
-			conversations: [conv],
-			messages: [],
-			agents,
-			agentConfigs: [teamConfig],
-			routes: {
-				...modelsRoute,
-				"/api/orchestrator/human-input": () => ({ success: true }),
-			},
-		});
-		await page.goto(`/project/${proj.id}/chat/${conv.id}`);
-		await expect(page.getByText("Send a message to start the conversation")).toBeVisible();
-
-		await sendAndWaitForStream(page, "Start orchestration");
-
-		// Fire human input request
-		await emitWs({
-			type: "orchestrator:human_input",
-			data: {
-				runId: "run-stream",
-				conversationId: "conv-1",
-				question: "Should we proceed with the refactor?",
-				requestId: "hir-1",
-			},
-		});
-
-		// Assert the amber input card appears with the question text
-		const card = page.locator(".border-amber-500\\/30");
-		await expect(card).toBeVisible({ timeout: 5000 });
-		await expect(card.getByText("Should we proceed with the refactor?")).toBeVisible();
-
-		// Type a response in the input field
-		const inputField = card.locator('input[type="text"]');
-		await inputField.fill("Yes, go ahead");
-
-		// Click the Respond button
-		await card.getByRole("button", { name: "Respond" }).click();
-
-		// Card should transition to "Responded" state with green checkmark
-		const checkmark = card.locator("svg path[d='M5 13l4 4L19 7']");
-		await expect(checkmark).toBeVisible({ timeout: 5000 });
-	});
+	// Note: the legacy "human input card" e2e test was removed when the
+	// floating amber-card UI + `orchestrator:human_input/_response`
+	// events were deleted in the ask-user migration. Human-in-the-loop
+	// is now an inline tool-card driven by the `ask_user_question`
+	// tool from the bundled `ask-user` extension. See
+	// web/src/lib/components/tool-cards/AskUserQuestionCard.component.test.ts
+	// for the unit-level coverage and src/__tests__/ask-user.e2e.test.ts
+	// for the host-side end-to-end flow. A future browser-level e2e
+	// for the new card can be reintroduced once the dev-server fixture
+	// supports streaming a `tool:start` for an extension tool with
+	// `cardType: "ask-user-question"`.
 });
 
 // ── Team builder form ─────────────────────────────────────────────────

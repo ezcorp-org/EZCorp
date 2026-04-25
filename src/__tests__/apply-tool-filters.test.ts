@@ -112,7 +112,11 @@ describe("applyToolFilters", () => {
 
   test("ORCHESTRATION_TOOLS includes the expected delegation and task primitives", () => {
     expect(ORCHESTRATION_TOOLS.has("invoke_agent")).toBe(true);
-    expect(ORCHESTRATION_TOOLS.has("ask_human")).toBe(true);
+    expect(ORCHESTRATION_TOOLS.has("ask_user_question")).toBe(true);
+    // ask_human was renamed/replaced by ask_user_question in the
+    // ask-user migration. Regression guard: it should NOT be in the
+    // preserved set.
+    expect(ORCHESTRATION_TOOLS.has("ask_human")).toBe(false);
     expect(ORCHESTRATION_TOOLS.has("task_plan")).toBe(true);
     // Scratchpad moved to the `scratchpad` bundled extension in Phase 1 —
     // the filter now matches the namespaced form (`<ext>__<tool>`).

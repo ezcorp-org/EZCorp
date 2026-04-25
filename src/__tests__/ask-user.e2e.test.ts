@@ -11,20 +11,25 @@
  *     the widening committed alongside this extension.
  *   - Real `EventSubscriptionDispatcher` — delivers `ask-user:answer`
  *     back to the extension subprocess.
- *   - Real PGlite behind `getDb` so the `tool_calls` row lookup
- *     emulating the POST endpoint succeeds.
+ *   - Real `ask-user-registry` populated by the wire wrapper — the
+ *     simulated POST reads from it to resolve `toolCallId →
+ *     conversationId + userId` without hitting the `tool_calls` DB
+ *     row (which doesn't exist while the gate is open — see
+ *     `src/runtime/ask-user-registry.ts` for the rationale).
  *
  * Test cases:
  *   1. Sentinel: `ask_user_question` appears in `agentTools` after
  *      `wireAskUserToolForTurn` runs.
- *   2. Happy path with options: `tool_calls` row → simulated POST →
- *      bus emit → subscription delivery → tool result equals option.
+ *   2. Happy path with options: registry populated by wire wrapper →
+ *      simulated POST → bus emit → subscription delivery → tool
+ *      result equals option.
  *   3. Happy path free-text: same flow without options.
  *   4. POST endpoint with unknown `toolCallId` returns
- *      `{ ok: true, emitted: false }` — DB row missing, gate stays
+ *      `{ ok: true, emitted: false }` — registry empty, gate stays
  *      open. Verified by the bus seeing no event.
  *   5. POST endpoint with conversation NOT owned by the acting user
- *      returns 404 — auth boundary preserved.
+ *      returns 404 — auth boundary preserved (registry seeded
+ *      directly to exercise the mismatch path).
  *   6. Subscription-level guard: a forged `ask-user:answer` with a
  *      mismatched conversationId is dropped silently by the
  *      extension's `handleAnswer`.
@@ -32,10 +37,6 @@
  *      independently.
  *   8. Missing `toolCallId` in invocationMetadata → handler returns
  *      error tool-result, no gate opened.
- *
- * Mirrors `orchestration-ask-human-e2e.test.ts` structurally but
- * adapted for the simpler design (no shadow registry, no
- * emit-task-event RPC).
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test, mock } from "bun:test";
@@ -480,8 +481,8 @@ describe("ask-user e2e: wire → tool call → simulated POST → bus emit → s
       expect(ask).toBeDefined();
 
       const toolCallId = "tc-e2e-happy-1";
-      // Pre-create the tool_calls row so the simulated POST can resolve.
-      
+      // Registry is populated automatically by the wire wrapper when
+      // execute() runs; no explicit pre-insert needed.
 
       const execPromise = ask.execute(toolCallId, {
         question: "Pick one",

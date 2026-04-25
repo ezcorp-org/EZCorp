@@ -8,7 +8,10 @@ import type { BuiltinToolDef } from "./types";
  */
 export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
   "invoke_agent",
-  "ask_human",
+  // Human-in-the-loop is provided by the bundled `ask-user` extension
+  // (`ask_user_question` tool). Auto-wired every turn — see
+  // src/runtime/ask-user-host.ts.
+  "ask_user_question",
   // Scratchpad tools live in the `scratchpad` bundled extension as of
   // Phase 1 of the built-in-to-extension conversion. The namespaced
   // form (`<ext>__<tool>`) is what the filter sees at runtime — see

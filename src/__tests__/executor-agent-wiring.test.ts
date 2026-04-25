@@ -118,14 +118,15 @@ mock.module("../extensions/tool-executor", () => ({
 // Orchestration host — Phase 4 commit-5 replaced the in-process
 // invoke-agent tool injection with a wire-on-first-use helper that
 // resolves the bundled `orchestration` extension from the DB.
-// Phase 5 commit 4 extended the same helper to also inject `ask_human`
-// (the last former built-in — see src/runtime/orchestration-host.ts).
+// After the ask-user migration, the orchestration extension only
+// owns `invoke_agent`; human-in-the-loop moved to the bundled
+// `ask-user` extension.
 // The test fixture doesn't install the extension for real, so we stub
 // the helpers: `ensureOrchestrationWired` is a no-op success, and
-// `wireOrchestrationToolsForTurn` appends BOTH `invoke_agent` and
-// `ask_human` AgentTools so the rest of the executor path (auto-
-// spin-up, filter preservation, depth-gate, event suppression)
-// behaves identically to the extension-wired production path.
+// `wireOrchestrationToolsForTurn` appends only `invoke_agent` so the
+// rest of the executor path (auto-spin-up, filter preservation,
+// depth-gate, event suppression) behaves identically to the
+// extension-wired production path.
 // Mutable throw-trigger for the wire-failure coverage test below.
 // When set to a non-null string, `wireOrchestrationToolsForTurn` will throw
 // with that message — lets us drive the try/catch in executor.ts:810-814.
@@ -148,19 +149,21 @@ mock.module("../runtime/orchestration-host", () => ({
         details: {},
       }),
     });
-    // Phase 5 commit 4 — ask_human rides in the same wire call.
-    params.agentTools.push({
-      name: "ask_human",
-      label: "Ask Human",
-      description:
-        "Pause execution and ask the user a question. The agent will wait for the user's response before continuing.",
-      parameters: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
-      execute: async () => ({
-        content: [{ type: "text" as const, text: "(stub ask_human response)" }],
-        details: {},
-      }),
-    });
   },
+}));
+
+// ask-user host stub — auto-wired every turn alongside orchestration.
+// Tests assert orchestration tool injection; the ask-user wire is a
+// no-op success that pushes nothing (or a stub if the test asserts on
+// it specifically). Mirrors the production behavior shape so any
+// regression in setup-tools.ts surfaces here too.
+mock.module("../runtime/ask-user-host", () => ({
+  ensureAskUserWired: async () => true,
+  wireAskUserToolForTurn: async (_params: { agentTools: any[] }) => {
+    // No-op: this suite asserts on orchestration's invoke_agent path.
+    // ask_user_question wiring is covered by ask-user.e2e.test.ts.
+  },
+  _resetAskUserExtensionIdCache: () => {},
 }));
 
 // ── Import after all mocks ──
@@ -313,12 +316,11 @@ describe("executor agent wiring", () => {
     expect(capturedAgentOpts).not.toBeNull();
     const tools: any[] = capturedAgentOpts.initialState.tools;
     expect(Array.isArray(tools)).toBe(true);
-    // Phase 5 commit 4: ask_human now lives INSIDE the orchestration
-    // wire (alongside invoke_agent) — the deleted built-in was the last
-    // outside-the-wire injection. When the wire throws, NEITHER tool
-    // lands in the toolset. The catch still swallows, so the rest of
-    // the turn setup (scratchpad auto-wire etc.) still runs — proven
-    // by Array.isArray(tools) above.
+    // After the ask-user migration the orchestration wire only injects
+    // `invoke_agent`; when it throws, that tool doesn't land. The
+    // catch still swallows, so the rest of the turn setup (ask-user
+    // auto-wire, scratchpad auto-wire) still runs — proven by
+    // Array.isArray(tools) above.
     expect(tools.find((t: any) => t.name === "ask_human")).toBeUndefined();
     expect(tools.find((t: any) => t.name === "invoke_agent")).toBeUndefined();
 
@@ -416,11 +418,11 @@ describe("executor mode filter preserves invoke_agent", () => {
 
     expect(capturedAgentOpts).not.toBeNull();
     const tools: any[] = capturedAgentOpts.initialState.tools;
-    // Only orchestration tools should remain (invoke_agent, ask_human,
-    // scratchpad__scratchpad_*, task_*). Scratchpad moved to a bundled
-    // extension in Phase 1; its tools appear under the namespaced form.
+    // Only orchestration tools should remain (invoke_agent,
+    // ask_user_question, scratchpad__scratchpad_*, task_*).
+    // ask_user_question replaced ask_human in the ask-user migration.
     const ORCHESTRATION_TOOLS = new Set([
-      "invoke_agent", "ask_human",
+      "invoke_agent", "ask_user_question",
       "scratchpad__scratchpad_write", "scratchpad__scratchpad_read",
       "task_plan", "task_start", "task_complete", "task_fail",
       "task_update", "task_list", "task_subtask_toggle",
@@ -532,7 +534,7 @@ describe("executor tool event suppression for invoke_agent", () => {
 });
 
 describe("executor agent wiring - orchestration tools and auto-wire", () => {
-  test("injects ask_human + invoke_agent; scratchpad auto-wire gated on S7", async () => {
+  test("injects invoke_agent; scratchpad auto-wire gated on S7", async () => {
     // Phase 1 of the built-in-to-extension conversion moved scratchpad
     // behind the bundled-extension auto-wire gate (executor.ts — S7).
     // The gate requires the extension row to exist AND be `enabled` AND
@@ -541,6 +543,10 @@ describe("executor agent wiring - orchestration tools and auto-wire", () => {
     // absent and the auto-wire to skip gracefully without throwing.
     // The positive case (scratchpad tools appear when installed) is
     // covered in src/__tests__/scratchpad-extension.integration.test.ts.
+    // Note: ask_user_question (formerly ask_human) is auto-wired by a
+    // separate `ask-user-host` helper, stubbed at module top to a
+    // no-op for this suite. ask_user_question coverage lives in
+    // src/__tests__/ask-user.{integration,e2e}.test.ts.
     const { executor } = createExecutor();
     capturedAgentOpts = null;
 
@@ -553,7 +559,6 @@ describe("executor agent wiring - orchestration tools and auto-wire", () => {
     const toolNames = tools.map((t: any) => t.name);
     // Always present when an agent is mentioned.
     expect(toolNames).toContain("invoke_agent");
-    expect(toolNames).toContain("ask_human");
     // Scratchpad must NOT appear under its old built-in names anymore —
     // if the names leak through, a stale built-in wiring is still live.
     expect(toolNames).not.toContain("scratchpad_write");
@@ -609,7 +614,7 @@ describe("executor team member overrides", () => {
     expect(capturedAgentOpts).not.toBeNull();
     const tools: any[] = capturedAgentOpts.initialState.tools;
     const ORCHESTRATION_TOOLS = new Set([
-      "invoke_agent", "ask_human",
+      "invoke_agent", "ask_user_question",
       "scratchpad__scratchpad_write", "scratchpad__scratchpad_read",
     ]);
     // Every tool should be either an orchestration tool or a read-category tool

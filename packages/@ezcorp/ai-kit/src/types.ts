@@ -216,8 +216,7 @@ export type RuntimeEventType =
   | "agent:complete"
   | "task:snapshot"
   | "task:assignment_update"
-  | "orchestrator:human_input"
-  | "orchestrator:human_response"
+  | "ask-user:answer"
   | "ext:state";
 
 export interface RuntimeEvent {

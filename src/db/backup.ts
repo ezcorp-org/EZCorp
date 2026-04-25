@@ -193,5 +193,3 @@ export function stopBackups(): void {
   performBackup(); // Final backup on shutdown (no-op in degraded mode)
 }
 
-// Exported for tests
-export const __test = { performBackup, markerPath, MAX_PRE_BOOT_SNAPSHOTS, MAX_INTERVAL_BACKUPS };

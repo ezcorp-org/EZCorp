@@ -23,7 +23,9 @@ const { getUserById } = await import("$server/db/queries/users");
 const { createPasswordResetToken } = await import(
   "$server/db/queries/password-resets"
 );
-const { POST } = await import("../routes/api/auth/reset-password/+server");
+const { POST, __rateLimiter } = await import(
+  "../routes/api/auth/reset-password/+server"
+);
 
 function makeEvent(opts: {
   locals?: Record<string, unknown>;
@@ -51,6 +53,7 @@ describe("POST /api/auth/reset-password", () => {
   beforeEach(() => {
     vi.mocked(getUserById).mockReset();
     vi.mocked(createPasswordResetToken).mockClear();
+    __rateLimiter.reset();
   });
 
   test("rejects 401 when locals.user is missing", async () => {
@@ -102,6 +105,29 @@ describe("POST /api/auth/reset-password", () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe("User not found");
+  });
+
+  test("returns 429 after exceeding rate limit (5/hour per admin)", async () => {
+    vi.mocked(getUserById).mockResolvedValue({
+      id: "u2",
+      email: "target@x",
+    } as any);
+    // 5 successful generations consume the budget...
+    for (let i = 0; i < 5; i++) {
+      const res = await POST(
+        makeEvent({ locals: adminUser, body: { userId: "u2" } }),
+      );
+      expect(res.status).toBe(200);
+    }
+    // ...the 6th from the same admin is throttled.
+    const res = await POST(
+      makeEvent({ locals: adminUser, body: { userId: "u2" } }),
+    );
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error?: string; retryAfter?: number };
+    expect(body.error).toContain("Too many requests");
+    expect(typeof body.retryAfter).toBe("number");
+    expect(res.headers.get("retry-after")).toBeTruthy();
   });
 
   test("returns 200 with masked token on success (raw token not leaked)", async () => {

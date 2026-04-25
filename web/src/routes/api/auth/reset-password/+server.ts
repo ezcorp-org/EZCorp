@@ -7,10 +7,24 @@ import { insertAuditEntry } from "$server/db/queries/audit-log";
 import { generateResetSchema } from "./schema";
 import { validationError } from "$lib/server/security/validation";
 import { errorJson } from "$lib/server/http-errors";
+import { RateLimiter } from "$lib/server/security/rate-limiter";
+
+// 5 generations / hour per admin. Already gated by requireRole("admin")
+// so abuse surface is bounded; rate-limit adds defense-in-depth against
+// a compromised admin account spraying reset tokens. Keyed by user id
+// (must run AFTER the role check so locals.user is populated).
+export const __rateLimiter = new RateLimiter(5, 60 * 60_000);
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   try {
     const admin = requireRole(locals, "admin");
+
+    const rl = __rateLimiter.check(admin.id);
+    if (!rl.allowed) {
+      return errorJson(429, "Too many requests", { retryAfter: rl.retryAfter }, {
+        "Retry-After": String(rl.retryAfter ?? 1),
+      });
+    }
 
     const result = generateResetSchema.safeParse(await request.json());
     if (!result.success) {

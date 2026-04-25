@@ -73,9 +73,6 @@ COPY --from=builder /app/docs ./docs
 # Copy compiled SvelteKit app
 COPY --from=builder /app/web/build ./web/build
 
-# Copy TESTENV project directory
-COPY --from=builder /app/TESTENV ./TESTENV
-
 # Create data directory for PGlite + backups. Declared as a VOLUME so users
 # who don't bind-mount get a named docker volume automatically (data survives
 # image upgrades). Default backup dir resolves to /app/data/backups via

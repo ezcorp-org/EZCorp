@@ -7,9 +7,24 @@ import { insertAuditEntry } from "$server/db/queries/audit-log";
 import { consumeResetSchema } from "../schema";
 import { validationError } from "$lib/server/security/validation";
 import { errorJson } from "$lib/server/http-errors";
+import { RateLimiter } from "$lib/server/security/rate-limiter";
 
-export const POST: RequestHandler = async ({ request, params }) => {
+// 10 / 15 min per IP. The 32-byte random token is already
+// cryptographically infeasible to guess, but a per-IP limit caps the
+// noise an attacker can generate in audit logs and against the DB.
+export const __rateLimiter = new RateLimiter(10, 15 * 60_000);
+
+export const POST: RequestHandler = async ({ request, params, getClientAddress }) => {
   try {
+    let ip = "unknown";
+    try { ip = getClientAddress(); } catch { /* proxy not configured */ }
+    const rl = __rateLimiter.check(ip);
+    if (!rl.allowed) {
+      return errorJson(429, "Too many requests", { retryAfter: rl.retryAfter }, {
+        "Retry-After": String(rl.retryAfter ?? 1),
+      });
+    }
+
     const result = consumeResetSchema.safeParse(await request.json());
     if (!result.success) {
       return validationError(result.error);

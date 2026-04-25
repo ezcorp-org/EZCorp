@@ -18,6 +18,7 @@
 			"!**/.ezcorp",
 			"!**/.planning",
 			"!**/.claude",
+			"!**/worktrees",
 			"!**/TESTENV",
 			"!**/projects",
 			"!web/build",

@@ -5,6 +5,7 @@
     "web",
     "**/node_modules/**",
     "**/.svelte-kit/**",
+    "**/worktrees/**",
     "src/__tests__/**",
     "**/*.test.ts",
     "packages/**/__tests__/**",

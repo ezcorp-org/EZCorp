@@ -45,7 +45,7 @@
 	} from "$lib/sub-convo-agent-state.js";
 	import { startOAuthFlow, completeOAuthWithCode, listenForOAuthResult, isLoginCommand, type OAuthPending } from "$lib/oauth.js";
 	import { isModelCommand } from "$lib/commands.js";
-	import { restoreLastModel, persistLastModel } from "$lib/last-model.js";
+	import { persistLastModel } from "$lib/last-model.js";
 	import { attachPanelPersistence } from "$lib/chat/page-handlers/panel-persistence.svelte.js";
 	import {
 		INITIAL_MESSAGE_WINDOW,
@@ -99,6 +99,12 @@
 	import ChatHeader from "$lib/components/chat/ChatHeader.svelte";
 	import SelectModeActionBar from "$lib/components/chat/SelectModeActionBar.svelte";
 	import { makeInlineToolHandlers } from "$lib/chat/page-handlers/inline-tool-handlers.js";
+	import {
+		makeLoadMessages,
+		findLeafByMessageId,
+		computeLatestLeaf,
+		type HistoricalToolCall,
+	} from "$lib/chat/page-handlers/load-messages.js";
 	import { parseMentions } from "$lib/mention-logic.js";
 	import { shouldAutofocusComposer } from "$lib/chat-input-logic.js";
 	import {
@@ -108,15 +114,9 @@
 	} from "$lib/utils/fetch-policy.js";
 	import type { ToolDefinition } from '../../../../../../src/extensions/types';
 
-	// Historical tool call tracking
-	interface HistoricalToolCall {
-		id: string;
-		messageId: string;
-		extensionId: string;
-		toolName: string;
-		status: "success" | "error" | "interrupted";
-		source?: "user" | "agent";
-	}
+	// Historical tool call tracking. `HistoricalToolCall` is imported from
+	// `$lib/chat/page-handlers/load-messages.js` (W5) — the hydration step
+	// owns the type since it's the writer.
 	let historicalToolCalls = $state<HistoricalToolCall[]>([]);
 	let historicalByMessage = $derived(
 		historicalToolCalls.reduce((map, tc) => {
@@ -993,204 +993,28 @@
 		wasConnected = connected;
 	});
 
-	/** Find the latest leaf starting from a given message, walking forward through children */
-	function findLeafFrom(messageId: string): string {
-		const children = siblingMap.get(messageId);
-		if (!children || children.length === 0) return messageId;
-		// Pick the latest child (last in sorted list)
-		return findLeafFromAll(children[children.length - 1]!.id);
-	}
-
-	/** Same as findLeafFrom but uses allMessages directly for freshness */
-	function findLeafFromAll(messageId: string): string {
-		const msgMap = new Map(allMessages.map((m) => [m.id, m]));
-		let current = messageId;
-		while (true) {
-			const children = allMessages.filter((m) => m.parentMessageId === current);
-			if (children.length === 0) return current;
-			// Pick latest child
-			children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-			current = children[children.length - 1]!.id;
-		}
-	}
-
-	/** Compute the latest leaf from all messages */
-	function computeLatestLeaf(msgs: Message[]): string | null {
-		if (msgs.length === 0) return null;
-		const parentIds = new Set(msgs.map((m) => m.parentMessageId).filter(Boolean));
-		const leaves = msgs.filter((m) => !parentIds.has(m.id));
-		if (leaves.length === 0) return msgs[msgs.length - 1]?.id ?? null;
-		// Most recent leaf
-		return leaves.reduce((latest, m) =>
-			m.createdAt.localeCompare(latest.createdAt) > 0 ? m : latest,
-		).id;
-	}
-
-	// Belt-and-suspenders: if hydrateToolCallsFromApi is called while a
-	// previous call is still in flight for the same conversation, reuse the
-	// pending promise instead of firing a parallel request. Prevents any
-	// remaining call-site from accidentally spamming the endpoint.
-	let hydratePending: { convId: string; promise: Promise<void> } | null = null;
-
-	async function hydrateToolCallsFromApi(): Promise<void> {
-		if (hydratePending && hydratePending.convId === convId) {
-			return hydratePending.promise;
-		}
-		const run = (async () => {
-			try {
-				await doHydrate();
-			} finally {
-				hydratePending = null;
-			}
-		})();
-		hydratePending = { convId, promise: run };
-		return run;
-	}
-
-	async function doHydrate() {
-		try {
-			// Throttled + deduped by fetch-policy. Key is semantic (messages-tools:<cid>)
-			// so querystring reshuffles or new callers still collapse to one request.
-			const res = await backgroundFetch(
-				`messages-tools:${convId}`,
-				`/api/conversations/${convId}/messages?withToolCalls=true`,
-				{},
-				{ minIntervalMs: 5000 },
-			);
-			if (!res || !res.ok) return;
-			const data = await res.json();
-			const allTc: HistoricalToolCall[] = [];
-			const hydrateInput: Array<{ id: string; extensionId: string; toolName: string; input: Record<string, unknown> | null; outputSummary: string | null; fullOutput?: string | null; success: boolean; durationMs: number; status: "success" | "error" | "interrupted"; messageId?: string; cardType?: string | null }> = [];
-			for (const msg of data.messages ?? []) {
-				for (const tc of msg.toolCalls ?? []) {
-					allTc.push({ id: tc.id, messageId: msg.id, extensionId: tc.extensionId, toolName: tc.toolName, status: tc.status });
-					hydrateInput.push({ ...tc, messageId: msg.id });
-				}
-			}
-			// Also hydrate orphaned tool calls (from card action buttons / inline invocations)
-			for (const tc of data.orphanedToolCalls ?? []) {
-				hydrateInput.push({ ...tc, messageId: tc.messageId ?? undefined });
-			}
-
-			historicalToolCalls = allTc;
-			inlineToolStore.hydrateToolCalls(convId, hydrateInput);
-
-			if (data.subConversations?.length) {
-				subConversations = data.subConversations.map((sc: any) => ({
-					id: sc.id,
-					agentName: sc.agentName ?? "Agent",
-					agentConfigId: sc.agentConfigId ?? "",
-					parentMessageId: sc.parentMessageId ?? "",
-					messageCount: sc.messageCount ?? 0,
-					lastMessagePreview: sc.lastMessagePreview ?? null,
-				}));
-			}
-
-			// Hydrate sub-conversation tool calls so the Diff Summary panel
-			// can show edits made by team members / invoked agents alongside
-			// the parent's edits. Keyed by sub id — each call to
-			// hydrateToolCalls(subId, …) replaces only that sub's entries.
-			const subToolCalls = (data.subConversationToolCalls ?? {}) as Record<string, Array<{ id: string; extensionId: string; toolName: string; input: Record<string, unknown> | null; outputSummary: string | null; fullOutput?: string | null; success: boolean; durationMs: number; status: "success" | "error" | "interrupted"; messageId?: string | null; cardType?: string | null }>>;
-			for (const [subId, calls] of Object.entries(subToolCalls)) {
-				const subHydrateInput = calls.map((tc) => ({ ...tc, messageId: tc.messageId ?? undefined }));
-				inlineToolStore.hydrateToolCalls(subId, subHydrateInput);
-			}
-		} catch { /* non-critical */ }
-	}
-
-	// Function-level dedup: if two callers (initial load + reconnect re-sync)
-	// hit loadMessages() at the same moment, the second call gets the first
-	// call's in-flight promise instead of launching a parallel three-fetch
-	// cascade. Belt to the URL-level throttle's suspenders.
-	let loadMessagesPending: { convId: string; promise: Promise<void> } | null = null;
-
-	async function loadMessages() {
-		if (!convId) return;
-		if (loadMessagesPending && loadMessagesPending.convId === convId) {
-			return loadMessagesPending.promise;
-		}
-		const capturedConvId = convId;
-		const run = (async () => {
-			try {
-				await doLoadMessages();
-			} finally {
-				if (loadMessagesPending?.convId === capturedConvId) loadMessagesPending = null;
-			}
-		})();
-		loadMessagesPending = { convId: capturedConvId, promise: run };
-		return run;
-	}
-
-	async function doLoadMessages() {
-		if (!convId) return;
-
-		// Synchronously preload the user's last-used model from localStorage
-		// BEFORE any await, so ModelSelector's parallel /api/models fetch doesn't
-		// race in and fire onautoselect (which would persist models[0] to the DB
-		// and clobber the conversation's actual stored model on next refresh).
-		if (!selectedModel) {
-			const preload = restoreLastModel(typeof localStorage !== "undefined" ? localStorage : null);
-			if (preload) selectedModel = preload;
-		}
-
-		try {
-			// Route both reads through the fetch-policy. A flaky SSE that
-			// triggers N reconnect re-syncs in quick succession collapses to
-			// a single actual pair of GETs, eliminating the visible spam of
-			//   GET /api/conversations/:id
-			//   GET /api/conversations/:id/messages?all=true
-			// that used to appear once per reconnect cycle.
-			const msgsRes = await backgroundFetch(
-				`messages-all:${convId}`,
-				`/api/conversations/${convId}/messages?all=true`,
-				{},
-				{ minIntervalMs: 5000 },
-			);
-			if (msgsRes && msgsRes.ok) {
-				allMessages = await msgsRes.json();
-			} else if (msgsRes === null) {
-				// Throttled; skip this refresh. Existing allMessages stays current
-				// because the WS push path has kept it live.
-			}
-			activeLeafId = computeLatestLeaf(allMessages);
-			const convRes = await backgroundFetch(
-				`conv:${convId}`,
-				`/api/conversations/${convId}`,
-				{},
-				{ minIntervalMs: 5000 },
-			);
-			if (convRes && convRes.ok) {
-				currentConversation = await convRes.json();
-			}
-
-			// Hydrate historical tool calls + sub-conversations from API
-			await hydrateToolCallsFromApi();
-
-			// The conversation's stored model (if any) wins over localStorage —
-			// it represents a deliberate per-conversation override.
-			if (currentConversation?.provider && currentConversation?.model) {
-				selectedModel = { provider: currentConversation.provider, model: currentConversation.model };
-			}
-			// Restore mode from conversation
-			const conv = currentConversation;
-			if (conv?.modeId) {
-				selectedMode = availableModes.find(m => m.id === conv.modeId) ?? null;
-			} else {
-				selectedMode = null;
-			}
-			editingMessageId = null;
-			error = null;
-			// Initial scroll-to-bottom is handled by the dedicated `initialScrollDone`
-			// effect — it waits for the sentinel to exist in the DOM, so it's
-			// reliable regardless of race conditions between fetchAllMessages
-			// resolving and Svelte flushing the DOM. Crucially: it does NOT
-			// re-fire on every loadMessages() call, so a reconnect-driven
-			// re-sync cannot scrub the user's scroll position.
-		} catch (err) {
-			error = "Failed to load messages";
-			console.error(err);
-		}
-	}
+	// Tree-walking helpers + the dedup'd loadMessages / hydrateToolCallsFromApi
+	// pair are extracted to $lib/chat/page-handlers/load-messages.ts (W5).
+	// findLeafByMessageId / computeLatestLeaf are pure and imported directly.
+	// loadMessages + hydrateToolCallsFromApi are stateful — both close over
+	// per-convId in-flight Maps inside the factory, so each call site here
+	// shares one set of dedup slots.
+	const loadMessagesApi = makeLoadMessages({
+		convId: () => convId,
+		allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+		activeLeafId: { get: () => activeLeafId, set: (v) => { activeLeafId = v; } },
+		editingMessageId: { get: () => editingMessageId, set: (v) => { editingMessageId = v; } },
+		error: { get: () => error, set: (v) => { error = v; } },
+		currentConversation: { get: () => currentConversation, set: (v) => { currentConversation = v; } },
+		selectedModel: { get: () => selectedModel, set: (v) => { selectedModel = v; } },
+		selectedMode: { get: () => selectedMode, set: (v) => { selectedMode = v; } },
+		availableModes: () => availableModes,
+		historicalToolCalls: { get: () => historicalToolCalls, set: (v) => { historicalToolCalls = v; } },
+		subConversations: { get: () => subConversations, set: (v) => { subConversations = v; } },
+		localStorage: () => (typeof localStorage !== "undefined" ? localStorage : null),
+	});
+	const loadMessages = loadMessagesApi.loadMessages;
+	const hydrateToolCallsFromApi = loadMessagesApi.hydrateToolCallsFromApi;
 
 	async function handleSubConvoSend(text: string) {
 		const active = subConversationStore.activeSubConversation;
@@ -1558,7 +1382,7 @@
 
 	function handleBranchNavigate(messageId: string) {
 		// Navigate to the branch containing this message by finding its leaf
-		activeLeafId = findLeafFromAll(messageId);
+		activeLeafId = findLeafByMessageId(allMessages, messageId);
 	}
 
 	function handleBranch(msg: Message) {

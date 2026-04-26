@@ -398,27 +398,35 @@ export async function runZombieCheck(
 	}
 }
 
-// ── Module-level cooldown timestamp ──────────────────────────────────────
+// ── Module-level cooldown table ──────────────────────────────────────────
 
 /**
- * Last reconnect-check fire time, in ms since epoch (matches `Date.now()`).
- * Module-scoped so it persists across `attachStreamResume` re-attachments
- * (e.g., conversation switches that re-mount the host). Per-page-instance
- * scope would let the cooldown reset on every convId change, defeating
- * the point of the throttle.
+ * Last reconnect-check fire time per conversation id, in ms since epoch
+ * (matches `Date.now()`). Module-scoped so it persists across
+ * `attachStreamResume` re-attachments (e.g., conversation switches that
+ * re-mount the host) — per-attach scope would let the cooldown reset on
+ * every convId change, defeating the throttle on flaky networks.
+ *
+ * Keyed by convId so opening a different conversation isn't silently
+ * throttled by the previous conversation's recent reconnect — each
+ * conversation has its own independent cooldown clock.
  *
  * Exported for tests via `__resetReconnectCooldown()` below.
  */
-let lastReconnectCheckAt = 0;
+const reconnectCooldownByConv = new Map<string, number>();
 
-/** Test-only: reset the module-level cooldown timestamp. */
-export function __resetReconnectCooldown(): void {
-	lastReconnectCheckAt = 0;
+/**
+ * Test-only: reset the cooldown table. With a `convId`, clears just that
+ * entry; with no argument, clears all entries.
+ */
+export function __resetReconnectCooldown(convId?: string): void {
+	if (convId === undefined) reconnectCooldownByConv.clear();
+	else reconnectCooldownByConv.delete(convId);
 }
 
-/** Test-only: read the module-level cooldown timestamp. */
-export function __getReconnectCooldownAt(): number {
-	return lastReconnectCheckAt;
+/** Test-only: read the cooldown timestamp for a given conversation. */
+export function __getReconnectCooldownAt(convId: string): number {
+	return reconnectCooldownByConv.get(convId) ?? 0;
 }
 
 // ── Rune-host wiring ─────────────────────────────────────────────────────
@@ -457,16 +465,10 @@ export function attachStreamResume(
 		// Capturing it once outside would defeat the effect — it must
 		// re-fire on every transition.
 		const connected = store.connected;
-		if (
-			shouldFireReconnectCheck(
-				host,
-				connected,
-				wasConnected,
-				lastReconnectCheckAt,
-				now(),
-			)
-		) {
-			lastReconnectCheckAt = now();
+		const convId = host.convId();
+		const lastAt = reconnectCooldownByConv.get(convId) ?? 0;
+		if (shouldFireReconnectCheck(host, connected, wasConnected, lastAt, now())) {
+			reconnectCooldownByConv.set(convId, now());
 			host.checkingActiveRun.set(true);
 			void checkActiveRun(host.loadGeneration());
 		}

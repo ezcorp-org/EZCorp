@@ -881,10 +881,7 @@
 		settingsOpen: { get: () => settingsOpen, set: (v) => { settingsOpen = v; } },
 		obsOpen: { get: () => obsOpen, set: (v) => { obsOpen = v; } },
 		editRetryCall: { get: () => editRetryCall, set: (v) => { editRetryCall = v; } },
-		editRetryTool: {
-			get: () => editRetryTool as unknown,
-			set: (v) => { editRetryTool = v as ToolDefinition | null; },
-		},
+		editRetryTool: { get: () => editRetryTool, set: (v) => { editRetryTool = v; } },
 		savedMemories: { get: () => savedMemories, set: (v) => { savedMemories = v; } },
 		subConversations: { get: () => subConversations, set: (v) => { subConversations = v; } },
 		sentinel: () => sentinel ?? null,

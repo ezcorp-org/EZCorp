@@ -118,6 +118,7 @@ export interface HydratedToolCallsBundle {
  * Equivalent to the original page's `findLeafFromAll` but takes the
  * messages array as an argument instead of reading the page's `$state`.
  */
+export type FindLeafByMessageId = typeof findLeafByMessageId;
 export function findLeafByMessageId(messages: Message[], messageId: string): string {
 	let current = messageId;
 	while (true) {
@@ -135,6 +136,7 @@ export function findLeafByMessageId(messages: Message[], messageId: string): str
  * array when no leaves are found (a fully cyclic / malformed tree — in
  * practice this shouldn't happen but the original page guarded for it).
  */
+export type ComputeLatestLeaf = typeof computeLatestLeaf;
 export function computeLatestLeaf(msgs: Message[]): string | null {
 	if (msgs.length === 0) return null;
 	const parentIds = new Set(msgs.map((m) => m.parentMessageId).filter(Boolean));

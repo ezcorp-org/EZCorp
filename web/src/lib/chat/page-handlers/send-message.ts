@@ -98,6 +98,11 @@ import { userFetch } from "$lib/utils/fetch-policy.js";
 import type { SubConvoRecord } from "$lib/sub-convo-agent-state.js";
 import type { PermissionMode } from "$lib/permission-mode.js";
 import type { InlineToolCall } from "$lib/inline-tool-store.svelte.js";
+import type { ToolDefinition } from "../../../../../src/extensions/types";
+import type {
+	ComputeLatestLeaf as ComputeLatestLeafType,
+	FindLeafByMessageId as FindLeafByMessageIdType,
+} from "./load-messages.js";
 
 // Provider display labels mirror the page's local map. Kept here so
 // `addSystemMessage` strings format provider names consistently across
@@ -121,20 +126,13 @@ export interface SelectedModel {
 }
 
 /**
- * Tree-walk helper passed in by the page (re-exported from W5's
- * `load-messages.ts`). The handlers call it to recover an `activeLeafId`
- * after pruning a failed assistant turn.
+ * Tree-walk helpers re-exported from W5's `load-messages.ts`. Re-exported
+ * (rather than locally redeclared) so the host signature stays in sync
+ * with the actual implementation — `findLeafByMessageId` returns `string`,
+ * not `string | null`, and an earlier local copy got that wrong.
  */
-export type ComputeLatestLeaf = (messages: Message[]) => string | null;
-
-/**
- * Tree-walk helper passed in by the page (re-exported from W5's
- * `load-messages.ts`). The handlers call it from `handleBranchNavigate`.
- */
-export type FindLeafByMessageId = (
-	messages: Message[],
-	messageId: string,
-) => string | null;
+export type ComputeLatestLeaf = ComputeLatestLeafType;
+export type FindLeafByMessageId = FindLeafByMessageIdType;
 
 export interface SendMessageHost {
 	// ── Conversation / project context ─────────────────────────────────
@@ -175,7 +173,7 @@ export interface SendMessageHost {
 	settingsOpen: Slot<boolean>;
 	obsOpen: Slot<boolean>;
 	editRetryCall: Slot<InlineToolCall | null>;
-	editRetryTool: Slot<unknown>;
+	editRetryTool: Slot<ToolDefinition | null>;
 
 	// ── Saved memories (single-message save) ──────────────────────────
 	savedMemories: Slot<Map<string, string>>;

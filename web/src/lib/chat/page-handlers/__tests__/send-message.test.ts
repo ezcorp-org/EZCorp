@@ -21,6 +21,7 @@
 import { test, expect, describe, beforeEach, afterAll, mock } from "bun:test";
 import type { Message } from "$lib/api.js";
 import type { OAuthPending } from "$lib/oauth.js";
+import type { ToolDefinition } from "../../../../../../src/extensions/types";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
@@ -299,7 +300,7 @@ interface HostState {
 	settingsOpen: boolean;
 	obsOpen: boolean;
 	editRetryCall: unknown;
-	editRetryTool: unknown;
+	editRetryTool: ToolDefinition | null;
 	savedMemories: Map<string, string>;
 	subConversations: SubConvoRecord[];
 	systemMessages: string[];
@@ -450,8 +451,10 @@ function makeHost(initial: Partial<HostState> = {}): {
 		computeLatestLeaf: (messages) =>
 			messages.length === 0 ? null : messages[messages.length - 1]!.id,
 		findLeafByMessageId: (messages, id) => {
-			// Test-only stub: return the id if present, else null.
-			return messages.find((m) => m.id === id)?.id ?? null;
+			// Test-only stub: matches the real implementation's contract —
+			// always returns a string (falls back to input id when no
+			// children are found).
+			return messages.find((m) => m.id === id)?.id ?? id;
 		},
 	};
 	return { host, state };

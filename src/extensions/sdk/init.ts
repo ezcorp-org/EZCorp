@@ -1,7 +1,7 @@
 // ── Extension Init Scaffolding ──────────────────────────────────
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
+import { askLine } from "../../ui/prompt";
 import { logger } from "../../logger";
 const log = logger.child("ext-sdk");
 
@@ -77,17 +77,6 @@ function generatePackageJson(name: string, description: string): string {
   }, null, 2);
 }
 
-/** Simple readline prompt (local to avoid circular deps with cli.ts) */
-function ask(prompt: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
-}
-
 export async function initExtension(opts: InitOptions): Promise<void> {
   if (!opts.extName) {
     throw new Error('Extension name required. Usage: ezcorp ext init <name> [--type tool|skill|agent|multi]');
@@ -105,12 +94,12 @@ export async function initExtension(opts: InitOptions): Promise<void> {
 
   // Interactive wizard if no --type provided
   if (!extType) {
-    const descAnswer = await ask(`Description (${description}): `);
+    const descAnswer = await askLine(`Description (${description}): `);
     if (descAnswer.trim()) description = descAnswer.trim();
 
     log.info("Extension type: 1) Tool - MCP tool server, 2) Skill - Prompt & knowledge, 3) Agent - Conversational persona, 4) Multi - Combined");
 
-    const typeAnswer = await ask("\nSelect type [1-4]: ");
+    const typeAnswer = await askLine("\nSelect type [1-4]: ");
     const typeIdx = parseInt(typeAnswer.trim(), 10) - 1;
     extType = EXT_TYPES[typeIdx] ?? "tool";
   }

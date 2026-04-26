@@ -16,7 +16,7 @@ import type { DependencyTreeNode } from "./extensions/dependency-resolver";
 import { listExtensions, getExtensionByName } from "./db/queries/extensions";
 import { getRequiredPermissions } from "./extensions/permissions";
 import type { ExtensionPermissions, ExtensionManifestV2 } from "./extensions/types";
-import { createInterface } from "node:readline";
+import { askLine } from "./ui/prompt";
 
 // ── Permission Prompting ─────────────────────────────────────────────
 
@@ -64,7 +64,7 @@ async function promptForPermissions(
     console.log();
   }
 
-  const answer = await askUser("Approve all permissions? [y/N/select] ");
+  const answer = await askLine("Approve all permissions? [y/N/select] ");
   const choice = answer.trim().toLowerCase();
 
   if (choice === "y" || choice === "yes") {
@@ -98,28 +98,28 @@ async function promptPerCategory(
   const granted: ExtensionPermissions = { grantedAt: {} };
 
   if (perms.network?.length) {
-    const a = await askUser(`  Allow network access to ${perms.network.join(", ")}? [y/N] `);
+    const a = await askLine(`  Allow network access to ${perms.network.join(", ")}? [y/N] `);
     if (a.trim().toLowerCase() === "y") {
       granted.network = perms.network;
       granted.grantedAt.network = now;
     }
   }
   if (perms.filesystem?.length) {
-    const a = await askUser(`  Allow filesystem access to ${perms.filesystem.join(", ")}? [y/N] `);
+    const a = await askLine(`  Allow filesystem access to ${perms.filesystem.join(", ")}? [y/N] `);
     if (a.trim().toLowerCase() === "y") {
       granted.filesystem = perms.filesystem;
       granted.grantedAt.filesystem = now;
     }
   }
   if (perms.shell) {
-    const a = await askUser("  Allow shell command execution? [y/N] ");
+    const a = await askLine("  Allow shell command execution? [y/N] ");
     if (a.trim().toLowerCase() === "y") {
       granted.shell = true;
       granted.grantedAt.shell = now;
     }
   }
   if (perms.env?.length) {
-    const a = await askUser(`  Allow reading env vars: ${perms.env.join(", ")}? [y/N] `);
+    const a = await askLine(`  Allow reading env vars: ${perms.env.join(", ")}? [y/N] `);
     if (a.trim().toLowerCase() === "y") {
       granted.env = perms.env;
       granted.grantedAt.env = now;
@@ -129,15 +129,6 @@ async function promptPerCategory(
   return granted;
 }
 
-function askUser(prompt: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
-}
 
 // ── Arg parsing ─────────────────────────────────────────────────────
 

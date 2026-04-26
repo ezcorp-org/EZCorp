@@ -1,10 +1,29 @@
 import type { InputField, InputSchema } from "../types";
 import { createInterface } from "node:readline/promises";
+import { createInterface as createInterfaceCallback } from "node:readline";
 
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
 export const EOF = Symbol("EOF");
+
+/**
+ * One-shot stdin prompt. Opens a readline interface, asks a single
+ * question, closes it, and resolves with the answer. Uses node:readline's
+ * callback API (not the promises variant) so it can be called from sync
+ * `cli.ts` paths without affecting the running event loop's prompt state.
+ *
+ * For multi-field interactive prompting see `promptForInput()` above.
+ */
+export function askLine(prompt: string): Promise<string> {
+  const rl = createInterfaceCallback({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
 
 async function ask(rl: ReturnType<typeof createInterface>, question: string): Promise<string | null> {
   try {

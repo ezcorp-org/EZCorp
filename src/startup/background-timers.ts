@@ -3,6 +3,9 @@ import { runCompaction } from "../memory/compaction";
 import { deleteExpiredSessions } from "../db/queries/sessions";
 import { cleanupOldErrors } from "../db/queries/error-logs";
 import { getSetting } from "../db/queries/settings";
+import { logger } from "../logger";
+
+const log = logger.child("startup.timers");
 
 let started = false;
 
@@ -23,9 +26,9 @@ export async function startBackgroundTimers(): Promise<void> {
   // Memory decay (1h)
   try {
     startDecayTimer();
-    console.log("[timers] Decay sweep started (1h interval)");
+    log.info("Decay sweep started", { intervalHours: 1 });
   } catch (e) {
-    console.warn("[timers] Failed to start decay timer:", e);
+    log.warn("Failed to start decay timer", { error: String(e) });
   }
 
   // Session + error-log cleanup (hourly, 30-day retention on errors)
@@ -42,12 +45,12 @@ export async function startBackgroundTimers(): Promise<void> {
     const intervalMs = intervalHours * 60 * 60 * 1000;
     setInterval(() => {
       runCompaction().catch((e: unknown) => {
-        console.error("[timers] Compaction error:", e);
+        log.error("Compaction error", { error: String(e) });
       });
     }, intervalMs);
-    console.log(`[timers] Compaction started (${intervalHours}h interval)`);
+    log.info("Compaction started", { intervalHours });
   } catch (e) {
-    console.warn("[timers] Failed to start compaction timer:", e);
+    log.warn("Failed to start compaction timer", { error: String(e) });
   }
 }
 

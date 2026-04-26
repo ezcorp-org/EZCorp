@@ -5,11 +5,8 @@
 	import {
 		fetchAllMessages,
 		fetchModes,
-		sendMessage,
 		createConversation,
-		createSubConversation,
 		updateConversation,
-		cloneTurns,
 		patchMessageContent,
 		setMessageExcluded,
 		type Message,
@@ -17,15 +14,7 @@
 		type Mode,
 	} from "$lib/api.js";
 	import {
-		toggleSelection,
-		clearSelection,
-		orderedSelection,
-		selectRange,
-	} from "$lib/select-mode.js";
-	import { formatMessageForCopy } from "$lib/message-copy.js";
-	import {
 		store,
-		startStreaming,
 		stopStreaming,
 		getStreamingToolCalls,
 		getStreamingContentBlocks,
@@ -43,10 +32,9 @@
 		subConvoToAgentCallState,
 		type SubConvoRecord,
 	} from "$lib/sub-convo-agent-state.js";
-	import { startOAuthFlow, completeOAuthWithCode, listenForOAuthResult, isLoginCommand, type OAuthPending } from "$lib/oauth.js";
-	import { isModelCommand } from "$lib/commands.js";
-	import { restoreLastModel, persistLastModel } from "$lib/last-model.js";
-	import { readChatPanels, writeChatPanels } from "$lib/panel-persistence.js";
+	import { listenForOAuthResult, type OAuthPending } from "$lib/oauth.js";
+	import { persistLastModel } from "$lib/last-model.js";
+	import { attachPanelPersistence } from "$lib/chat/page-handlers/panel-persistence.svelte.js";
 	import {
 		INITIAL_MESSAGE_WINDOW,
 		MESSAGE_LOAD_STEP,
@@ -64,7 +52,6 @@
 	import ConversationList from "$lib/components/ConversationList.svelte";
 	import ChatMessage from "$lib/components/ChatMessage.svelte";
 	import ChatInput from "$lib/components/ChatInput.svelte";
-	import MessageToolbar from "$lib/components/MessageToolbar.svelte";
 	import { shouldHandleChatWindowDragOver, filesFromChatWindowDrop } from "$lib/chat/chat-window-drop";
 	import ConversationSettings from "$lib/components/ConversationSettings.svelte";
 	import ExportMenu from "$lib/components/ExportMenu.svelte";
@@ -87,7 +74,6 @@
 	import SkeletonLoader from "$lib/components/SkeletonLoader.svelte";
 	import Tooltip from "$lib/components/Tooltip.svelte";
 	import { inlineToolStore, type InlineToolCall } from "$lib/inline-tool-store.svelte.js";
-	import { invokeInlineTool } from "$lib/invoke-inline-tool.js";
 	import type { PermissionMode } from "$lib/permission-mode.js";
 	import { subConversationStore } from "$lib/sub-conversation-store.svelte.js";
 	import SubConversationBlock from "$lib/components/SubConversationBlock.svelte";
@@ -99,7 +85,17 @@
 	import StuckRunBanner from "$lib/components/StuckRunBanner.svelte";
 	import InfoTooltip from "$lib/components/InfoTooltip.svelte";
 	import ChatHeader from "$lib/components/chat/ChatHeader.svelte";
-	import { parseMentions } from "$lib/mention-logic.js";
+	import SelectModeActionBar from "$lib/components/chat/SelectModeActionBar.svelte";
+	import { makeInlineToolHandlers } from "$lib/chat/page-handlers/inline-tool-handlers.js";
+	import {
+		makeLoadMessages,
+		findLeafByMessageId,
+		computeLatestLeaf,
+		type HistoricalToolCall,
+	} from "$lib/chat/page-handlers/load-messages.js";
+	import { useSelectMode } from "$lib/chat/page-handlers/useSelectMode.svelte.js";
+	import { makeSendMessage } from "$lib/chat/page-handlers/send-message.js";
+	import { attachStreamResume } from "$lib/chat/page-handlers/stream-resume.svelte.js";
 	import { shouldAutofocusComposer } from "$lib/chat-input-logic.js";
 	import {
 		backgroundFetch,
@@ -108,15 +104,9 @@
 	} from "$lib/utils/fetch-policy.js";
 	import type { ToolDefinition } from '../../../../../../src/extensions/types';
 
-	// Historical tool call tracking
-	interface HistoricalToolCall {
-		id: string;
-		messageId: string;
-		extensionId: string;
-		toolName: string;
-		status: "success" | "error" | "interrupted";
-		source?: "user" | "agent";
-	}
+	// Historical tool call tracking. `HistoricalToolCall` is imported from
+	// `$lib/chat/page-handlers/load-messages.js` (W5) — the hydration step
+	// owns the type since it's the writer.
 	let historicalToolCalls = $state<HistoricalToolCall[]>([]);
 	let historicalByMessage = $derived(
 		historicalToolCalls.reduce((map, tc) => {
@@ -174,18 +164,6 @@
 	}
 
 	let settingsOpen = $state(false);
-	// Select Mode — lets users tick specific turns to fork or run bulk ops on.
-	// `selectedIds` is a fresh Set each toggle so Svelte's reactivity picks up changes.
-	// `lastSelectionAnchor` is the most recently single-clicked id; shift+click on
-	// another row selects every id between the two (range expand). Cleared on
-	// conversation switch and on Cancel.
-	let selectMode = $state(false);
-	let selectedIds = $state<Set<string>>(new Set());
-	let lastSelectionAnchor = $state<string | null>(null);
-	let selectCloning = $state(false);
-	let selectError = $state<string | null>(null);
-	let bulkBusy = $state(false);
-	let bulkStatus = $state<string | null>(null);
 	// Inline "Edit text" state for seeded assistant turns (content-only PATCH).
 	let editTextMessageId = $state<string | null>(null);
 	let editTextDraft = $state("");
@@ -241,82 +219,25 @@
 		).length;
 	});
 
-	function generateId(): string {
-		return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36);
-	}
-
-	function handleToolInvoke(calls: { extensionName: string; toolName: string; input: Record<string, unknown> }[]) {
-		// Anchor to current leaf message (skip streaming placeholders — they're not real messages)
-		const leafId = activeLeafId?.startsWith('streaming-') ? undefined : activeLeafId;
-		for (const call of calls) {
-			invokeInlineTool({
-				conversationId: convId,
-				extensionName: call.extensionName,
-				toolName: call.toolName,
-				input: call.input,
-				messageId: leafId ?? undefined,
-			});
-		}
-	}
-
-	function handleInlineRetry(call: InlineToolCall) {
-		invokeInlineTool({
-			conversationId: call.conversationId,
-			extensionName: call.extensionName,
-			toolName: call.toolName,
-			input: call.input,
-			messageId: call.messageId,
-		});
-	}
-
-	async function handleInlineEditRetry(call: InlineToolCall) {
-		try {
-			const res = await userFetch(`/api/extensions/${encodeURIComponent(call.extensionName)}/tools`);
-			if (!res.ok) return;
-			const { tools }: { tools: ToolDefinition[] } = await res.json();
-			const tool = tools.find(t => t.name === call.toolName);
-			if (tool) {
-				editRetryCall = call;
-				editRetryTool = tool;
-			}
-		} catch {
-			// silent
-		}
-	}
-
-	function handleEditRetryConfirm(input: Record<string, unknown>) {
-		if (!editRetryCall) return;
-		const invocationId = generateId();
-		inlineToolStore.add({
-			id: invocationId,
-			extensionName: editRetryCall.extensionName,
-			toolName: editRetryCall.toolName,
-			input,
-			conversationId: editRetryCall.conversationId,
-			messageId: editRetryCall.messageId,
-		});
-		userFetch('/api/tool-invoke', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				extensionName: editRetryCall.extensionName,
-				toolName: editRetryCall.toolName,
-				input,
-				conversationId: editRetryCall.conversationId,
-				invocationId,
-			}),
-		}).catch(err => console.error('Edit retry failed:', err));
-		editRetryCall = null;
-		editRetryTool = null;
-	}
-
-	function handleInlineCancel(call: InlineToolCall) {
-		// Mark as error in store (cancellation)
-		inlineToolStore.updateFromEvent(call.id, 'tool:error', {
-			error: 'Cancelled by user',
-			duration: call.startedAt ? Date.now() - call.startedAt : 0,
-		});
-	}
+	// Inline tool handlers are extracted to $lib/chat/page-handlers/inline-tool-handlers.ts.
+	// `convId` and `activeLeafId` are passed as getters because they're reactive
+	// (a $derived and a $state slot respectively) and must be read fresh on
+	// every invocation. The edit-retry slot is mediated through get/set so the
+	// handler module never holds a stale snapshot of the page's $state.
+	const inlineToolHandlers = makeInlineToolHandlers({
+		convId: () => convId,
+		activeLeafId: () => activeLeafId,
+		getEditRetry: () => ({ call: editRetryCall, tool: editRetryTool }),
+		setEditRetry: (call, tool) => {
+			editRetryCall = call;
+			editRetryTool = tool;
+		},
+	});
+	const handleToolInvoke = inlineToolHandlers.handleToolInvoke;
+	const handleInlineRetry = inlineToolHandlers.handleInlineRetry;
+	const handleInlineEditRetry = inlineToolHandlers.handleInlineEditRetry;
+	const handleEditRetryConfirm = inlineToolHandlers.handleEditRetryConfirm;
+	const handleInlineCancel = inlineToolHandlers.handleInlineCancel;
 
 	// Local-only system messages (not persisted) for /login commands and OAuth results
 	let localSystemMessages = $state<Message[]>([]);
@@ -389,92 +310,50 @@
 		}
 	});
 
+	// ── Select Mode ──
+	// All select-mode state and handlers live in the rune-host
+	// `$lib/chat/page-handlers/useSelectMode.svelte.ts`. The page accesses
+	// the slots via `selectMode.state.*` / `selectMode.derived.*` and the
+	// handlers directly off `selectMode`. Conversation-switch reset is
+	// invoked from the panel-persistence `onConvSwitch` hook below.
+	const selectMode = useSelectMode({
+		convId: () => convId,
+		projectId: () => projectId,
+		allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+		visibleMessages: () => visibleMessages,
+		savedMemories: { get: () => savedMemories, set: (v) => { savedMemories = v; } },
+		isStreaming: () => isStreaming,
+		getHistoricalToolCalls: (id) => getHistoricalToolCalls(id),
+	});
+
 	// ── Side-panel state persistence ──
-	// Restore which side panels were open for THIS conversation, then
-	// persist any change. The `panelRestoredFor` flag prevents the persist
-	// effect from clobbering storage with default values before restore runs.
-	let panelRestoredFor = $state<string | null>(null);
+	// Three reactive effects (restore on convId change / resolve pending
+	// agent / persist on slot change) live in the rune-host module so the
+	// page only owns the `$state` slots and a single attach call. See
+	// `$lib/chat/page-handlers/panel-persistence.svelte.ts`.
 	let pendingSelectedAgentSubConvId = $state<string | null>(null);
-
-	$effect(() => {
-		const cid = convId;
-		if (!cid || panelRestoredFor === cid) return;
-		// Selection is per-conversation by definition — never carries across switches.
-		// Cleared in both branches below (no need to mirror it into panel persistence).
-		selectMode = false;
-		selectedIds = clearSelection();
-		lastSelectionAnchor = null;
-		bulkStatus = null;
-		selectError = null;
-		const saved = readChatPanels(cid);
-		if (saved) {
-			obsOpen = saved.obsOpen;
-			diffPanelOpen = saved.diffPanelOpen;
-			toolsOpen = saved.toolsOpen;
-			settingsOpen = saved.settingsOpen;
-			// taskLogs is restored once we have a matching task in scope
-			if (saved.taskLogsOpen && saved.taskLogsTaskId) {
-				const found = taskSnapshot?.tasks.find(t => t.id === saved.taskLogsTaskId) ?? null;
-				if (found) {
-					taskLogsTask = found;
-					taskLogsOpen = true;
-				}
-			}
-			pendingSelectedAgentSubConvId = saved.selectedAgentSubConvId;
-		} else {
-			// New conversation — clear any leaked state from prior conv
-			obsOpen = false;
-			diffPanelOpen = false;
-			toolsOpen = false;
-			settingsOpen = false;
-			taskLogsOpen = false;
-			taskLogsTask = null;
-			selectedAgent = null;
-			pendingSelectedAgentSubConvId = null;
-		}
-		// ?agent=<subConversationId> overrides localStorage — set by the
-		// Active Agents list when opening a sub-agent from its parent chat.
-		const urlAgent = page.url.searchParams.get("agent");
-		if (urlAgent) pendingSelectedAgentSubConvId = urlAgent;
-		panelRestoredFor = cid;
-	});
-
-	// Resolve pending selectedAgent once the streaming agent calls hydrate.
-	// The user may have had the AgentDetailPanel open on a sub-agent; we
-	// rebind it from store.streamingAgentCalls when the matching entry shows up,
-	// or synthesize one from the DB-loaded subConversations when arriving via
-	// a ?agent= deep link (no live streaming state yet).
-	$effect(() => {
-		if (!pendingSelectedAgentSubConvId) return;
-		const target = pendingSelectedAgentSubConvId;
-		for (const calls of Object.values(store.streamingAgentCalls)) {
-			const found = calls.find(c => c.subConversationId === target);
-			if (found) {
-				selectedAgent = found;
-				pendingSelectedAgentSubConvId = null;
-				return;
-			}
-		}
-		const sc = subConversations.find(s => s.id === target);
-		if (sc) {
-			selectedAgent = subConvoToAgentCallState(sc, assignmentBySubConvo.get(sc.id));
-			pendingSelectedAgentSubConvId = null;
-		}
-	});
-
-	// Persist whenever any tracked panel state changes (only after restore).
-	$effect(() => {
-		const cid = convId;
-		if (!cid || panelRestoredFor !== cid) return;
-		writeChatPanels(cid, {
-			obsOpen,
-			diffPanelOpen,
-			taskLogsOpen,
-			taskLogsTaskId: taskLogsTask?.id ?? null,
-			toolsOpen,
-			settingsOpen,
-			selectedAgentSubConvId: selectedAgent?.subConversationId ?? null,
-		});
+	attachPanelPersistence({
+		convId: () => convId,
+		searchParams: () => page.url.searchParams,
+		settingsOpen: { get: () => settingsOpen, set: (v) => { settingsOpen = v; } },
+		obsOpen: { get: () => obsOpen, set: (v) => { obsOpen = v; } },
+		diffPanelOpen: { get: () => diffPanelOpen, set: (v) => { diffPanelOpen = v; } },
+		toolsOpen: { get: () => toolsOpen, set: (v) => { toolsOpen = v; } },
+		taskLogsOpen: { get: () => taskLogsOpen, set: (v) => { taskLogsOpen = v; } },
+		taskLogsTask: { get: () => taskLogsTask, set: (v) => { taskLogsTask = v; } },
+		agentDetailId: {
+			get: () => pendingSelectedAgentSubConvId,
+			set: (v) => { pendingSelectedAgentSubConvId = v; },
+		},
+		selectedAgent: { get: () => selectedAgent, set: (v) => { selectedAgent = v; } },
+		taskSnapshot: () => taskSnapshot ?? null,
+		subConversations: () => subConversations,
+		assignmentForSubConvo: (id) => assignmentBySubConvo.get(id),
+		streamingAgentCalls: () => store.streamingAgentCalls,
+		onConvSwitch: () => {
+			// Selection is per-conversation by definition — never carries across switches.
+			selectMode.resetForConvSwitch();
+		},
 	});
 
 	// Branch-aware state
@@ -661,108 +540,31 @@
 		return visible;
 	});
 
-	async function checkActiveRun(gen: number) {
-		try {
-			// Throttled + deduped by fetch-policy: all three active-run call sites
-			// (this one, the staleness poll, and the zombie re-check) share the
-			// same semantic key, so concurrent callers collapse to a single
-			// in-flight GET instead of racing each other.
-			const res = await backgroundFetch(
-				`active-run:${convId}`,
-				`/api/conversations/${convId}/active-run`,
-				{},
-				{ minIntervalMs: 4000 },
-			);
-			if (!res || !res.ok || gen !== loadGeneration) return;
-			const data = await res.json();
-			if (!data.runId || gen !== loadGeneration) return;
-
-			// If the run is not actively running, just reload messages
-			if (data.status && data.status !== "running") {
-				if (gen === loadGeneration) await loadMessages();
-				return;
-			}
-
-			if (gen !== loadGeneration) return;
-			const started = startStreaming(data.runId, convId);
-			if (!started) {
-				await loadMessages();
-				return;
-			}
-			activeRunId = data.runId;
-			resumedRun = true;
-			// Capture server-side run metadata for the elapsed counter + stuck-run banner.
-			activeRunStartedAt = data.startedAt ? new Date(data.startedAt).getTime() : Date.now();
-			serverStalenessMs = typeof data.stalenessMs === 'number' ? data.stalenessMs : null;
-
-			// Restore pending permission gates from server state
-			if (data.pendingPermissions?.length) {
-				for (const perm of data.pendingPermissions) {
-					store.streamingToolCalls = {
-						...store.streamingToolCalls,
-						[data.runId]: [
-							...(store.streamingToolCalls[data.runId] ?? []),
-							{
-								id: perm.toolCallId,
-								toolName: perm.toolName,
-								status: 'running' as const,
-								input: perm.input,
-								startedAt: Date.now(),
-								permissionPending: true,
-								cardType: perm.cardType,
-								category: perm.category,
-							},
-						],
-					};
-				}
-			}
-
-			// Restore open ask_user_question gates from server state. The
-			// live tool:start SSE fired before this refresh and the
-			// tool_calls DB row isn't written until the user answers, so
-			// the in-memory ask-user-registry is the only source. Mirror
-			// pendingPermissions above: push a synthetic running entry per
-			// gate; the live tool:complete will update it in place by
-			// toolName match (see stores.svelte.ts case "tool:complete").
-			if (data.pendingAskUser?.length) {
-				for (const entry of data.pendingAskUser) {
-					store.streamingToolCalls = {
-						...store.streamingToolCalls,
-						[data.runId]: [
-							...(store.streamingToolCalls[data.runId] ?? []),
-							{
-								id: entry.toolCallId,
-								toolName: 'ask-user__ask_user_question',
-								status: 'running' as const,
-								input: { question: entry.question, options: entry.options },
-								startedAt: Date.now(),
-								cardType: 'ask-user-question',
-							},
-						],
-					};
-				}
-			}
-
-			// Add placeholder assistant message with partial response if available
-			const lastMsg = allMessages[allMessages.length - 1];
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${data.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				content: data.partialResponse ?? "",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: data.runId,
-				parentMessageId: lastMsg?.id ?? null,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-		} catch {
-			// Non-fatal — page works normally without resume
-		} finally {
-			checkingActiveRun = false;
-		}
-	}
+	// Stream-resume orchestration (checkActiveRun, WS-reconnect resume effect,
+	// zombie/staleness watchdog) lives in
+	// $lib/chat/page-handlers/stream-resume.svelte.ts (W9). The page provides
+	// the host below; the module owns the timer effects and the module-scoped
+	// reconnect cooldown timestamp. The `checkActiveRun` returned here is
+	// called from the convId-change effect AFTER loadMessages settles so
+	// the resumed stream attaches at the correct leaf.
+	const streamResumeApi = attachStreamResume({
+		convId: () => convId,
+		loadGeneration: () => loadGeneration,
+		initialLoadDone: () => initialLoadDone,
+		selectedModel: () => selectedModel,
+		activeRunId: { get: () => activeRunId, set: (v) => { activeRunId = v; } },
+		activeRunStartedAt: { get: () => activeRunStartedAt, set: (v) => { activeRunStartedAt = v; } },
+		serverStalenessMs: { get: () => serverStalenessMs, set: (v) => { serverStalenessMs = v; } },
+		resumedRun: { get: () => resumedRun, set: (v) => { resumedRun = v; } },
+		checkingActiveRun: { get: () => checkingActiveRun, set: (v) => { checkingActiveRun = v; } },
+		allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+		activeLeafId: { get: () => activeLeafId, set: (v) => { activeLeafId = v; } },
+		loadMessages: () => loadMessages(),
+		makeOptimisticMessage,
+		currentStreamingText: () => currentStreamingText,
+		isStreaming: () => isStreaming,
+	});
+	const checkActiveRun = streamResumeApi.checkActiveRun;
 
 	let pendingInitial = $state<string | null>(null);
 	let initialApplied = false;
@@ -882,7 +684,8 @@
 			cleanupOAuth();
 			window.removeEventListener("ez:turn_saved", handleTurnSaved);
 			window.removeEventListener("ez:agent_complete", handleAgentComplete);
-			if (zombieTimer) { clearTimeout(zombieTimer); zombieTimer = null; }
+			// Zombie/staleness timers are owned by attachStreamResume and torn
+			// down via its $effect cleanup — nothing to clear here.
 		};
 	});
 
@@ -1018,684 +821,104 @@
 		}
 	});
 
-	// Zombie run detection: if streaming but no tokens arrive, re-check with server.
-	// Resumed runs use a shorter timeout (5s) since they're more likely stale.
-	// Also refreshes serverStalenessMs on every poll so the StuckRunBanner reflects the
-	// most recent server-side heartbeat gap even when the user is passively watching.
-	let zombieTimer: ReturnType<typeof setTimeout> | null = null;
-	let stalenessPollTimer: ReturnType<typeof setInterval> | null = null;
-	$effect(() => {
-		if (zombieTimer) { clearTimeout(zombieTimer); zombieTimer = null; }
-		if (stalenessPollTimer) { clearInterval(stalenessPollTimer); stalenessPollTimer = null; }
-		if (!activeRunId || !isStreaming) {
-			serverStalenessMs = null;
-			activeRunStartedAt = null;
-			return;
-		}
-		const snapshot = currentStreamingText ?? "";
-		const timeout = resumedRun ? 5_000 : 30_000;
+	// Zombie/staleness watchdog and WS-reconnect resume effects are owned by
+	// `attachStreamResume` (W9, called above). Both effects fire automatically
+	// — the WS-reconnect throttle's `lastReconnectCheckAt` lives at module
+	// scope inside `stream-resume.svelte.ts` so it persists across re-mounts
+	// (per-page-instance scope would let the cooldown reset on every convId
+	// change, defeating the throttle).
 
-		// Lightweight staleness poll every 10s — only reads metadata, doesn't touch streaming
-		// state. Keeps the StuckRunBanner timer fresh without depending on zombie-check firing.
-		stalenessPollTimer = setInterval(async () => {
-			if (!activeRunId) return;
-			try {
-				const res = await backgroundFetch(
-					`active-run:${convId}`,
-					`/api/conversations/${convId}/active-run`,
-					{},
-					{ minIntervalMs: 4000 },
-				);
-				if (!res || !res.ok) return;
-				const data = await res.json();
-				if (!data.runId || data.runId !== activeRunId) return;
-				if (typeof data.stalenessMs === 'number') serverStalenessMs = data.stalenessMs;
-				if (data.startedAt && activeRunStartedAt == null) {
-					activeRunStartedAt = new Date(data.startedAt).getTime();
-				}
-			} catch { /* non-fatal */ }
-		}, 10_000);
-
-		zombieTimer = setTimeout(async () => {
-			if (activeRunId && currentStreamingText === snapshot) {
-				try {
-					const res = await backgroundFetch(
-						`active-run:${convId}`,
-						`/api/conversations/${convId}/active-run`,
-						{},
-						{ minIntervalMs: 4000 },
-					);
-					if (!res || !res.ok) return;
-					const data = await res.json();
-					if (!data.runId || data.runId !== activeRunId || (data.status && data.status !== "running")) {
-						stopStreaming(activeRunId);
-					} else if (typeof data.stalenessMs === 'number') {
-						serverStalenessMs = data.stalenessMs;
-					}
-				} catch { /* non-fatal */ }
-			}
-		}, timeout);
+	// Tree-walking helpers + the dedup'd loadMessages / hydrateToolCallsFromApi
+	// pair are extracted to $lib/chat/page-handlers/load-messages.ts (W5).
+	// findLeafByMessageId / computeLatestLeaf are pure and imported directly.
+	// loadMessages + hydrateToolCallsFromApi are stateful — both close over
+	// per-convId in-flight Maps inside the factory, so each call site here
+	// shares one set of dedup slots.
+	const loadMessagesApi = makeLoadMessages({
+		convId: () => convId,
+		allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+		activeLeafId: { get: () => activeLeafId, set: (v) => { activeLeafId = v; } },
+		editingMessageId: { get: () => editingMessageId, set: (v) => { editingMessageId = v; } },
+		error: { get: () => error, set: (v) => { error = v; } },
+		currentConversation: { get: () => currentConversation, set: (v) => { currentConversation = v; } },
+		selectedModel: { get: () => selectedModel, set: (v) => { selectedModel = v; } },
+		selectedMode: { get: () => selectedMode, set: (v) => { selectedMode = v; } },
+		availableModes: () => availableModes,
+		historicalToolCalls: { get: () => historicalToolCalls, set: (v) => { historicalToolCalls = v; } },
+		subConversations: { get: () => subConversations, set: (v) => { subConversations = v; } },
+		localStorage: () => (typeof localStorage !== "undefined" ? localStorage : null),
 	});
+	const loadMessages = loadMessagesApi.loadMessages;
+	const hydrateToolCallsFromApi = loadMessagesApi.hydrateToolCallsFromApi;
 
-	// On WS reconnect, check for active run and resume.
-	//
-	// Important: this must NOT fire on every reconnect. On a flaky network
-	// (Tailscale, captive-portal handoff, mobile), the EventSource at
-	// /api/runtime-events can drop and re-connect every second or two. Each
-	// reconnect that called `checkActiveRun` used to cascade into
-	// `loadMessages()` (which fires GET /:id, GET /:id/messages?all=true,
-	// GET /:id/messages?withToolCalls=true) — visibly spamming the server
-	// and freezing the UI. The server's answer to "is there an active run"
-	// does not meaningfully change between reconnects that happen seconds
-	// apart, so we throttle to at most one check per RECONNECT_CHECK_COOLDOWN_MS.
-	const RECONNECT_CHECK_COOLDOWN_MS = 10_000;
-	let wasConnected = $state(false);
-	let lastReconnectCheckAt = 0;
-	$effect(() => {
-		const connected = store.connected;
-		if (connected && !wasConnected && !activeRunId && initialLoadDone) {
-			const now = Date.now();
-			if (now - lastReconnectCheckAt >= RECONNECT_CHECK_COOLDOWN_MS) {
-				lastReconnectCheckAt = now;
-				checkingActiveRun = true;
-				checkActiveRun(loadGeneration);
-			}
-		}
-		wasConnected = connected;
+	// ── Send-message handler family ──
+	// All of `handleSend`, edit/regenerate, retry/fallback, save-memory,
+	// branch-nav, and the sub-conversation cluster live in
+	// `$lib/chat/page-handlers/send-message.ts` (W7). Slots flow through
+	// the host below; the page stays the source of truth for every piece
+	// of reactive state. `messages()` reads the active-path derived;
+	// `sentinel()` is read fresh inside `requestAnimationFrame` so the
+	// optimistic-scroll lands after the just-pushed user bubble renders.
+	const sendApi = makeSendMessage({
+		convId: () => convId,
+		projectId: () => projectId,
+		selectedModel: { get: () => selectedModel, set: (v) => { selectedModel = v; } },
+		permissionModeOverride: { get: () => permissionModeOverride, set: (v) => { permissionModeOverride = v; } },
+		thinkingLevel: { get: () => thinkingLevel, set: (v) => { thinkingLevel = v; } },
+		modelSupportsReasoning: () => modelSupportsReasoning,
+		allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+		activeLeafId: { get: () => activeLeafId, set: (v) => { activeLeafId = v; } },
+		messages: () => messages,
+		editingMessageId: { get: () => editingMessageId, set: (v) => { editingMessageId = v; } },
+		editContent: { get: () => editContent, set: (v) => { editContent = v; } },
+		activeRunId: { get: () => activeRunId, set: (v) => { activeRunId = v; } },
+		activeRunStartedAt: { get: () => activeRunStartedAt, set: (v) => { activeRunStartedAt = v; } },
+		serverStalenessMs: { get: () => serverStalenessMs, set: (v) => { serverStalenessMs = v; } },
+		resumedRun: { get: () => resumedRun, set: (v) => { resumedRun = v; } },
+		error: { get: () => error, set: (v) => { error = v; } },
+		chatOAuthPending: { get: () => chatOAuthPending, set: (v) => { chatOAuthPending = v; } },
+		userScrolledUp: { get: () => userScrolledUp, set: (v) => { userScrolledUp = v; } },
+		settingsOpen: { get: () => settingsOpen, set: (v) => { settingsOpen = v; } },
+		obsOpen: { get: () => obsOpen, set: (v) => { obsOpen = v; } },
+		editRetryCall: { get: () => editRetryCall, set: (v) => { editRetryCall = v; } },
+		editRetryTool: { get: () => editRetryTool, set: (v) => { editRetryTool = v; } },
+		savedMemories: { get: () => savedMemories, set: (v) => { savedMemories = v; } },
+		subConversations: { get: () => subConversations, set: (v) => { subConversations = v; } },
+		sentinel: () => sentinel ?? null,
+		convList: () => convList ?? null,
+		addSystemMessage,
+		loadMessages,
+		makeOptimisticMessage,
+		handleModelChange,
+		computeLatestLeaf,
+		findLeafByMessageId,
 	});
-
-	/** Find the latest leaf starting from a given message, walking forward through children */
-	function findLeafFrom(messageId: string): string {
-		const children = siblingMap.get(messageId);
-		if (!children || children.length === 0) return messageId;
-		// Pick the latest child (last in sorted list)
-		return findLeafFromAll(children[children.length - 1]!.id);
-	}
-
-	/** Same as findLeafFrom but uses allMessages directly for freshness */
-	function findLeafFromAll(messageId: string): string {
-		const msgMap = new Map(allMessages.map((m) => [m.id, m]));
-		let current = messageId;
-		while (true) {
-			const children = allMessages.filter((m) => m.parentMessageId === current);
-			if (children.length === 0) return current;
-			// Pick latest child
-			children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-			current = children[children.length - 1]!.id;
-		}
-	}
-
-	/** Compute the latest leaf from all messages */
-	function computeLatestLeaf(msgs: Message[]): string | null {
-		if (msgs.length === 0) return null;
-		const parentIds = new Set(msgs.map((m) => m.parentMessageId).filter(Boolean));
-		const leaves = msgs.filter((m) => !parentIds.has(m.id));
-		if (leaves.length === 0) return msgs[msgs.length - 1]?.id ?? null;
-		// Most recent leaf
-		return leaves.reduce((latest, m) =>
-			m.createdAt.localeCompare(latest.createdAt) > 0 ? m : latest,
-		).id;
-	}
-
-	// Belt-and-suspenders: if hydrateToolCallsFromApi is called while a
-	// previous call is still in flight for the same conversation, reuse the
-	// pending promise instead of firing a parallel request. Prevents any
-	// remaining call-site from accidentally spamming the endpoint.
-	let hydratePending: { convId: string; promise: Promise<void> } | null = null;
-
-	async function hydrateToolCallsFromApi(): Promise<void> {
-		if (hydratePending && hydratePending.convId === convId) {
-			return hydratePending.promise;
-		}
-		const run = (async () => {
-			try {
-				await doHydrate();
-			} finally {
-				hydratePending = null;
-			}
-		})();
-		hydratePending = { convId, promise: run };
-		return run;
-	}
-
-	async function doHydrate() {
-		try {
-			// Throttled + deduped by fetch-policy. Key is semantic (messages-tools:<cid>)
-			// so querystring reshuffles or new callers still collapse to one request.
-			const res = await backgroundFetch(
-				`messages-tools:${convId}`,
-				`/api/conversations/${convId}/messages?withToolCalls=true`,
-				{},
-				{ minIntervalMs: 5000 },
-			);
-			if (!res || !res.ok) return;
-			const data = await res.json();
-			const allTc: HistoricalToolCall[] = [];
-			const hydrateInput: Array<{ id: string; extensionId: string; toolName: string; input: Record<string, unknown> | null; outputSummary: string | null; fullOutput?: string | null; success: boolean; durationMs: number; status: "success" | "error" | "interrupted"; messageId?: string; cardType?: string | null }> = [];
-			for (const msg of data.messages ?? []) {
-				for (const tc of msg.toolCalls ?? []) {
-					allTc.push({ id: tc.id, messageId: msg.id, extensionId: tc.extensionId, toolName: tc.toolName, status: tc.status });
-					hydrateInput.push({ ...tc, messageId: msg.id });
-				}
-			}
-			// Also hydrate orphaned tool calls (from card action buttons / inline invocations)
-			for (const tc of data.orphanedToolCalls ?? []) {
-				hydrateInput.push({ ...tc, messageId: tc.messageId ?? undefined });
-			}
-
-			historicalToolCalls = allTc;
-			inlineToolStore.hydrateToolCalls(convId, hydrateInput);
-
-			if (data.subConversations?.length) {
-				subConversations = data.subConversations.map((sc: any) => ({
-					id: sc.id,
-					agentName: sc.agentName ?? "Agent",
-					agentConfigId: sc.agentConfigId ?? "",
-					parentMessageId: sc.parentMessageId ?? "",
-					messageCount: sc.messageCount ?? 0,
-					lastMessagePreview: sc.lastMessagePreview ?? null,
-				}));
-			}
-
-			// Hydrate sub-conversation tool calls so the Diff Summary panel
-			// can show edits made by team members / invoked agents alongside
-			// the parent's edits. Keyed by sub id — each call to
-			// hydrateToolCalls(subId, …) replaces only that sub's entries.
-			const subToolCalls = (data.subConversationToolCalls ?? {}) as Record<string, Array<{ id: string; extensionId: string; toolName: string; input: Record<string, unknown> | null; outputSummary: string | null; fullOutput?: string | null; success: boolean; durationMs: number; status: "success" | "error" | "interrupted"; messageId?: string | null; cardType?: string | null }>>;
-			for (const [subId, calls] of Object.entries(subToolCalls)) {
-				const subHydrateInput = calls.map((tc) => ({ ...tc, messageId: tc.messageId ?? undefined }));
-				inlineToolStore.hydrateToolCalls(subId, subHydrateInput);
-			}
-		} catch { /* non-critical */ }
-	}
-
-	// Function-level dedup: if two callers (initial load + reconnect re-sync)
-	// hit loadMessages() at the same moment, the second call gets the first
-	// call's in-flight promise instead of launching a parallel three-fetch
-	// cascade. Belt to the URL-level throttle's suspenders.
-	let loadMessagesPending: { convId: string; promise: Promise<void> } | null = null;
-
-	async function loadMessages() {
-		if (!convId) return;
-		if (loadMessagesPending && loadMessagesPending.convId === convId) {
-			return loadMessagesPending.promise;
-		}
-		const capturedConvId = convId;
-		const run = (async () => {
-			try {
-				await doLoadMessages();
-			} finally {
-				if (loadMessagesPending?.convId === capturedConvId) loadMessagesPending = null;
-			}
-		})();
-		loadMessagesPending = { convId: capturedConvId, promise: run };
-		return run;
-	}
-
-	async function doLoadMessages() {
-		if (!convId) return;
-
-		// Synchronously preload the user's last-used model from localStorage
-		// BEFORE any await, so ModelSelector's parallel /api/models fetch doesn't
-		// race in and fire onautoselect (which would persist models[0] to the DB
-		// and clobber the conversation's actual stored model on next refresh).
-		if (!selectedModel) {
-			const preload = restoreLastModel(typeof localStorage !== "undefined" ? localStorage : null);
-			if (preload) selectedModel = preload;
-		}
-
-		try {
-			// Route both reads through the fetch-policy. A flaky SSE that
-			// triggers N reconnect re-syncs in quick succession collapses to
-			// a single actual pair of GETs, eliminating the visible spam of
-			//   GET /api/conversations/:id
-			//   GET /api/conversations/:id/messages?all=true
-			// that used to appear once per reconnect cycle.
-			const msgsRes = await backgroundFetch(
-				`messages-all:${convId}`,
-				`/api/conversations/${convId}/messages?all=true`,
-				{},
-				{ minIntervalMs: 5000 },
-			);
-			if (msgsRes && msgsRes.ok) {
-				allMessages = await msgsRes.json();
-			} else if (msgsRes === null) {
-				// Throttled; skip this refresh. Existing allMessages stays current
-				// because the WS push path has kept it live.
-			}
-			activeLeafId = computeLatestLeaf(allMessages);
-			const convRes = await backgroundFetch(
-				`conv:${convId}`,
-				`/api/conversations/${convId}`,
-				{},
-				{ minIntervalMs: 5000 },
-			);
-			if (convRes && convRes.ok) {
-				currentConversation = await convRes.json();
-			}
-
-			// Hydrate historical tool calls + sub-conversations from API
-			await hydrateToolCallsFromApi();
-
-			// The conversation's stored model (if any) wins over localStorage —
-			// it represents a deliberate per-conversation override.
-			if (currentConversation?.provider && currentConversation?.model) {
-				selectedModel = { provider: currentConversation.provider, model: currentConversation.model };
-			}
-			// Restore mode from conversation
-			const conv = currentConversation;
-			if (conv?.modeId) {
-				selectedMode = availableModes.find(m => m.id === conv.modeId) ?? null;
-			} else {
-				selectedMode = null;
-			}
-			editingMessageId = null;
-			error = null;
-			// Initial scroll-to-bottom is handled by the dedicated `initialScrollDone`
-			// effect — it waits for the sentinel to exist in the DOM, so it's
-			// reliable regardless of race conditions between fetchAllMessages
-			// resolving and Svelte flushing the DOM. Crucially: it does NOT
-			// re-fire on every loadMessages() call, so a reconnect-driven
-			// re-sync cannot scrub the user's scroll position.
-		} catch (err) {
-			error = "Failed to load messages";
-			console.error(err);
-		}
-	}
-
-	async function handleSubConvoSend(text: string) {
-		const active = subConversationStore.activeSubConversation;
-		if (!active) return;
-		subConversationStore.addMessage({
-			id: `user-${Date.now()}`,
-			role: "user",
-			content: text,
-			createdAt: new Date(),
-		});
-		// Send to sub-conversation's agent
-		try {
-			subConversationStore.setStreaming(true);
-			const result = await sendMessage(active.id, {
-				content: text,
-				parentMessageId: undefined,
-			});
-			startStreaming(result.runId, active.id);
-		} catch (err) {
-			console.error("Sub-convo send failed:", err);
-			subConversationStore.setStreaming(false);
-		}
-	}
-
-	async function handleSubConvoReturn() {
-		const msgs = subConversationStore.endSubConversation();
-		// Insert last agent message as summary in parent conversation
-		const lastAgentMsg = [...msgs].reverse().find(m => m.role === "assistant");
-		if (lastAgentMsg && convId) {
-			try {
-				await sendMessage(convId, {
-					content: `[Sub-conversation summary]: ${lastAgentMsg.content}`,
-					parentMessageId: activeLeafId ?? undefined,
-				});
-				await loadMessages();
-			} catch (err) {
-				console.error("Failed to insert sub-convo summary:", err);
-			}
-		}
-	}
-
-	async function startSubConvo(agentMention: { name: string }, parentMessageId: string) {
-		if (subConversationStore.isInSubConversation) return; // One at a time
-
-		try {
-			const subConv = await createSubConversation(convId, {
-				parentMessageId,
-				agentConfigId: "", // Will be resolved server-side by agent name
-				title: `Sub-conversation with ${agentMention.name}`,
-				projectId,
-			});
-			const record: SubConvoRecord = {
-				id: subConv.id,
-				agentName: agentMention.name,
-				agentConfigId: subConv.agentConfigId ?? "",
-				parentMessageId,
-			};
-			subConversations = [...subConversations, record];
-			subConversationStore.startSubConversation({
-				id: subConv.id,
-				agentConfigId: record.agentConfigId,
-				agentName: agentMention.name,
-				parentConversationId: convId,
-				parentMessageId,
-			});
-		} catch (err) {
-			console.error("Failed to start sub-conversation:", err);
-		}
-	}
-
-	async function handleSend(content: string, attachments?: File[]) {
-		if (!convId) return;
-
-		// Close all page-level panels and forms
-		settingsOpen = false;
-		obsOpen = false;
-		editRetryCall = null;
-		editRetryTool = null;
-
-		// Handle OAuth code paste (if pending)
-		if (chatOAuthPending) {
-			const result = await completeOAuthWithCode(chatOAuthPending, content);
-			chatOAuthPending = null;
-			if (result.success) {
-				addSystemMessage(`${PROVIDER_DISPLAY[result.provider] ?? result.provider} connected successfully!`);
-			} else {
-				addSystemMessage(`OAuth failed: ${result.error}`);
-			}
-			return;
-		}
-
-		// Handle /login commands before sending to API
-		const loginCmd = isLoginCommand(content);
-		if (loginCmd !== null) {
-			const { provider } = loginCmd;
-			if (!provider) {
-				addSystemMessage("Usage: /login openai or /login google");
-				return;
-			}
-			if (provider === "anthropic") {
-				addSystemMessage("OAuth is not available for Anthropic. Please add your API key in Settings or use /config.");
-				return;
-			}
-			if (provider === "openai" || provider === "google") {
-				try {
-					const pending = await startOAuthFlow(provider);
-					chatOAuthPending = pending;
-					window.open(pending.authUrl, "_blank");
-					addSystemMessage(`Opening ${PROVIDER_DISPLAY[provider] ?? provider} login... Authentication should complete automatically. If it doesn't, paste the callback URL here.`);
-				} catch (err) {
-					addSystemMessage(`Failed to start OAuth: ${err instanceof Error ? err.message : "unknown error"}`);
-				}
-				return;
-			}
-			// Unknown provider
-			addSystemMessage("Usage: /login openai or /login google");
-			return;
-		}
-
-		// Handle /model commands
-		const modelCmd = isModelCommand(content);
-		if (modelCmd !== null) {
-			if (modelCmd.type === "list") {
-				try {
-					const res = await fetch("/api/models");
-					if (!res.ok) throw new Error("Failed to fetch models");
-					const data: Array<{ provider: string; model: string; displayName?: string; available: boolean }> = await res.json();
-					const available = data.filter((m) => m.available);
-					if (available.length === 0) {
-						addSystemMessage("No models available. Add API keys in Settings.");
-					} else {
-						const lines = available.map((m) => `  ${m.provider}/${m.model}${m.displayName ? ` (${m.displayName})` : ""}`);
-						const current = selectedModel ? `Current: ${selectedModel.provider}/${selectedModel.model}` : "No model selected";
-						addSystemMessage(`Available models:\n${lines.join("\n")}\n\n${current}\n\nUsage: /model provider/model-name`);
-					}
-				} catch {
-					addSystemMessage("Failed to fetch available models.");
-				}
-				return;
-			}
-
-			// type === "switch"
-			try {
-				const res = await fetch("/api/models");
-				if (!res.ok) throw new Error("Failed to fetch models");
-				const data: Array<{ provider: string; model: string; available: boolean }> = await res.json();
-				const available = data.filter((m) => m.available);
-
-				let found: { provider: string; model: string } | null = null;
-
-				if (modelCmd.provider) {
-					found = available.find((m) => m.provider === modelCmd.provider && m.model === modelCmd.model) ?? null;
-				} else {
-					const matches = available.filter((m) => m.model === modelCmd.model);
-					if (matches.length === 1) {
-						found = matches[0]!;
-					} else if (matches.length > 1) {
-						const opts = matches.map((m) => `  ${m.provider}/${m.model}`).join("\n");
-						addSystemMessage(`Multiple models match "${modelCmd.model}":\n${opts}\n\nSpecify the provider: /model provider/${modelCmd.model}`);
-						return;
-					}
-				}
-
-				if (found) {
-					handleModelChange(found.provider, found.model);
-					addSystemMessage(`Switched to ${found.provider}/${found.model}`);
-				} else {
-					addSystemMessage(`Model not found: ${modelCmd.provider ? modelCmd.provider + "/" : ""}${modelCmd.model}\n\nType /model to see available models.`);
-				}
-			} catch {
-				addSystemMessage("Failed to fetch models for validation.");
-			}
-			return;
-		}
-
-		// Resolve activeLeafId — if it's a streaming placeholder, use its real parent instead
-		let resolvedParentId = activeLeafId;
-		if (resolvedParentId?.startsWith("streaming-")) {
-			const placeholder = allMessages.find((m) => m.id === resolvedParentId);
-			resolvedParentId = placeholder?.parentMessageId ?? null;
-		}
-
-		// Optimistic user message linked to current leaf
-		const optimisticUserMsg = makeOptimisticMessage({
-			id: `temp-${Date.now()}`,
-			conversationId: convId,
-			role: "user",
-			content,
-			parentMessageId: resolvedParentId,
-		});
-		allMessages = [...allMessages, optimisticUserMsg];
-		activeLeafId = optimisticUserMsg.id;
-		error = null;
-		userScrolledUp = false;
-		requestAnimationFrame(() => {
-			sentinel?.scrollIntoView({ behavior: "instant" as ScrollBehavior });
-		});
-
-		try {
-			const result = await sendMessage(convId, {
-				content,
-				provider: selectedModel?.provider,
-				model: selectedModel?.model,
-				parentMessageId: optimisticUserMsg.parentMessageId ?? undefined,
-				permissionMode: permissionModeOverride,
-				thinkingLevel: modelSupportsReasoning ? thinkingLevel : undefined,
-				attachments,
-			});
-
-			// Replace optimistic user message with real one.
-			// Merge attachments from the top-level response field so the card
-			// renders immediately even if the server skipped embedding them on
-			// userMessage.
-			const realUserMsg: Message = result.attachments && result.attachments.length > 0
-				? { ...result.userMessage, attachments: result.attachments }
-				: result.userMessage;
-			allMessages = allMessages.map((m) =>
-				m.id === optimisticUserMsg.id ? realUserMsg : m,
-			);
-
-			// Start streaming (returns false if run already errored)
-			const started = startStreaming(result.runId, convId);
-			if (!started) {
-				// Run completed/errored before POST returned — reconcile
-				activeRunId = null;
-				activeRunStartedAt = null;
-				serverStalenessMs = null;
-				await loadMessages();
-				return;
-			}
-			activeRunId = result.runId;
-			activeRunStartedAt = Date.now();
-			serverStalenessMs = 0;
-			resumedRun = false;
-
-			// Add placeholder assistant message
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${result.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: result.runId,
-				parentMessageId: result.userMessage.id,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-
-			// Auto-set title from first user message
-			if (allMessages.filter((m) => m.role === "user").length === 1) {
-				const title = content.substring(0, 50) + (content.length > 50 ? "..." : "");
-				updateConversation(convId, { title }).then(() => convList?.refresh()).catch(() => {});
-			}
-
-			// Detect @agent mentions and start sub-conversation
-			const mentions = parseMentions(content);
-			const agentMention = mentions.find(m => m.kind === "agent");
-			if (agentMention) {
-				startSubConvo({ name: agentMention.name }, result.userMessage.id);
-			}
-		} catch (err) {
-			error = "Failed to send message";
-			console.error(err);
-			allMessages = allMessages.filter((m) => m.id !== optimisticUserMsg.id);
-			// Restore previous leaf
-			activeLeafId = computeLatestLeaf(allMessages);
-		}
-	}
+	const handleSend = sendApi.handleSend;
+	const handleRegenerate = (msg: Message) => sendApi.handleRegenerate(msg);
+	const handleBranchNavigate = sendApi.handleBranchNavigate;
+	const handleSaveMemory = (msg: Message) => sendApi.handleSaveMemory(msg);
+	const handleRetry = (msg: Message) => sendApi.handleRetry(msg);
+	const handleFallback = (msg: Message, provider: string, model: string) =>
+		sendApi.handleFallback(msg, provider, model);
+	const handleSubConvoSend = sendApi.handleSubConvoSend;
+	const handleSubConvoReturn = sendApi.handleSubConvoReturn;
 
 	function handleEdit(msg: Message) {
 		editingMessageId = msg.id;
 		editContent = msg.content;
 	}
 
-	async function submitEdit(msg: Message) {
-		if (!convId || !editContent.trim()) return;
-		editingMessageId = null;
-
-		try {
-			const result = await sendMessage(convId, {
-				content: editContent,
-				provider: selectedModel?.provider,
-				model: selectedModel?.model,
-				editOf: msg.id,
-				thinkingLevel: modelSupportsReasoning ? thinkingLevel : undefined,
-			});
-
-			// Add the new user message to allMessages
-			allMessages = [...allMessages, result.userMessage];
-
-			// Start streaming for the AI response
-			activeRunId = result.runId;
-			activeRunStartedAt = Date.now();
-			serverStalenessMs = 0;
-			startStreaming(result.runId, convId);
-
-			// Add placeholder assistant message
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${result.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: result.runId,
-				parentMessageId: result.userMessage.id,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-		} catch (err) {
-			error = "Failed to edit message";
-			console.error(err);
-		}
-	}
+	const submitEdit = (msg: Message) => sendApi.handleEditConfirm(msg);
 
 	function cancelEdit() {
 		editingMessageId = null;
 		editContent = "";
 	}
 
-	async function handleRegenerate(msg: Message) {
-		if (!convId) return;
-
-		// Find the user message that preceded this assistant message in the current path
-		const msgIndex = messages.findIndex((m) => m.id === msg.id);
-		if (msgIndex <= 0) return;
-		const precedingUserMsg = messages[msgIndex - 1];
-		if (!precedingUserMsg || precedingUserMsg.role !== "user") return;
-
-		try {
-			// Re-send the user message content with editOf pointing to the assistant message
-			const result = await sendMessage(convId, {
-				content: precedingUserMsg.content,
-				provider: selectedModel?.provider,
-				model: selectedModel?.model,
-				editOf: msg.id,
-				thinkingLevel: modelSupportsReasoning ? thinkingLevel : undefined,
-			});
-
-			// Add the new user message (sibling of the original)
-			allMessages = [...allMessages, result.userMessage];
-
-			// Start streaming
-			activeRunId = result.runId;
-			activeRunStartedAt = Date.now();
-			serverStalenessMs = 0;
-			startStreaming(result.runId, convId);
-
-			// Add placeholder assistant
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${result.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: result.runId,
-				parentMessageId: result.userMessage.id,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-		} catch (err) {
-			error = "Failed to regenerate response";
-			console.error(err);
-		}
-	}
-
-	function handleBranchNavigate(messageId: string) {
-		// Navigate to the branch containing this message by finding its leaf
-		activeLeafId = findLeafFromAll(messageId);
-	}
-
 	function handleBranch(msg: Message) {
 		// Branch from this message: set it as the active leaf and focus input
 		activeLeafId = msg.id;
 		requestAnimationFrame(() => chatInput?.focus());
-	}
-
-	async function handleSaveMemory(msg: Message) {
-		try {
-			const res = await userFetch("/api/memories", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					content: msg.content,
-					category: "preferences",
-					confidence: "medium",
-				}),
-			});
-			if (res.status === 201) {
-				const memory = await res.json();
-				savedMemories = new Map(savedMemories).set(msg.id, memory.id);
-			}
-		} catch {
-			// silent
-		}
 	}
 
 	async function handleRemoveMemory(msg: Message) {
@@ -1819,236 +1042,12 @@
 		}
 	}
 
-	async function handleRetry(msg: Message) {
-		// Find by ID first, fall back to content match (handles stale closure after reconcile)
-		let idx = messages.findIndex((m) => m.id === msg.id);
-		if (idx < 0) {
-			idx = messages.findIndex((m) => m.role === msg.role && m.content === msg.content);
-		}
-		if (idx < 0) return;
-
-		// Walk backwards to find the nearest user message
-		let userMsg: Message | undefined;
-		for (let i = idx - 1; i >= 0; i--) {
-			if (messages[i]!.role === "user") {
-				userMsg = messages[i];
-				break;
-			}
-		}
-		if (!userMsg) return;
-
-		allMessages = allMessages.filter((m) => m.id !== messages[idx]!.id);
-		activeLeafId = computeLatestLeaf(allMessages);
-		await handleSend(userMsg.content);
-	}
-
-	async function handleFallback(msg: Message, provider: string, model: string) {
-		const idx = messages.findIndex((m) => m.id === msg.id);
-		if (idx <= 0) return;
-		const userMsg = messages[idx - 1];
-		if (!userMsg || userMsg.role !== "user") return;
-
-		// Remove the error message, then re-send with suggested provider/model
-		allMessages = allMessages.filter((m) => m.id !== msg.id);
-		activeLeafId = computeLatestLeaf(allMessages);
-
-		// Temporarily override selected model for this send
-		const prevModel = selectedModel;
-		selectedModel = { provider, model };
-		await handleSend(userMsg.content);
-		selectedModel = prevModel;
-	}
-
 	async function handleCreate() {
 		try {
 			const conv = await createConversation({ projectId });
 			goto(`/project/${projectId}/chat/${conv.id}`);
 		} catch (err) {
 			console.error("Failed to create conversation:", err);
-		}
-	}
-
-	// ── Select Mode handlers ─────────────────────────────────────────────
-
-	function toggleSelectMode() {
-		selectMode = !selectMode;
-		if (!selectMode) {
-			selectedIds = clearSelection();
-			lastSelectionAnchor = null;
-			selectError = null;
-			bulkStatus = null;
-		}
-	}
-
-	// Escape key exits select mode (mirrors the Cancel button). The listener
-	// only attaches WHILE select mode is active so we never swallow Escape in
-	// other contexts (composer, modals, etc.). Disabled while a bulk op is in
-	// flight — matches the Cancel button's `disabled` state, so users can't
-	// dismiss the action bar mid-fan-out.
-	$effect(() => {
-		if (!selectMode) return;
-		function onKeydown(e: KeyboardEvent) {
-			if (e.key !== "Escape") return;
-			if (selectCloning || bulkBusy) return;
-			e.preventDefault();
-			toggleSelectMode();
-		}
-		window.addEventListener("keydown", onKeydown);
-		return () => window.removeEventListener("keydown", onKeydown);
-	});
-
-	function toggleSelectedMessage(id: string, event?: MouseEvent | KeyboardEvent) {
-		const isShift = event && "shiftKey" in event && event.shiftKey;
-		// Auto-enter select mode on shift+click outside select mode — the row
-		// becomes the anchor and the action bar opens. Lets the user start a
-		// multi-select without first clicking the toolbar's Select button.
-		if (isShift && !selectMode) {
-			selectMode = true;
-			selectedIds = new Set([id]);
-			lastSelectionAnchor = id;
-			if (typeof window !== "undefined") {
-				window.getSelection()?.removeAllRanges();
-			}
-			return;
-		}
-		// Shift+click in select mode → toggle the range from anchor to this row.
-		// If the target is already selected, the range is REMOVED (lets users
-		// back out of an over-shot range with another shift+click). Otherwise
-		// the range is added. First-ever click (no anchor yet) falls through
-		// to a plain toggle below.
-		if (isShift && lastSelectionAnchor) {
-			const orderedIds = visibleMessages.map((m) => m.id);
-			selectedIds = selectRange(selectedIds, orderedIds, lastSelectionAnchor, id, {
-				skipPredicate: (mid) => mid.startsWith("streaming-"),
-				toggle: true,
-			});
-			if (typeof window !== "undefined") {
-				window.getSelection()?.removeAllRanges();
-			}
-			return;
-		}
-		selectedIds = toggleSelection(selectedIds, id);
-		lastSelectionAnchor = id;
-	}
-
-	async function handleForkSelection() {
-		if (selectedIds.size === 0 || selectCloning) return;
-		const orderedIds = orderedSelection(selectedIds, allMessages.map((m) => m.id));
-		selectCloning = true;
-		selectError = null;
-		try {
-			const newConv = await cloneTurns(convId, { messageIds: orderedIds });
-			selectedIds = clearSelection();
-			lastSelectionAnchor = null;
-			selectMode = false;
-			goto(`/project/${projectId}/chat/${newConv.id}`);
-		} catch (err) {
-			selectError = err instanceof Error ? err.message : "Failed to fork selected turns";
-			console.error("Failed to fork turns:", err);
-		} finally {
-			selectCloning = false;
-		}
-	}
-
-	// ── Bulk actions on the current selection ───────────────────────────
-	// Are all selected rows already excluded? Determines whether the bulk
-	// button reads "Include in context" (re-include) vs "Exclude from context".
-	let allSelectedExcluded = $derived.by(() => {
-		if (selectedIds.size === 0) return false;
-		for (const id of selectedIds) {
-			const msg = allMessages.find((m) => m.id === id);
-			if (!msg || !msg.excluded) return false;
-		}
-		return true;
-	});
-
-	// Concatenated copy content for the bulk toolbar — fed into MessageToolbar's
-	// `content` prop so the toolbar's own copy handler does the clipboard work.
-	// Each turn includes its tool calls (if any), separated by `---`.
-	let bulkCopyContent = $derived.by(() => {
-		const orderedIds = orderedSelection(selectedIds, allMessages.map((m) => m.id));
-		return orderedIds
-			.map((id) => {
-				const msg = allMessages.find((m) => m.id === id);
-				if (!msg) return "";
-				const tcs = msg.role === "assistant" ? getHistoricalToolCalls(msg.id) : undefined;
-				return formatMessageForCopy(msg.content, tcs);
-			})
-			.filter(Boolean)
-			.join("\n\n---\n\n");
-	});
-
-	function handleBulkCopied() {
-		// MessageToolbar's internal copy already wrote to the clipboard; this
-		// callback just surfaces the status confirmation in the action bar.
-		const n = selectedIds.size;
-		bulkStatus = `Copied ${n} ${n === 1 ? "turn" : "turns"}`;
-	}
-
-	async function handleBulkSaveMemory() {
-		if (selectedIds.size === 0 || bulkBusy) return;
-		const ids = orderedSelection(selectedIds, allMessages.map((m) => m.id));
-		const targets = ids
-			.map((id) => allMessages.find((m) => m.id === id))
-			.filter((m): m is Message => !!m);
-		if (targets.length === 0) return;
-		// Combine every selected turn into a single memory entry — just the
-		// raw message text, in render order, joined by blank lines. No role
-		// labels or `---` separators (memory should read as continuous text).
-		const combined = targets
-			.map((m) => m.content.trim())
-			.filter(Boolean)
-			.join("\n\n");
-		bulkBusy = true;
-		bulkStatus = null;
-		selectError = null;
-		try {
-			const res = await userFetch("/api/memories", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					content: combined,
-					category: "preferences",
-					confidence: "medium",
-				}),
-			});
-			if (res.status !== 201) throw new Error(`POST /api/memories returned ${res.status}`);
-			const memory = await res.json();
-			// Mark every selected message as saved-as-memory pointing at the
-			// same memory id, so the per-message indicator reflects bulk save.
-			const next = new Map(savedMemories);
-			for (const m of targets) next.set(m.id, memory.id);
-			savedMemories = next;
-			bulkStatus = `Saved ${targets.length} ${targets.length === 1 ? "turn" : "turns"} to memory`;
-		} catch (err) {
-			selectError = err instanceof Error ? err.message : "Failed to save to memory";
-		} finally {
-			bulkBusy = false;
-		}
-	}
-
-async function handleBulkExclude() {
-		if (selectedIds.size === 0 || bulkBusy) return;
-		const target = !allSelectedExcluded; // if all already excluded → re-include; else exclude
-		const ids = Array.from(selectedIds);
-		bulkBusy = true;
-		selectError = null;
-		bulkStatus = null;
-		try {
-			await Promise.all(ids.map((id) => setMessageExcluded(convId, id, target)));
-			// Reconcile local state — mirrors the optimistic flip in `handleToggleExclude`.
-			const idSet = new Set(ids);
-			allMessages = allMessages.map((m) => (idSet.has(m.id) ? { ...m, excluded: target } : m));
-			// Keep select mode open so the user sees the status confirmation. They
-			// can run another bulk op, or click Cancel to return to the composer.
-			selectedIds = clearSelection();
-			lastSelectionAnchor = null;
-			bulkStatus = `${target ? "Excluded" : "Included"} ${ids.length} ${ids.length === 1 ? "turn" : "turns"}`;
-		} catch (err) {
-			selectError = err instanceof Error ? err.message : "Failed to update selection";
-			console.error("Bulk exclude failed:", err);
-		} finally {
-			bulkBusy = false;
 		}
 	}
 
@@ -2205,13 +1204,13 @@ async function handleBulkExclude() {
 			{activeLeafId}
 			{showObsButton}
 			{obsOpen}
-			{selectMode}
+			selectMode={selectMode.state.selectMode}
 			{isStreaming}
 			onmobilemenu={() => (mobileConvListOpen = true)}
 			ontoolstoggle={(next) => (toolsOpen = next)}
 			ondifftoggle={() => (diffPanelOpen = !diffPanelOpen)}
 			onobstoggle={() => (obsOpen = !obsOpen)}
-			onselecttoggle={toggleSelectMode}
+			onselecttoggle={selectMode.toggleSelectMode}
 			onsettingstoggle={() => (settingsOpen = true)}
 			onpermissionmodechange={(mode) => { permissionModeOverride = mode; }}
 			oncallclick={scrollToToolCall}
@@ -2349,9 +1348,9 @@ async function handleBulkExclude() {
 							onagentclick={(agent) => { selectedAgent = agent; }}
 							onsendmessage={handleSend}
 							onopenobservability={() => { obsOpen = true; }}
-							selectable={selectMode}
-							selected={selectedIds.has(msg.id)}
-							onselectionchange={toggleSelectedMessage}
+							selectable={selectMode.state.selectMode}
+							selected={selectMode.state.selectedIds.has(msg.id)}
+							onselectionchange={selectMode.toggleSelectedMessage}
 							onedittext={msg.role === 'assistant' ? handleEditText : undefined}
 							onexclude={handleToggleExclude}
 						/>
@@ -2498,71 +1497,22 @@ async function handleBulkExclude() {
 			/>
 		{/if}
 
-		{#if selectMode}
-			<!-- Select-mode action bar replaces the composer so bulk actions stay
-			     visible and un-confused with a normal send. Shift+click a row to
-			     extend the selection to the previously-clicked turn. -->
-			<div class="border-t border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3" data-testid="select-action-bar">
-				<div class="mx-auto flex max-w-3xl flex-col gap-2">
-					<div class="flex items-center justify-between gap-3">
-						<div class="text-sm text-[var(--color-text-primary)]">
-							<span data-testid="selected-count" class="font-medium">{selectedIds.size}</span>
-							{selectedIds.size === 1 ? 'turn' : 'turns'} selected
-							<span class="ml-2 text-xs text-[var(--color-text-muted)]">— shift+click to select a range</span>
-						</div>
-						<div class="flex flex-wrap items-center gap-2">
-							<button
-								onclick={toggleSelectMode}
-								disabled={selectCloning || bulkBusy}
-								class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-primary)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] disabled:opacity-50"
-							>
-								Cancel
-							</button>
-							<!-- Reuses the per-message MessageToolbar in `inline` variant so
-							     the bulk actions share the exact icons/tooltips users see on
-							     hover. The toolbar's internal copy uses our concatenated
-							     `bulkCopyContent`; exclude / include flow through our bulk
-							     handler which fans out one PATCH per selected row. -->
-							{#if selectedIds.size > 0}
-								<MessageToolbar
-									variant="inline"
-									role="user"
-									content={bulkCopyContent}
-									oncopy={handleBulkCopied}
-									onexclude={isStreaming || bulkBusy ? undefined : handleBulkExclude}
-									excluded={allSelectedExcluded}
-									onsavememory={bulkBusy ? undefined : handleBulkSaveMemory}
-									testid="bulk-toolbar"
-								/>
-							{/if}
-							<button
-								onclick={handleForkSelection}
-								disabled={selectedIds.size === 0 || selectCloning || bulkBusy}
-								class="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-								data-testid="new-chat-from-selection"
-								aria-label="New chat from selection"
-							>
-								<!-- Same branch glyph used by MessageToolbar's "Branch from here"
-								     button — signals this fork action ties back to the selected
-								     turns instead of just creating an empty chat. -->
-								<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-									<line x1="6" y1="3" x2="6" y2="15" />
-									<circle cx="18" cy="6" r="3" />
-									<circle cx="6" cy="18" r="3" />
-									<path d="M18 9a9 9 0 0 1-9 9" />
-								</svg>
-								{selectCloning ? "Creating…" : "New Chat"}
-							</button>
-						</div>
-					</div>
-					{#if selectError}
-						<div class="text-xs text-red-400" role="alert">{selectError}</div>
-					{/if}
-					{#if bulkStatus && !selectError}
-						<div class="text-xs text-[var(--color-text-muted)]" role="status" aria-live="polite" data-testid="bulk-status">{bulkStatus}</div>
-					{/if}
-				</div>
-			</div>
+		{#if selectMode.state.selectMode}
+			<SelectModeActionBar
+				selectedCount={selectMode.derived.selectedCount}
+				{isStreaming}
+				selectCloning={selectMode.state.selectCloning}
+				bulkBusy={selectMode.state.bulkBusy}
+				allSelectedExcluded={selectMode.derived.allSelectedExcluded}
+				bulkCopyContent={selectMode.derived.bulkCopyContent}
+				selectError={selectMode.state.selectError}
+				bulkStatus={selectMode.state.bulkStatus}
+				oncancel={selectMode.toggleSelectMode}
+				onfork={selectMode.handleForkSelection}
+				oncopy={selectMode.handleBulkCopied}
+				onexclude={selectMode.handleBulkExclude}
+				onsavememory={selectMode.handleBulkSaveMemory}
+			/>
 		{:else}
 			<!-- Input -->
 			<ChatInput

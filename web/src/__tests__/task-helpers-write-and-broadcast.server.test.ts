@@ -138,4 +138,28 @@ describe("writeAndBroadcastSnapshot — error propagation", () => {
     // Critical: a failed persist must not emit a phantom snapshot to clients.
     expect(emit).not.toHaveBeenCalled();
   });
+
+  test("emit error after successful persist propagates", async () => {
+    // V3 gap closure — pin the inverse failure mode: the persist
+    // succeeded, but the bus emit threw. The helper must NOT swallow
+    // the bus error (callers expect a thrown rejection so their HTTP
+    // 500 path triggers), AND we must verify persist already ran —
+    // i.e. ordering really was persist→emit, not emit→persist.
+    writeTaskSnapshotForConversation.mockResolvedValueOnce(undefined);
+    emit.mockImplementationOnce(() => {
+      throw new Error("bus down");
+    });
+
+    await expect(
+      writeAndBroadcastSnapshot("c1", {
+        conversationId: "c1",
+        tasks: [],
+        activeTaskId: "t1",
+      }),
+    ).rejects.toThrow("bus down");
+
+    // Persist already happened before emit failed — pin the order.
+    expect(writeTaskSnapshotForConversation).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(["write", "emit"]);
+  });
 });

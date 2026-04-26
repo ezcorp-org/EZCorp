@@ -7,9 +7,12 @@ import { requireScope } from "$lib/server/security/api-keys";
 import * as convQueries from "$server/db/queries/conversations";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
 import { getExecutor, getBus } from "$lib/server/context";
+import { logger } from "$server/logger";
 import { enqueue } from "$server/runtime/pending-messages";
 import { buildCommandResolver } from "$lib/server/command-resolver";
 import { CURRENT_MODEL_SENTINEL } from "$server/types";
+
+const log = logger.child("api.agent-chat");
 
 // Boundary validation: the only field the handler reads off the body
 // is `content` (a string the user types into the agent sub-conversation
@@ -148,7 +151,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       parentConversationId,
     });
   }).catch((err) => {
-    console.error("[agent-chat] streamChat error:", err instanceof Error ? err.message : err);
+    log.error("streamChat error", { error: err instanceof Error ? err.message : String(err) });
     bus.emit("agent:complete", {
       runId,
       agentRunId: runId,

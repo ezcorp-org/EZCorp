@@ -105,7 +105,7 @@
 		<div class="w-full max-w-lg rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-6 shadow-2xl mx-4">
 			<div class="flex items-center justify-between mb-4">
 				<h2 class="text-base font-semibold text-[var(--color-text-primary)]">{title}</h2>
-				<button onclick={handleClose} class="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors">
+				<button type="button" onclick={handleClose} aria-label="Close" class="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors">
 					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
 						<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
 					</svg>
@@ -115,22 +115,22 @@
 			<div class="space-y-3">
 				<div class="grid grid-cols-2 gap-3">
 					<div>
-						<label class="block text-xs text-[var(--color-text-secondary)] mb-1">Name</label>
-						<input bind:value={form.name} oninput={autoSlug} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none" placeholder="e.g. Debug" />
+						<label for="mode-form-name" class="block text-xs text-[var(--color-text-secondary)] mb-1">Name</label>
+						<input id="mode-form-name" bind:value={form.name} oninput={autoSlug} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none" placeholder="e.g. Debug" />
 					</div>
 					<div>
-						<label class="block text-xs text-[var(--color-text-secondary)] mb-1">Slug</label>
-						<input bind:value={form.slug} disabled={isEdit} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none font-mono disabled:opacity-50" placeholder="debug" />
+						<label for="mode-form-slug" class="block text-xs text-[var(--color-text-secondary)] mb-1">Slug</label>
+						<input id="mode-form-slug" bind:value={form.slug} disabled={isEdit} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none font-mono disabled:opacity-50" placeholder="debug" />
 					</div>
 				</div>
 				<div class="grid grid-cols-2 gap-3">
 					<div>
-						<label class="block text-xs text-[var(--color-text-secondary)] mb-1">Icon (emoji)</label>
-						<input bind:value={form.icon} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none" maxlength="10" />
+						<label for="mode-form-icon" class="block text-xs text-[var(--color-text-secondary)] mb-1">Icon (emoji)</label>
+						<input id="mode-form-icon" bind:value={form.icon} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none" maxlength="10" />
 					</div>
 					<div>
-						<label class="block text-xs text-[var(--color-text-secondary)] mb-1">Tool Restriction</label>
-						<select bind:value={form.toolRestriction} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none">
+						<label for="mode-form-tool-restriction" class="block text-xs text-[var(--color-text-secondary)] mb-1">Tool Restriction</label>
+						<select id="mode-form-tool-restriction" bind:value={form.toolRestriction} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none">
 							<option value="all">All tools</option>
 							<option value="read-only">Read-only</option>
 							<option value="none">No tools</option>
@@ -138,16 +138,16 @@
 					</div>
 				</div>
 				<div>
-					<label class="block text-xs text-[var(--color-text-secondary)] mb-1">Description</label>
-					<input bind:value={form.description} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none" placeholder="Short description" maxlength="500" />
+					<label for="mode-form-description" class="block text-xs text-[var(--color-text-secondary)] mb-1">Description</label>
+					<input id="mode-form-description" bind:value={form.description} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none" placeholder="Short description" maxlength="500" />
 				</div>
 				<div>
-					<label class="block text-xs text-[var(--color-text-secondary)] mb-1">System Prompt Instruction</label>
-					<textarea bind:value={form.systemPromptInstruction} rows={4} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none resize-y" placeholder="Instructions added to the system prompt when this mode is active..."></textarea>
+					<label for="mode-form-system-prompt" class="block text-xs text-[var(--color-text-secondary)] mb-1">System Prompt Instruction</label>
+					<textarea id="mode-form-system-prompt" bind:value={form.systemPromptInstruction} rows={4} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none resize-y" placeholder="Instructions added to the system prompt when this mode is active..."></textarea>
 				</div>
 				<div>
-					<label class="block text-xs text-[var(--color-text-secondary)] mb-1">Instruction Position</label>
-					<select bind:value={form.instructionPosition} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none">
+					<label for="mode-form-instruction-position" class="block text-xs text-[var(--color-text-secondary)] mb-1">Instruction Position</label>
+					<select id="mode-form-instruction-position" bind:value={form.instructionPosition} class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none">
 						<option value="prepend">Prepend (before system prompt)</option>
 						<option value="append">Append (after system prompt)</option>
 						<option value="replace">Replace (override system prompt)</option>

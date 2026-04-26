@@ -13,8 +13,38 @@ import type {
   TaskSnapshot,
   TrackedTask,
 } from "$server/runtime/task-tracking-host";
-import { writeTaskSnapshotForConversation } from "$server/runtime/task-tracking-host";
+import {
+  ensureTaskTrackingWired,
+  getTaskSnapshotForConversation,
+  writeTaskSnapshotForConversation,
+} from "$server/runtime/task-tracking-host";
 import { getBus } from "$lib/server/context";
+
+/**
+ * Wire task-tracking and load the conversation's snapshot, then find a
+ * task by id within it. Returns the snapshot (always defined — falls
+ * back to an empty `{ conversationId, tasks: [] }`) plus the task or
+ * `undefined` when the id is not present.
+ *
+ * Five task-lifecycle handlers (assign POST, assign DELETE, retry,
+ * /assignments/[id]/start, /assignments/[id]/stop) all open with this
+ * exact three-step preamble. Each caller is responsible for emitting
+ * its own 404 when `task` is undefined — the expected log lines and
+ * follow-up status checks (e.g. retry's `task.status === "failed"`
+ * gate) differ between handlers.
+ */
+export async function loadSnapshotAndFindTask(
+  conversationId: string,
+  taskId: string,
+): Promise<{ snapshot: TaskSnapshot; task: TrackedTask | undefined }> {
+  await ensureTaskTrackingWired(conversationId);
+  const snapshot: TaskSnapshot = (await getTaskSnapshotForConversation(conversationId)) ?? {
+    conversationId,
+    tasks: [],
+  };
+  const task = snapshot.tasks.find((t) => t.id === taskId);
+  return { snapshot, task };
+}
 
 /**
  * Find an assignment by id at the task level or under any of the task's

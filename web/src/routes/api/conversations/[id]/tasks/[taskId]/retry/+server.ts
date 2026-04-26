@@ -7,13 +7,13 @@ import { errorJson } from "$lib/server/http-errors";
 import * as convQueries from "$server/db/queries/conversations";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
 import { getExecutor, getBus } from "$lib/server/context";
+import { writeTaskSnapshotForConversation } from "$server/runtime/task-tracking-host";
+import type { TaskAssignment } from "$server/runtime/task-tracking-host";
 import {
-  ensureTaskTrackingWired,
-  getTaskSnapshotForConversation,
-  writeTaskSnapshotForConversation,
-} from "$server/runtime/task-tracking-host";
-import type { TaskAssignment, TaskSnapshot } from "$server/runtime/task-tracking-host";
-import { broadcastAssignmentUpdate, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
+  broadcastAssignmentUpdate,
+  loadSnapshotAndFindTask,
+  writeAndBroadcastSnapshot,
+} from "$lib/server/task-helpers";
 
 // Boundary validation. Same shape as the sibling /start endpoint —
 // optional `{ model, provider }` for the auto-spawn path; empty body
@@ -61,14 +61,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // sec-H3b: fail-closed — unowned rows (null userId) are admin-only
   if (conv.userId !== user.id && user.role !== "admin") return errorJson(404, "Not found");
 
-  await ensureTaskTrackingWired(params.id);
-  const snapshot: TaskSnapshot = await getTaskSnapshotForConversation(params.id) ?? {
-    conversationId: params.id,
-    tasks: [],
-    activeTaskId: undefined,
-  };
-
-  const task = snapshot.tasks.find((t) => t.id === params.taskId);
+  const { snapshot, task } = await loadSnapshotAndFindTask(params.id, params.taskId);
   if (!task) return errorJson(404, "Task not found");
   if (task.status !== "failed") {
     return errorJson(409, `Task is "${task.status}", expected "failed"`);

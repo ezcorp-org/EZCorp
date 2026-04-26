@@ -7,12 +7,8 @@ import { requireScope } from "$lib/server/security/api-keys";
 import * as convQueries from "$server/db/queries/conversations";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
 import { getExecutor, getBus } from "$lib/server/context";
-import {
-  ensureTaskTrackingWired,
-  getTaskSnapshotForConversation,
-  writeTaskSnapshotForConversation,
-} from "$server/runtime/task-tracking-host";
-import { findAssignment } from "$lib/server/task-helpers";
+import { writeTaskSnapshotForConversation } from "$server/runtime/task-tracking-host";
+import { findAssignment, loadSnapshotAndFindTask } from "$lib/server/task-helpers";
 import { isBlocked, unsatisfiedDeps, type ReadonlyTask } from "$server/runtime/task-dependencies";
 
 // Boundary validation. Body is fully optional — the frontend may send
@@ -65,13 +61,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // sec-H3b: fail-closed — unowned rows (null userId) are admin-only
   if (conv.userId !== user.id && user.role !== "admin") return errorJson(404, "Not found");
 
-  await ensureTaskTrackingWired(params.id);
-  const snapshot = await getTaskSnapshotForConversation(params.id) ?? {
-    conversationId: params.id,
-    tasks: [],
-  };
-
-  const task = snapshot.tasks.find((t) => t.id === params.taskId);
+  const { snapshot, task } = await loadSnapshotAndFindTask(params.id, params.taskId);
   if (!task) {
     console.error("[task-assignment-start] Task not found", {
       taskId: params.taskId,

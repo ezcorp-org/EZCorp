@@ -6,11 +6,11 @@ import { errorJson } from "$lib/server/http-errors";
 import * as convQueries from "$server/db/queries/conversations";
 import { getExecutor } from "$lib/server/context";
 import {
-  ensureTaskTrackingWired,
-  getTaskSnapshotForConversation,
-} from "$server/runtime/task-tracking-host";
-import type { TaskSnapshot } from "$server/runtime/task-tracking-host";
-import { broadcastAssignmentUpdate, findAssignment, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
+  broadcastAssignmentUpdate,
+  findAssignment,
+  loadSnapshotAndFindTask,
+  writeAndBroadcastSnapshot,
+} from "$lib/server/task-helpers";
 
 /**
  * POST — Stop a running assignment.
@@ -35,14 +35,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
   // sec-H3b: fail-closed — unowned rows (null userId) are admin-only
   if (conv.userId !== user.id && user.role !== "admin") return errorJson(404, "Not found");
 
-  await ensureTaskTrackingWired(params.id);
-  const snapshot: TaskSnapshot = await getTaskSnapshotForConversation(params.id) ?? {
-    conversationId: params.id,
-    tasks: [],
-    activeTaskId: undefined,
-  };
-
-  const task = snapshot.tasks.find((t) => t.id === params.taskId);
+  const { snapshot, task } = await loadSnapshotAndFindTask(params.id, params.taskId);
   if (!task) return errorJson(404, "Task not found");
 
   const assignment = findAssignment(task, params.assignmentId);

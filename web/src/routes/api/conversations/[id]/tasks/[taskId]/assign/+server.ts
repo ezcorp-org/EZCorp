@@ -7,10 +7,10 @@ import { errorJson } from "$lib/server/http-errors";
 import * as convQueries from "$server/db/queries/conversations";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
 import {
-  getTaskSnapshotForConversation,
-  ensureTaskTrackingWired,
-} from "$server/runtime/task-tracking-host";
-import { broadcastAssignmentUpdate, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
+  broadcastAssignmentUpdate,
+  loadSnapshotAndFindTask,
+  writeAndBroadcastSnapshot,
+} from "$lib/server/task-helpers";
 
 // Boundary validation. POST attaches an agent config to a task (or
 // optional subtask); DELETE removes an existing assignment by id.
@@ -58,12 +58,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   }
   const body = parsed.data;
 
-  await ensureTaskTrackingWired(params.id);
-  const snapshot = await getTaskSnapshotForConversation(params.id) ?? {
-    conversationId: params.id,
-    tasks: [],
-  };
-  const task = snapshot.tasks.find((t) => t.id === params.taskId);
+  const { snapshot, task } = await loadSnapshotAndFindTask(params.id, params.taskId);
   if (!task) return errorJson(404, "Task not found");
 
   const config = await getAgentConfig(body.agentConfigId);
@@ -112,12 +107,7 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
   }
   const body = parsed.data;
 
-  await ensureTaskTrackingWired(params.id);
-  const snapshot = await getTaskSnapshotForConversation(params.id) ?? {
-    conversationId: params.id,
-    tasks: [],
-  };
-  const task = snapshot.tasks.find((t) => t.id === params.taskId);
+  const { snapshot, task } = await loadSnapshotAndFindTask(params.id, params.taskId);
   if (!task) return errorJson(404, "Task not found");
 
   // Check task-level assignments

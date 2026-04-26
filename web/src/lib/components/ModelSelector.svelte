@@ -213,10 +213,11 @@
 					class="w-full rounded border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:border-[var(--color-accent)] focus:outline-none"
 					role="combobox"
 					aria-expanded={open}
+					aria-controls="model-selector-listbox"
 					aria-activedescendant={highlightIndex >= 0 ? `model-option-${highlightIndex}` : undefined}
 				/>
 			</div>
-			<div class="overflow-y-auto flex-1" role="listbox">
+			<div id="model-selector-listbox" class="overflow-y-auto flex-1" role="listbox">
 				{#if filteredModels.length === 0}
 					<div class="px-3 py-2 text-xs text-[var(--color-text-muted)]">
 						{models.length === 0 ? "No models available. Check API keys." : "No models match your search."}

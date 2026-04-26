@@ -107,10 +107,11 @@
 					class="w-full rounded border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:border-[var(--color-accent)] focus:outline-none"
 					role="combobox"
 					aria-expanded={open}
+					aria-controls="thinking-level-listbox"
 					aria-activedescendant={highlightIndex >= 0 ? `thinking-option-${highlightIndex}` : undefined}
 				/>
 			</div>
-			<div role="listbox">
+			<div id="thinking-level-listbox" role="listbox">
 				{#each filteredLevels as level, i}
 					<button
 						id="thinking-option-{i}"

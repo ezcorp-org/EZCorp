@@ -113,11 +113,12 @@
 					class="w-full rounded border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:border-[var(--color-accent)] focus:outline-none"
 					role="combobox"
 					aria-expanded={open}
+					aria-controls="mode-selector-listbox"
 					aria-activedescendant={highlightIndex >= 0 ? `mode-option-${highlightIndex}` : undefined}
 				/>
 			</div>
 
-			<div role="listbox">
+			<div id="mode-selector-listbox" role="listbox">
 				<!-- Default (no mode) — hidden when searching -->
 				{#if !search.trim()}
 					<button

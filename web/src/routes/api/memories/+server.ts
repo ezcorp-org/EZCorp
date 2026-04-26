@@ -4,6 +4,9 @@ import { insertMemory, updateMemory, searchMemories, getMemoryProjectIds, getPro
 import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
+import { logger } from "$server/logger";
+
+const log = logger.child("api.memories");
 
 const VALID_CATEGORIES = ["preferences", "biographical", "technical", "decisions_goals"] as const;
 const VALID_CONFIDENCES = ["high", "medium", "low"] as const;
@@ -89,7 +92,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       const embedding = await generateEmbedding(content.trim());
       await updateMemory(memory.id, { embedding });
     } catch (err) {
-      console.error("[api/memories] Embedding failed:", err);
+      log.error("embedding generation failed", {
+        error: err instanceof Error ? err.message : String(err),
+        memoryId: memory.id,
+      });
     }
   })();
 

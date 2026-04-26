@@ -4,8 +4,11 @@ import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { validationError } from "$lib/server/security/validation";
 import { errorJson } from "$lib/server/http-errors";
+import { logger } from "$server/logger";
 import { cloneTurnsSchema } from "../../schema";
 import type { RequestHandler } from "./$types";
+
+const log = logger.child("api.clone-turns");
 
 export const POST: RequestHandler = async ({ request, params, locals }) => {
   const scopeErr = requireScope(locals, "chat");
@@ -34,7 +37,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
     if (message.includes("do not belong")) {
       return errorJson(400, message);
     }
-    console.error("[clone-turns] failed:", message);
+    log.error("clone failed", { error: message });
     return errorJson(500, "Failed to clone turns");
   }
 };

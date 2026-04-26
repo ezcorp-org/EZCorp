@@ -86,7 +86,6 @@
 	import SkeletonLoader from "$lib/components/SkeletonLoader.svelte";
 	import Tooltip from "$lib/components/Tooltip.svelte";
 	import { inlineToolStore, type InlineToolCall } from "$lib/inline-tool-store.svelte.js";
-	import { invokeInlineTool } from "$lib/invoke-inline-tool.js";
 	import type { PermissionMode } from "$lib/permission-mode.js";
 	import { subConversationStore } from "$lib/sub-conversation-store.svelte.js";
 	import SubConversationBlock from "$lib/components/SubConversationBlock.svelte";
@@ -99,6 +98,7 @@
 	import InfoTooltip from "$lib/components/InfoTooltip.svelte";
 	import ChatHeader from "$lib/components/chat/ChatHeader.svelte";
 	import SelectModeActionBar from "$lib/components/chat/SelectModeActionBar.svelte";
+	import { makeInlineToolHandlers } from "$lib/chat/page-handlers/inline-tool-handlers.js";
 	import { parseMentions } from "$lib/mention-logic.js";
 	import { shouldAutofocusComposer } from "$lib/chat-input-logic.js";
 	import {
@@ -241,82 +241,25 @@
 		).length;
 	});
 
-	function generateId(): string {
-		return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36);
-	}
-
-	function handleToolInvoke(calls: { extensionName: string; toolName: string; input: Record<string, unknown> }[]) {
-		// Anchor to current leaf message (skip streaming placeholders — they're not real messages)
-		const leafId = activeLeafId?.startsWith('streaming-') ? undefined : activeLeafId;
-		for (const call of calls) {
-			invokeInlineTool({
-				conversationId: convId,
-				extensionName: call.extensionName,
-				toolName: call.toolName,
-				input: call.input,
-				messageId: leafId ?? undefined,
-			});
-		}
-	}
-
-	function handleInlineRetry(call: InlineToolCall) {
-		invokeInlineTool({
-			conversationId: call.conversationId,
-			extensionName: call.extensionName,
-			toolName: call.toolName,
-			input: call.input,
-			messageId: call.messageId,
-		});
-	}
-
-	async function handleInlineEditRetry(call: InlineToolCall) {
-		try {
-			const res = await userFetch(`/api/extensions/${encodeURIComponent(call.extensionName)}/tools`);
-			if (!res.ok) return;
-			const { tools }: { tools: ToolDefinition[] } = await res.json();
-			const tool = tools.find(t => t.name === call.toolName);
-			if (tool) {
-				editRetryCall = call;
-				editRetryTool = tool;
-			}
-		} catch {
-			// silent
-		}
-	}
-
-	function handleEditRetryConfirm(input: Record<string, unknown>) {
-		if (!editRetryCall) return;
-		const invocationId = generateId();
-		inlineToolStore.add({
-			id: invocationId,
-			extensionName: editRetryCall.extensionName,
-			toolName: editRetryCall.toolName,
-			input,
-			conversationId: editRetryCall.conversationId,
-			messageId: editRetryCall.messageId,
-		});
-		userFetch('/api/tool-invoke', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				extensionName: editRetryCall.extensionName,
-				toolName: editRetryCall.toolName,
-				input,
-				conversationId: editRetryCall.conversationId,
-				invocationId,
-			}),
-		}).catch(err => console.error('Edit retry failed:', err));
-		editRetryCall = null;
-		editRetryTool = null;
-	}
-
-	function handleInlineCancel(call: InlineToolCall) {
-		// Mark as error in store (cancellation)
-		inlineToolStore.updateFromEvent(call.id, 'tool:error', {
-			error: 'Cancelled by user',
-			duration: call.startedAt ? Date.now() - call.startedAt : 0,
-		});
-	}
+	// Inline tool handlers are extracted to $lib/chat/page-handlers/inline-tool-handlers.ts.
+	// `convId` and `activeLeafId` are passed as getters because they're reactive
+	// (a $derived and a $state slot respectively) and must be read fresh on
+	// every invocation. The edit-retry slot is mediated through get/set so the
+	// handler module never holds a stale snapshot of the page's $state.
+	const inlineToolHandlers = makeInlineToolHandlers({
+		convId: () => convId,
+		activeLeafId: () => activeLeafId,
+		getEditRetry: () => ({ call: editRetryCall, tool: editRetryTool }),
+		setEditRetry: (call, tool) => {
+			editRetryCall = call;
+			editRetryTool = tool;
+		},
+	});
+	const handleToolInvoke = inlineToolHandlers.handleToolInvoke;
+	const handleInlineRetry = inlineToolHandlers.handleInlineRetry;
+	const handleInlineEditRetry = inlineToolHandlers.handleInlineEditRetry;
+	const handleEditRetryConfirm = inlineToolHandlers.handleEditRetryConfirm;
+	const handleInlineCancel = inlineToolHandlers.handleInlineCancel;
 
 	// Local-only system messages (not persisted) for /login commands and OAuth results
 	let localSystemMessages = $state<Message[]>([]);

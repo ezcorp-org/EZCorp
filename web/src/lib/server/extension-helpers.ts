@@ -1,0 +1,101 @@
+// sec-C4 helper: clamp a caller-submitted permission set to the
+// intersection of what the extension's manifest actually requested.
+// Anything beyond the manifest is dropped silently — an admin cannot
+// elevate an extension past what its author declared. Anything less is
+// allowed (admin can grant a subset).
+//
+// Shared between:
+//   - PUT  /api/extensions/[id]/permissions  (sec-C4 main writer)
+//   - POST /api/extensions/[id]/activate     (sec-C3 follow-up writer)
+// Keep the two callers in sync — every clamping rule belongs here, not
+// inline at either call site.
+//
+// ── Capability tier (Phase 2+): taskEvents / spawnAgents / agentConfig /
+// eventSubscriptions ── Each field is clamped against the manifest
+// declaration AND against the kill-switch env var. If
+// EZCORP_DISABLE_CAPABILITY_TOOLS=1 is set, the fields behave as if the
+// manifest never declared them — operators can disable the entire tier
+// without touching schema or code.
+//
+// eventSubscriptions (Phase 2c): clamp to the triple-intersection of
+// submitted ∩ manifest-declared ∩ direct-carrier allowlist. An event
+// name that survives is guaranteed routable by the dispatcher at
+// runtime; unknown names fail closed (no grant) rather than landing in
+// a grant that can never be honored.
+
+import { capabilityToolsDisabled } from "$server/extensions/capability-flags";
+import { DIRECT_CARRIER_EVENT_TYPES } from "$server/runtime/sse-conversation-filter";
+import type { ExtensionPermissions, ExtensionManifestV2 } from "$server/extensions/types";
+
+export function clampExtensionPermissions(
+  submitted: Partial<ExtensionPermissions>,
+  manifest: ExtensionManifestV2["permissions"],
+): ExtensionPermissions {
+  const clamped: ExtensionPermissions = { grantedAt: {} };
+
+  if (submitted.network && manifest.network) {
+    const allowed = submitted.network.filter((d) => manifest.network!.includes(d));
+    if (allowed.length > 0) clamped.network = allowed;
+  }
+
+  if (submitted.filesystem && manifest.filesystem) {
+    const allowed = submitted.filesystem.filter((p) => manifest.filesystem!.includes(p));
+    if (allowed.length > 0) clamped.filesystem = allowed;
+  }
+
+  if (submitted.shell === true && manifest.shell === true) {
+    clamped.shell = true;
+  }
+
+  if (submitted.env && manifest.env) {
+    const allowed = submitted.env.filter((v) => manifest.env!.includes(v));
+    if (allowed.length > 0) clamped.env = allowed;
+  }
+
+  if (submitted.storage === true && manifest.storage === true) {
+    clamped.storage = true;
+  }
+
+  if (!capabilityToolsDisabled()) {
+    if (submitted.taskEvents === true && manifest.taskEvents === true) {
+      clamped.taskEvents = true;
+    }
+    if (submitted.spawnAgents && manifest.spawnAgents) {
+      // spawnAgents is a structured permission — both maxPerHour and
+      // maxConcurrent must be present at grant time. The grant cannot
+      // exceed the manifest's declared caps; clamp numerically.
+      const submittedMax = submitted.spawnAgents;
+      const manifestMax = manifest.spawnAgents;
+      const hourly = Math.min(submittedMax.maxPerHour, manifestMax.maxPerHour);
+      const concurrent = Math.min(
+        submittedMax.maxConcurrent ?? manifestMax.maxConcurrent ?? 3,
+        manifestMax.maxConcurrent ?? 3,
+      );
+      if (hourly > 0 && concurrent > 0) {
+        clamped.spawnAgents = { maxPerHour: hourly, maxConcurrent: concurrent };
+      }
+    }
+    if (submitted.agentConfig === "read" && manifest.agentConfig === "read") {
+      clamped.agentConfig = "read";
+    }
+    if (Array.isArray(submitted.eventSubscriptions) && Array.isArray(manifest.eventSubscriptions)) {
+      const manifestSet = new Set(manifest.eventSubscriptions);
+      const allowed = submitted.eventSubscriptions.filter(
+        (e) => typeof e === "string"
+          && manifestSet.has(e)
+          && DIRECT_CARRIER_EVENT_TYPES.has(e as never),
+      );
+      if (allowed.length > 0) clamped.eventSubscriptions = allowed;
+    }
+  }
+
+  // Preserve any prior grantedAt timestamps the caller passed for permissions
+  // that survived clamping; stamp new ones below in the handler.
+  if (submitted.grantedAt && typeof submitted.grantedAt === "object") {
+    for (const [k, v] of Object.entries(submitted.grantedAt)) {
+      if (typeof v === "number") clamped.grantedAt[k] = v;
+    }
+  }
+
+  return clamped;
+}

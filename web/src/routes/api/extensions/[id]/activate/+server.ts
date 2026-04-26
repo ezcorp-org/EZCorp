@@ -28,99 +28,21 @@ import { ExtensionRegistry } from "$server/extensions/registry";
 import { hasSecurityViolation } from "$server/extensions/security";
 import { requireRole } from "$server/auth/middleware";
 import { insertAuditEntry } from "$server/db/queries/audit-log";
-import { capabilityToolsDisabled } from "$server/extensions/capability-flags";
-import { DIRECT_CARRIER_EVENT_TYPES } from "$server/runtime/sse-conversation-filter";
 import { errorJson } from "$lib/server/http-errors";
-import type { ExtensionPermissions, ExtensionManifestV2 } from "$server/extensions/types";
+import { clampExtensionPermissions } from "$lib/server/extension-helpers";
+import type { ExtensionPermissions } from "$server/extensions/types";
 import type { RequestHandler } from "./$types";
 
 // Boundary validation. The handler reads exactly one optional field —
-// `grantedPermissions`, an object that's then passed to clampToManifest.
+// `grantedPermissions`, an object that's then passed to clampExtensionPermissions.
 // We accept any object/undefined here; the existing inline guards
 // (rejecting null/array with 400 "grantedPermissions must be an object")
 // stay so the test contract on that exact message holds. .passthrough()
-// because clampToManifest expects the full Partial<ExtensionPermissions>
+// because clampExtensionPermissions expects the full Partial<ExtensionPermissions>
 // shape, which has too many nested fields to enumerate locally.
 const activatePostSchema = z.object({
   grantedPermissions: z.unknown().optional(),
 }).passthrough();
-
-// Keep the clamp logic inline (do not factor into a shared helper — the
-// sec-C4 code review asked for this exact behaviour co-located with the
-// writer). Mirrors the implementation in
-// web/src/routes/api/extensions/[id]/permissions/+server.ts.
-function clampToManifest(
-	submitted: Partial<ExtensionPermissions>,
-	manifest: ExtensionManifestV2["permissions"],
-): ExtensionPermissions {
-	const clamped: ExtensionPermissions = { grantedAt: {} };
-
-	if (submitted.network && manifest.network) {
-		const allowed = submitted.network.filter((d) => manifest.network!.includes(d));
-		if (allowed.length > 0) clamped.network = allowed;
-	}
-
-	if (submitted.filesystem && manifest.filesystem) {
-		const allowed = submitted.filesystem.filter((p) => manifest.filesystem!.includes(p));
-		if (allowed.length > 0) clamped.filesystem = allowed;
-	}
-
-	if (submitted.shell === true && manifest.shell === true) {
-		clamped.shell = true;
-	}
-
-	if (submitted.env && manifest.env) {
-		const allowed = submitted.env.filter((v) => manifest.env!.includes(v));
-		if (allowed.length > 0) clamped.env = allowed;
-	}
-
-	if (submitted.storage === true && manifest.storage === true) {
-		clamped.storage = true;
-	}
-
-	// ── Capability tier (Phase 2+): mirror the clamp logic in the sibling
-	// PUT /api/extensions/[id]/permissions handler. Kept inline per
-	// sec-C4 review convention — each writer owns its own clamp.
-	if (!capabilityToolsDisabled()) {
-		if (submitted.taskEvents === true && manifest.taskEvents === true) {
-			clamped.taskEvents = true;
-		}
-		if (submitted.spawnAgents && manifest.spawnAgents) {
-			const sm = submitted.spawnAgents;
-			const mm = manifest.spawnAgents;
-			const hourly = Math.min(sm.maxPerHour, mm.maxPerHour);
-			const concurrent = Math.min(
-				sm.maxConcurrent ?? mm.maxConcurrent ?? 3,
-				mm.maxConcurrent ?? 3,
-			);
-			if (hourly > 0 && concurrent > 0) {
-				clamped.spawnAgents = { maxPerHour: hourly, maxConcurrent: concurrent };
-			}
-		}
-		if (submitted.agentConfig === "read" && manifest.agentConfig === "read") {
-			clamped.agentConfig = "read";
-		}
-		// eventSubscriptions (Phase 2c): intersect submitted ∩ manifest ∩
-		// direct-carrier allowlist. Fail-closed on unknown event names.
-		if (Array.isArray(submitted.eventSubscriptions) && Array.isArray(manifest.eventSubscriptions)) {
-			const manifestSet = new Set(manifest.eventSubscriptions);
-			const allowed = submitted.eventSubscriptions.filter(
-				(e) => typeof e === "string"
-					&& manifestSet.has(e)
-					&& DIRECT_CARRIER_EVENT_TYPES.has(e as never),
-			);
-			if (allowed.length > 0) clamped.eventSubscriptions = allowed;
-		}
-	}
-
-	if (submitted.grantedAt && typeof submitted.grantedAt === "object") {
-		for (const [k, v] of Object.entries(submitted.grantedAt)) {
-			if (typeof v === "number") clamped.grantedAt[k] = v;
-		}
-	}
-
-	return clamped;
-}
 
 export const POST: RequestHandler = async ({ request, params, locals }) => {
 	// requireRole throws a raw Response; SvelteKit does not recognise that and
@@ -161,7 +83,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 			return errorJson(400, "grantedPermissions must be an object");
 		}
 		const manifestPerms = ext.manifest?.permissions ?? {};
-		update.grantedPermissions = clampToManifest(
+		update.grantedPermissions = clampExtensionPermissions(
 			submittedPerms as Partial<ExtensionPermissions>,
 			manifestPerms,
 		);

@@ -5,6 +5,9 @@ import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
 import { fetchProviderModels } from "$server/providers/model-discovery";
 import { upsertSetting } from "$server/db/queries/settings";
+import { logger } from "$server/logger";
+
+const log = logger.child("api.refresh-models");
 
 const VALID_PROVIDERS = new Set(["anthropic", "openai", "google"]);
 
@@ -29,7 +32,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		console.error(`[refresh-models] ${provider}:`, err);
+		log.error("provider model fetch failed", { provider, error: message });
 		return json({ success: false, error: message });
 	}
 };

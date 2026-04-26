@@ -69,10 +69,15 @@
 		show = false;
 		tipStyle = '';
 	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') cancelDelay();
+	}
 </script>
 
 <svelte:window onresize={show ? positionTooltip : undefined} onscroll={show ? positionTooltip : undefined} />
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <span
 	bind:this={el}
 	class="relative inline-flex"
@@ -81,6 +86,7 @@
 	onfocusin={startDelay}
 	onfocusout={cancelDelay}
 	onclick={cancelDelay}
+	onkeydown={handleKeydown}
 >
 	{@render children()}
 	{#if show}

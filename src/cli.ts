@@ -158,6 +158,27 @@ export interface ParsedArgs {
   token?: string;        // for ext:publish --token
 }
 
+/**
+ * Parse the shared `--input '<json>'` + `--project <name>` flags used by
+ * both `run` and `pipeline run` subcommands.
+ */
+function parseRunFlags(args: string[]): {
+  input?: Record<string, unknown>;
+  project?: string;
+} {
+  let input: Record<string, unknown> | undefined;
+  const inputIdx = args.indexOf("--input");
+  if (inputIdx !== -1 && args[inputIdx + 1]) {
+    input = JSON.parse(args[inputIdx + 1]!);
+  }
+  let project: string | undefined;
+  const projectIdx = args.indexOf("--project");
+  if (projectIdx !== -1 && args[projectIdx + 1]) {
+    project = args[projectIdx + 1]!;
+  }
+  return { input, project };
+}
+
 export function parseArgs(args: string[]): ParsedArgs {
   const command = args[0] ?? "help";
 
@@ -167,16 +188,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 
   if (command === "run") {
     const agentName = args[1];
-    let input: Record<string, unknown> | undefined;
-    const inputIdx = args.indexOf("--input");
-    if (inputIdx !== -1 && args[inputIdx + 1]) {
-      input = JSON.parse(args[inputIdx + 1]!);
-    }
-    let project: string | undefined;
-    const projectIdx = args.indexOf("--project");
-    if (projectIdx !== -1 && args[projectIdx + 1]) {
-      project = args[projectIdx + 1]!;
-    }
+    const { input, project } = parseRunFlags(args);
     return { command, agentName, input, project };
   }
 
@@ -187,16 +199,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
     if (subCommand === "run") {
       const pipelineName = args[2];
-      let input: Record<string, unknown> | undefined;
-      const inputIdx = args.indexOf("--input");
-      if (inputIdx !== -1 && args[inputIdx + 1]) {
-        input = JSON.parse(args[inputIdx + 1]!);
-      }
-      let project: string | undefined;
-      const projectIdx = args.indexOf("--project");
-      if (projectIdx !== -1 && args[projectIdx + 1]) {
-        project = args[projectIdx + 1]!;
-      }
+      const { input, project } = parseRunFlags(args);
       return { command: "pipeline:run", pipelineName, input, project };
     }
     return { command: "help" };

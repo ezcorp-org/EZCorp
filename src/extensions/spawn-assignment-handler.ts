@@ -49,6 +49,7 @@ import { EXT_AUDIT_ACTIONS } from "./audit-actions";
 import { resolveAgentConfigForUser } from "./agent-configs-handler";
 import { startAssignment } from "../runtime/start-assignment";
 import type { TaskAssignment, TaskSnapshot, TrackedTask } from "../runtime/task-tracking-host";
+import { rpcError, rpcResult } from "./json-rpc";
 
 const MAX_OPS_PER_SECOND = 50;
 const consumeTokens = createRateLimiter(MAX_OPS_PER_SECOND);
@@ -85,18 +86,6 @@ type DenyReason =
   | "depth-exceeded"
   | "hourly-exceeded"
   | "concurrent-exceeded";
-
-function rpcError(id: number | string, code: number, message: string, data?: unknown): JsonRpcResponse {
-  return {
-    jsonrpc: "2.0",
-    id,
-    error: { code, message, ...(data !== undefined ? { data } : {}) },
-  };
-}
-
-function rpcResult(id: number | string, result: unknown): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, result };
-}
 
 async function auditReject(
   extensionId: string,

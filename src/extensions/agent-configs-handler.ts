@@ -24,6 +24,7 @@ import {
 } from "../db/queries/agent-configs";
 import { createRateLimiter } from "./rate-limit";
 import { capabilityToolsDisabled } from "./capability-flags";
+import { rpcError, rpcResult } from "./json-rpc";
 
 const MAX_OPS_PER_SECOND = 50;
 const consumeTokens = createRateLimiter(MAX_OPS_PER_SECOND);
@@ -39,14 +40,6 @@ export interface AgentConfigSummary {
   description: string;
   isTeam: boolean;
   ownerUserId: string | null;
-}
-
-function rpcError(id: number | string, code: number, message: string): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
-function rpcResult(id: number | string, result: unknown): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, result };
 }
 
 function toSummary(row: DbAgentConfig): AgentConfigSummary {

@@ -38,6 +38,7 @@ import type { SpawnQuota } from "./spawn-quota";
 import { capabilityToolsDisabled } from "./capability-flags";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
+import { rpcError, rpcResult } from "./json-rpc";
 
 export interface CancelRunContext {
   /** Acting user; `"unknown"` is tolerated (audit writes `null`). */
@@ -48,23 +49,6 @@ export interface CancelRunContext {
 }
 
 type CancelReason = "cancelled" | "not-owned" | "missing-run" | "permission-missing";
-
-function rpcError(
-  id: number | string,
-  code: number,
-  message: string,
-  data?: unknown,
-): JsonRpcResponse {
-  return {
-    jsonrpc: "2.0",
-    id,
-    error: { code, message, ...(data !== undefined ? { data } : {}) },
-  };
-}
-
-function rpcResult(id: number | string, result: unknown): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, result };
-}
 
 async function auditCancel(
   extensionId: string,

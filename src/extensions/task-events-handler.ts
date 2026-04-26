@@ -35,6 +35,7 @@ import { createRateLimiter } from "./rate-limit";
 import { capabilityToolsDisabled } from "./capability-flags";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
+import { rpcError, rpcResult } from "./json-rpc";
 
 const MAX_OPS_PER_SECOND = 50;
 const consumeTokens = createRateLimiter(MAX_OPS_PER_SECOND);
@@ -119,14 +120,6 @@ export interface TaskEventsContext {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
-
-function rpcError(id: number | string, code: number, message: string): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
-function rpcResult(id: number | string, result: unknown): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, result };
-}
 
 async function auditReject(
   extensionId: string,

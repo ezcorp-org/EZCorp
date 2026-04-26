@@ -14,6 +14,7 @@ import {
 import { getConversationExtensionIds } from "../db/queries/conversation-extensions";
 import { encrypt, decrypt } from "../providers/encryption";
 import { createRateLimiter } from "./rate-limit";
+import { rpcError, rpcResult } from "./json-rpc";
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -76,16 +77,6 @@ export interface StorageContext {
   userId: string;
   manifest: ExtensionManifestV2;
   grantedPermissions: ExtensionPermissions;
-}
-
-// ── JSON-RPC error helpers ──────────────────────────────────────────
-
-function rpcError(id: number | string, code: number, message: string): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
-function rpcResult(id: number | string, result: unknown): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, result };
 }
 
 /**

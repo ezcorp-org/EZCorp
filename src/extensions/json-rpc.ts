@@ -110,3 +110,28 @@ export class JsonRpcTransport {
     return JSON.parse(line.trim());
   }
 }
+
+// ── Response builders shared across reverse-RPC handlers ────────────
+
+/**
+ * Build a JSON-RPC error response. The optional `data` field is only
+ * included when defined, so this helper subsumes both the 3-arg and
+ * 4-arg variants previously copy-pasted across handler files.
+ */
+export function rpcError(
+  id: number | string,
+  code: number,
+  message: string,
+  data?: unknown,
+): JsonRpcResponse {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: { code, message, ...(data !== undefined ? { data } : {}) },
+  };
+}
+
+/** Build a successful JSON-RPC response. */
+export function rpcResult(id: number | string, result: unknown): JsonRpcResponse {
+  return { jsonrpc: "2.0", id, result };
+}

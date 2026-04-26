@@ -194,15 +194,33 @@ export class AgentExecutor {
       const result = await agent.execute(ctx);
       // Don't overwrite if cancelRun() already set status — an agent that
       // resolves normally on abort (rather than throwing) would otherwise
-      // flip "cancelled" back to "success".
+      // flip "cancelled" back to "success". When the success branch fires
+      // on a cancelled run, override cancelRun()'s "cancelled" discriminator
+      // with "swallowed_abort" so consumers can distinguish a well-behaved
+      // abort (agent threw on ctx.signal) from a misbehaving one.
       if (run.status !== "cancelled") {
         run.status = "success";
         run.result = result;
         run.finishedAt = Date.now();
         this.bus.emit("run:complete", { run });
+      } else {
+        run.result = {
+          success: false,
+          output: null,
+          error: {
+            code: "swallowed_abort",
+            message: "agent resolved after cancel was requested",
+          },
+        };
+        log.warn("agent resolved after cancel was requested", {
+          runId: run.id,
+          agentName: name,
+        });
       }
     } catch (err) {
-      // Don't overwrite if already cancelled
+      // Don't overwrite if already cancelled — cancelRun() populated
+      // result.error = { code: "cancelled", ... }; leaving it in place
+      // is the well-behaved-abort signal for downstream consumers.
       if (run.status !== "cancelled") {
         const message = err instanceof Error ? err.message : String(err);
         run.status = "error";
@@ -292,6 +310,16 @@ export class AgentExecutor {
     controller.abort();
     this.activeAgents.get(id)?.abort();
     run.status = "cancelled";
+    // Single source of truth for the cancel terminal state. The runAgent
+    // success branch overrides this with `swallowed_abort` when an agent
+    // resolves despite ctx.signal abort; the error branch leaves this in
+    // place (well-behaved abort that threw on the signal). Mirrors the
+    // shape parity established in stream-chat/finalize.ts:104-105.
+    run.result = {
+      success: false,
+      output: null,
+      error: { code: "cancelled", message: "run cancelled" },
+    };
     run.finishedAt = Date.now();
     const conversationId = this.runConversations.get(id);
     this.bus.emit("run:cancel", { run, conversationId });

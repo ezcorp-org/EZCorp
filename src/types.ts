@@ -82,7 +82,17 @@ export interface AgentContext {
 export interface AgentResult {
   success: boolean;
   output: unknown;
-  error?: string;
+  /**
+   * Either a free-form string (legacy/agent-thrown failures) or a
+   * structured discriminator used by the cancel paths. The cancel path
+   * populates `{ code: "cancelled" | "swallowed_abort", message }` so
+   * downstream consumers can distinguish a well-behaved abort (agent
+   * threw on `ctx.signal`) from a swallowed abort (agent resolved
+   * despite the signal). See cancelRun / runAgent in
+   * src/runtime/executor.ts and the parity branch in
+   * src/runtime/stream-chat/finalize.ts.
+   */
+  error?: string | { code: string; message: string };
 }
 
 // ── Input Schema ────────────────────────────────────────────────────

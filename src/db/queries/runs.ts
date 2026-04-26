@@ -11,7 +11,7 @@ export interface DbRun {
   input: Record<string, unknown> | null;
   startedAt: Date;
   finishedAt: Date | null;
-  result: { success: boolean; output: unknown; error?: string } | null;
+  result: { success: boolean; output: unknown; error?: string | { code: string; message: string } } | null;
   createdAt: Date;
 }
 

@@ -27,7 +27,7 @@ export const runs = pgTable("runs", {
   input: jsonb("input").$type<Record<string, unknown>>(),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
-  result: jsonb("result").$type<{ success: boolean; output: unknown; error?: string }>(),
+  result: jsonb("result").$type<{ success: boolean; output: unknown; error?: string | { code: string; message: string } }>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

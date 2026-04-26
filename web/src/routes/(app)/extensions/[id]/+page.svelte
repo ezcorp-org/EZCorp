@@ -352,7 +352,7 @@
 			<div class="space-y-3">
 				<!-- Network -->
 				<div>
-					<label class="text-xs font-medium text-[var(--color-text-secondary)]">Network Access</label>
+					<div class="text-xs font-medium text-[var(--color-text-secondary)]">Network Access</div>
 					<div class="mt-1 flex flex-wrap gap-1">
 						{#each ext.manifest.permissions.network ?? [] as domain}
 							<label class="flex items-center gap-1 rounded-full bg-[var(--color-surface-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">
@@ -379,7 +379,7 @@
 
 				<!-- Filesystem -->
 				<div>
-					<label class="text-xs font-medium text-[var(--color-text-secondary)]">Filesystem Access</label>
+					<div class="text-xs font-medium text-[var(--color-text-secondary)]">Filesystem Access</div>
 					<div class="mt-1 flex flex-wrap gap-1">
 						{#each ext.manifest.permissions.filesystem ?? [] as path}
 							<label class="flex items-center gap-1 rounded-full bg-[var(--color-surface-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">
@@ -422,7 +422,7 @@
 
 				<!-- Env -->
 				<div>
-					<label class="text-xs font-medium text-[var(--color-text-secondary)]">Environment Variables</label>
+					<div class="text-xs font-medium text-[var(--color-text-secondary)]">Environment Variables</div>
 					<div class="mt-1 flex flex-wrap gap-1">
 						{#each ext.manifest.permissions.env ?? [] as varName}
 							<label class="flex items-center gap-1 rounded-full bg-[var(--color-surface-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">

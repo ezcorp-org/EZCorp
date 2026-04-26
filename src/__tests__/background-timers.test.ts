@@ -7,12 +7,6 @@ afterAll(() => restoreModuleMocks());
 
 let intervalCalls: Array<{ fn: (...args: unknown[]) => void; delay: number }> = [];
 let originalSetInterval: typeof setInterval;
-let warnLogs: unknown[][] = [];
-let errorLogs: unknown[][] = [];
-let infoLogs: unknown[][] = [];
-let originalWarn: typeof console.warn;
-let originalError: typeof console.error;
-let originalLog: typeof console.log;
 
 // Mock-function handles we re-wire per test
 let startDecayTimerMock = mock(() => () => {});
@@ -20,6 +14,22 @@ let runCompactionMock = mock(() => Promise.resolve());
 let deleteExpiredSessionsMock = mock(() => Promise.resolve());
 let cleanupOldErrorsMock = mock((_retainDays: number) => Promise.resolve());
 let getSettingMock = mock((_key: string) => Promise.resolve<unknown>(undefined));
+
+// Logger spies. The structured logger writes JSON via process.stdout/stderr.write,
+// bypassing console.* shims, so we mock the logger module itself and assert on
+// (msg, fields) call shape. `child()` returns the same spy object so calls made
+// via `logger.child("startup.timers")` land on the same mocks we inspect.
+let loggerInfoMock = mock((_msg: string, _extra?: Record<string, unknown>) => {});
+let loggerWarnMock = mock((_msg: string, _extra?: Record<string, unknown>) => {});
+let loggerErrorMock = mock((_msg: string, _extra?: Record<string, unknown>) => {});
+
+const loggerSpy = {
+  info: (msg: string, extra?: Record<string, unknown>) => loggerInfoMock(msg, extra),
+  warn: (msg: string, extra?: Record<string, unknown>) => loggerWarnMock(msg, extra),
+  error: (msg: string, extra?: Record<string, unknown>) => loggerErrorMock(msg, extra),
+  debug: (_msg: string, _extra?: Record<string, unknown>) => {},
+  child: () => loggerSpy,
+};
 
 function installModuleMocks(): void {
   mock.module("../memory/lifecycle", () => ({
@@ -37,6 +47,7 @@ function installModuleMocks(): void {
   mock.module("../db/queries/settings", () => ({
     getSetting: (key: string) => getSettingMock(key),
   }));
+  mock.module("../logger", () => ({ logger: loggerSpy }));
 }
 
 beforeEach(async () => {
@@ -46,6 +57,9 @@ beforeEach(async () => {
   deleteExpiredSessionsMock = mock(() => Promise.resolve());
   cleanupOldErrorsMock = mock((_retainDays: number) => Promise.resolve());
   getSettingMock = mock((_key: string) => Promise.resolve<unknown>(undefined));
+  loggerInfoMock = mock((_msg: string, _extra?: Record<string, unknown>) => {});
+  loggerWarnMock = mock((_msg: string, _extra?: Record<string, unknown>) => {});
+  loggerErrorMock = mock((_msg: string, _extra?: Record<string, unknown>) => {});
 
   installModuleMocks();
 
@@ -57,17 +71,6 @@ beforeEach(async () => {
     return 0 as unknown as ReturnType<typeof setInterval>;
   }) as typeof setInterval;
 
-  // Capture console output
-  warnLogs = [];
-  errorLogs = [];
-  infoLogs = [];
-  originalWarn = console.warn;
-  originalError = console.error;
-  originalLog = console.log;
-  console.warn = (...args: unknown[]) => { warnLogs.push(args); };
-  console.error = (...args: unknown[]) => { errorLogs.push(args); };
-  console.log = (...args: unknown[]) => { infoLogs.push(args); };
-
   // Reset the singleton flag — background-timers.ts is loaded once per process
   // and its internal `started` flag would persist across tests otherwise.
   const mod = await import("../startup/background-timers");
@@ -76,9 +79,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   globalThis.setInterval = originalSetInterval;
-  console.warn = originalWarn;
-  console.error = originalError;
-  console.log = originalLog;
 });
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -102,10 +102,9 @@ describe("startBackgroundTimers", () => {
     expect(intervalCalls[1]!.delay).toBe(hourMs);          // error-logs hourly
     expect(intervalCalls[2]!.delay).toBe(6 * hourMs);      // compaction 6h default
 
-    // Success logs fired
-    const flatLogs = infoLogs.flat().join(" ");
-    expect(flatLogs).toContain("Decay sweep started");
-    expect(flatLogs).toContain("Compaction started (6h interval)");
+    // Success logs fired with structured fields
+    expect(loggerInfoMock).toHaveBeenCalledWith("Decay sweep started", { intervalHours: 1 });
+    expect(loggerInfoMock).toHaveBeenCalledWith("Compaction started", { intervalHours: 6 });
   });
 
   test("second call is a no-op (idempotent)", async () => {
@@ -128,14 +127,15 @@ describe("startBackgroundTimers", () => {
     const { startBackgroundTimers } = await import("../startup/background-timers");
     await startBackgroundTimers();
 
-    // Warn was logged for decay
-    const warns = warnLogs.flat().map(String).join(" ");
-    expect(warns).toContain("Failed to start decay timer");
+    // Warn was logged for decay with the error string
+    expect(loggerWarnMock).toHaveBeenCalledWith(
+      "Failed to start decay timer",
+      { error: String(new Error("boom")) },
+    );
 
     // Compaction block still ran — 3 setIntervals (sessions, errors, compaction)
     expect(intervalCalls).toHaveLength(3);
-    const infos = infoLogs.flat().map(String).join(" ");
-    expect(infos).toContain("Compaction started");
+    expect(loggerInfoMock).toHaveBeenCalledWith("Compaction started", { intervalHours: 6 });
   });
 
   test("getSetting failure leaves decay + cleanups running, logs compaction warning", async () => {
@@ -152,8 +152,10 @@ describe("startBackgroundTimers", () => {
     // no compaction interval was added
     expect(intervalCalls).toHaveLength(2);
 
-    const warns = warnLogs.flat().map(String).join(" ");
-    expect(warns).toContain("Failed to start compaction timer");
+    expect(loggerWarnMock).toHaveBeenCalledWith(
+      "Failed to start compaction timer",
+      { error: String(new Error("db down")) },
+    );
   });
 
   test("custom compaction interval from settings is honored", async () => {
@@ -171,7 +173,6 @@ describe("startBackgroundTimers", () => {
     const compactionCall = intervalCalls[2]!;
     expect(compactionCall.delay).toBe(2 * hourMs);
 
-    const infos = infoLogs.flat().map(String).join(" ");
-    expect(infos).toContain("Compaction started (2h interval)");
+    expect(loggerInfoMock).toHaveBeenCalledWith("Compaction started", { intervalHours: 2 });
   });
 });

@@ -5,8 +5,8 @@ import { errorJson } from "$lib/server/http-errors";
 import { requireAuth } from "$server/auth/middleware";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
 import { shareAgent, shareAgentWithUser, unshareAgent, unshareAgentFromUser, getAgentShares } from "$server/db/queries/agent-shares";
-import { getTeamMembership } from "$server/db/queries/teams";
-import { getUserById } from "$server/db/queries/users";
+import { getTeamMembershipsByTeams } from "$server/db/queries/teams";
+import { getUsersByIds } from "$server/db/queries/users";
 import { insertAuditEntry } from "$server/db/queries/audit-log";
 import { requireScope } from "$lib/server/security/api-keys";
 
@@ -84,9 +84,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     }
 
     if (hasTeams) {
+      // Batched membership lookup. Admins skip the membership gate
+      // entirely (matching the per-iteration form), so we only spend a
+      // query when the caller is non-admin.
+      const memberships =
+        user.role === "admin"
+          ? null
+          : await getTeamMembershipsByTeams(user.id, teamIds!);
       for (const teamId of teamIds!) {
-        if (user.role !== "admin") {
-          const membership = await getTeamMembership(user.id, teamId);
+        if (memberships) {
+          const membership = memberships.get(teamId);
           if (!membership || membership.role === "viewer") {
             return errorJson(403, `Insufficient permissions for team ${teamId}`);
           }
@@ -96,8 +103,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     }
 
     if (hasUsers) {
+      // Batched recipient lookup; the loop below preserves the
+      // original short-circuit on first missing user.
+      const targetUsers = await getUsersByIds(userIds!);
       for (const targetUserId of userIds!) {
-        const targetUser = await getUserById(targetUserId);
+        const targetUser = targetUsers.get(targetUserId);
         if (!targetUser) {
           return errorJson(404, `User ${targetUserId} not found`);
         }

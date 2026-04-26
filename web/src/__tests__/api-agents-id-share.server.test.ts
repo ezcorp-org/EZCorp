@@ -22,9 +22,31 @@ vi.mock("$server/db/queries/agent-shares", () => ({
 }));
 vi.mock("$server/db/queries/teams", () => ({
   getTeamMembership: vi.fn(),
+  // Handler now uses the batched form. Default impl walks each input
+  // id and dispatches to the per-id mock so existing test setups that
+  // call `vi.mocked(getTeamMembership).mockResolvedValue(...)` keep
+  // working without any test-body changes.
+  getTeamMembershipsByTeams: vi.fn(async (userId: string, teamIds: string[]) => {
+    const mod = await import("$server/db/queries/teams");
+    const result = new Map<string, unknown>();
+    for (const id of teamIds) {
+      const v = await (mod.getTeamMembership as any)(userId, id);
+      result.set(id, v ?? null);
+    }
+    return result;
+  }),
 }));
 vi.mock("$server/db/queries/users", () => ({
   getUserById: vi.fn(),
+  getUsersByIds: vi.fn(async (ids: string[]) => {
+    const mod = await import("$server/db/queries/users");
+    const result = new Map<string, unknown>();
+    for (const id of ids) {
+      const v = await (mod.getUserById as any)(id);
+      result.set(id, v ?? null);
+    }
+    return result;
+  }),
 }));
 vi.mock("$server/db/queries/audit-log", () => ({
   insertAuditEntry: vi.fn(async () => undefined),

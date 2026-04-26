@@ -5,9 +5,7 @@
 	import {
 		fetchAllMessages,
 		fetchModes,
-		sendMessage,
 		createConversation,
-		createSubConversation,
 		updateConversation,
 		patchMessageContent,
 		setMessageExcluded,
@@ -35,8 +33,7 @@
 		subConvoToAgentCallState,
 		type SubConvoRecord,
 	} from "$lib/sub-convo-agent-state.js";
-	import { startOAuthFlow, completeOAuthWithCode, listenForOAuthResult, isLoginCommand, type OAuthPending } from "$lib/oauth.js";
-	import { isModelCommand } from "$lib/commands.js";
+	import { listenForOAuthResult, type OAuthPending } from "$lib/oauth.js";
 	import { persistLastModel } from "$lib/last-model.js";
 	import { attachPanelPersistence } from "$lib/chat/page-handlers/panel-persistence.svelte.js";
 	import {
@@ -98,7 +95,7 @@
 		type HistoricalToolCall,
 	} from "$lib/chat/page-handlers/load-messages.js";
 	import { useSelectMode } from "$lib/chat/page-handlers/useSelectMode.svelte.js";
-	import { parseMentions } from "$lib/mention-logic.js";
+	import { makeSendMessage } from "$lib/chat/page-handlers/send-message.js";
 	import { shouldAutofocusComposer } from "$lib/chat-input-logic.js";
 	import {
 		backgroundFetch,
@@ -1009,399 +1006,77 @@
 	const loadMessages = loadMessagesApi.loadMessages;
 	const hydrateToolCallsFromApi = loadMessagesApi.hydrateToolCallsFromApi;
 
-	async function handleSubConvoSend(text: string) {
-		const active = subConversationStore.activeSubConversation;
-		if (!active) return;
-		subConversationStore.addMessage({
-			id: `user-${Date.now()}`,
-			role: "user",
-			content: text,
-			createdAt: new Date(),
-		});
-		// Send to sub-conversation's agent
-		try {
-			subConversationStore.setStreaming(true);
-			const result = await sendMessage(active.id, {
-				content: text,
-				parentMessageId: undefined,
-			});
-			startStreaming(result.runId, active.id);
-		} catch (err) {
-			console.error("Sub-convo send failed:", err);
-			subConversationStore.setStreaming(false);
-		}
-	}
-
-	async function handleSubConvoReturn() {
-		const msgs = subConversationStore.endSubConversation();
-		// Insert last agent message as summary in parent conversation
-		const lastAgentMsg = [...msgs].reverse().find(m => m.role === "assistant");
-		if (lastAgentMsg && convId) {
-			try {
-				await sendMessage(convId, {
-					content: `[Sub-conversation summary]: ${lastAgentMsg.content}`,
-					parentMessageId: activeLeafId ?? undefined,
-				});
-				await loadMessages();
-			} catch (err) {
-				console.error("Failed to insert sub-convo summary:", err);
-			}
-		}
-	}
-
-	async function startSubConvo(agentMention: { name: string }, parentMessageId: string) {
-		if (subConversationStore.isInSubConversation) return; // One at a time
-
-		try {
-			const subConv = await createSubConversation(convId, {
-				parentMessageId,
-				agentConfigId: "", // Will be resolved server-side by agent name
-				title: `Sub-conversation with ${agentMention.name}`,
-				projectId,
-			});
-			const record: SubConvoRecord = {
-				id: subConv.id,
-				agentName: agentMention.name,
-				agentConfigId: subConv.agentConfigId ?? "",
-				parentMessageId,
-			};
-			subConversations = [...subConversations, record];
-			subConversationStore.startSubConversation({
-				id: subConv.id,
-				agentConfigId: record.agentConfigId,
-				agentName: agentMention.name,
-				parentConversationId: convId,
-				parentMessageId,
-			});
-		} catch (err) {
-			console.error("Failed to start sub-conversation:", err);
-		}
-	}
-
-	async function handleSend(content: string, attachments?: File[]) {
-		if (!convId) return;
-
-		// Close all page-level panels and forms
-		settingsOpen = false;
-		obsOpen = false;
-		editRetryCall = null;
-		editRetryTool = null;
-
-		// Handle OAuth code paste (if pending)
-		if (chatOAuthPending) {
-			const result = await completeOAuthWithCode(chatOAuthPending, content);
-			chatOAuthPending = null;
-			if (result.success) {
-				addSystemMessage(`${PROVIDER_DISPLAY[result.provider] ?? result.provider} connected successfully!`);
-			} else {
-				addSystemMessage(`OAuth failed: ${result.error}`);
-			}
-			return;
-		}
-
-		// Handle /login commands before sending to API
-		const loginCmd = isLoginCommand(content);
-		if (loginCmd !== null) {
-			const { provider } = loginCmd;
-			if (!provider) {
-				addSystemMessage("Usage: /login openai or /login google");
-				return;
-			}
-			if (provider === "anthropic") {
-				addSystemMessage("OAuth is not available for Anthropic. Please add your API key in Settings or use /config.");
-				return;
-			}
-			if (provider === "openai" || provider === "google") {
-				try {
-					const pending = await startOAuthFlow(provider);
-					chatOAuthPending = pending;
-					window.open(pending.authUrl, "_blank");
-					addSystemMessage(`Opening ${PROVIDER_DISPLAY[provider] ?? provider} login... Authentication should complete automatically. If it doesn't, paste the callback URL here.`);
-				} catch (err) {
-					addSystemMessage(`Failed to start OAuth: ${err instanceof Error ? err.message : "unknown error"}`);
-				}
-				return;
-			}
-			// Unknown provider
-			addSystemMessage("Usage: /login openai or /login google");
-			return;
-		}
-
-		// Handle /model commands
-		const modelCmd = isModelCommand(content);
-		if (modelCmd !== null) {
-			if (modelCmd.type === "list") {
-				try {
-					const res = await fetch("/api/models");
-					if (!res.ok) throw new Error("Failed to fetch models");
-					const data: Array<{ provider: string; model: string; displayName?: string; available: boolean }> = await res.json();
-					const available = data.filter((m) => m.available);
-					if (available.length === 0) {
-						addSystemMessage("No models available. Add API keys in Settings.");
-					} else {
-						const lines = available.map((m) => `  ${m.provider}/${m.model}${m.displayName ? ` (${m.displayName})` : ""}`);
-						const current = selectedModel ? `Current: ${selectedModel.provider}/${selectedModel.model}` : "No model selected";
-						addSystemMessage(`Available models:\n${lines.join("\n")}\n\n${current}\n\nUsage: /model provider/model-name`);
-					}
-				} catch {
-					addSystemMessage("Failed to fetch available models.");
-				}
-				return;
-			}
-
-			// type === "switch"
-			try {
-				const res = await fetch("/api/models");
-				if (!res.ok) throw new Error("Failed to fetch models");
-				const data: Array<{ provider: string; model: string; available: boolean }> = await res.json();
-				const available = data.filter((m) => m.available);
-
-				let found: { provider: string; model: string } | null = null;
-
-				if (modelCmd.provider) {
-					found = available.find((m) => m.provider === modelCmd.provider && m.model === modelCmd.model) ?? null;
-				} else {
-					const matches = available.filter((m) => m.model === modelCmd.model);
-					if (matches.length === 1) {
-						found = matches[0]!;
-					} else if (matches.length > 1) {
-						const opts = matches.map((m) => `  ${m.provider}/${m.model}`).join("\n");
-						addSystemMessage(`Multiple models match "${modelCmd.model}":\n${opts}\n\nSpecify the provider: /model provider/${modelCmd.model}`);
-						return;
-					}
-				}
-
-				if (found) {
-					handleModelChange(found.provider, found.model);
-					addSystemMessage(`Switched to ${found.provider}/${found.model}`);
-				} else {
-					addSystemMessage(`Model not found: ${modelCmd.provider ? modelCmd.provider + "/" : ""}${modelCmd.model}\n\nType /model to see available models.`);
-				}
-			} catch {
-				addSystemMessage("Failed to fetch models for validation.");
-			}
-			return;
-		}
-
-		// Resolve activeLeafId — if it's a streaming placeholder, use its real parent instead
-		let resolvedParentId = activeLeafId;
-		if (resolvedParentId?.startsWith("streaming-")) {
-			const placeholder = allMessages.find((m) => m.id === resolvedParentId);
-			resolvedParentId = placeholder?.parentMessageId ?? null;
-		}
-
-		// Optimistic user message linked to current leaf
-		const optimisticUserMsg = makeOptimisticMessage({
-			id: `temp-${Date.now()}`,
-			conversationId: convId,
-			role: "user",
-			content,
-			parentMessageId: resolvedParentId,
-		});
-		allMessages = [...allMessages, optimisticUserMsg];
-		activeLeafId = optimisticUserMsg.id;
-		error = null;
-		userScrolledUp = false;
-		requestAnimationFrame(() => {
-			sentinel?.scrollIntoView({ behavior: "instant" as ScrollBehavior });
-		});
-
-		try {
-			const result = await sendMessage(convId, {
-				content,
-				provider: selectedModel?.provider,
-				model: selectedModel?.model,
-				parentMessageId: optimisticUserMsg.parentMessageId ?? undefined,
-				permissionMode: permissionModeOverride,
-				thinkingLevel: modelSupportsReasoning ? thinkingLevel : undefined,
-				attachments,
-			});
-
-			// Replace optimistic user message with real one.
-			// Merge attachments from the top-level response field so the card
-			// renders immediately even if the server skipped embedding them on
-			// userMessage.
-			const realUserMsg: Message = result.attachments && result.attachments.length > 0
-				? { ...result.userMessage, attachments: result.attachments }
-				: result.userMessage;
-			allMessages = allMessages.map((m) =>
-				m.id === optimisticUserMsg.id ? realUserMsg : m,
-			);
-
-			// Start streaming (returns false if run already errored)
-			const started = startStreaming(result.runId, convId);
-			if (!started) {
-				// Run completed/errored before POST returned — reconcile
-				activeRunId = null;
-				activeRunStartedAt = null;
-				serverStalenessMs = null;
-				await loadMessages();
-				return;
-			}
-			activeRunId = result.runId;
-			activeRunStartedAt = Date.now();
-			serverStalenessMs = 0;
-			resumedRun = false;
-
-			// Add placeholder assistant message
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${result.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: result.runId,
-				parentMessageId: result.userMessage.id,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-
-			// Auto-set title from first user message
-			if (allMessages.filter((m) => m.role === "user").length === 1) {
-				const title = content.substring(0, 50) + (content.length > 50 ? "..." : "");
-				updateConversation(convId, { title }).then(() => convList?.refresh()).catch(() => {});
-			}
-
-			// Detect @agent mentions and start sub-conversation
-			const mentions = parseMentions(content);
-			const agentMention = mentions.find(m => m.kind === "agent");
-			if (agentMention) {
-				startSubConvo({ name: agentMention.name }, result.userMessage.id);
-			}
-		} catch (err) {
-			error = "Failed to send message";
-			console.error(err);
-			allMessages = allMessages.filter((m) => m.id !== optimisticUserMsg.id);
-			// Restore previous leaf
-			activeLeafId = computeLatestLeaf(allMessages);
-		}
-	}
+	// ── Send-message handler family ──
+	// All of `handleSend`, edit/regenerate, retry/fallback, save-memory,
+	// branch-nav, and the sub-conversation cluster live in
+	// `$lib/chat/page-handlers/send-message.ts` (W7). Slots flow through
+	// the host below; the page stays the source of truth for every piece
+	// of reactive state. `messages()` reads the active-path derived;
+	// `sentinel()` is read fresh inside `requestAnimationFrame` so the
+	// optimistic-scroll lands after the just-pushed user bubble renders.
+	const sendApi = makeSendMessage({
+		convId: () => convId,
+		projectId: () => projectId,
+		selectedModel: { get: () => selectedModel, set: (v) => { selectedModel = v; } },
+		permissionModeOverride: { get: () => permissionModeOverride, set: (v) => { permissionModeOverride = v; } },
+		thinkingLevel: { get: () => thinkingLevel, set: (v) => { thinkingLevel = v; } },
+		modelSupportsReasoning: () => modelSupportsReasoning,
+		allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+		activeLeafId: { get: () => activeLeafId, set: (v) => { activeLeafId = v; } },
+		messages: () => messages,
+		editingMessageId: { get: () => editingMessageId, set: (v) => { editingMessageId = v; } },
+		editContent: { get: () => editContent, set: (v) => { editContent = v; } },
+		activeRunId: { get: () => activeRunId, set: (v) => { activeRunId = v; } },
+		activeRunStartedAt: { get: () => activeRunStartedAt, set: (v) => { activeRunStartedAt = v; } },
+		serverStalenessMs: { get: () => serverStalenessMs, set: (v) => { serverStalenessMs = v; } },
+		resumedRun: { get: () => resumedRun, set: (v) => { resumedRun = v; } },
+		error: { get: () => error, set: (v) => { error = v; } },
+		chatOAuthPending: { get: () => chatOAuthPending, set: (v) => { chatOAuthPending = v; } },
+		userScrolledUp: { get: () => userScrolledUp, set: (v) => { userScrolledUp = v; } },
+		settingsOpen: { get: () => settingsOpen, set: (v) => { settingsOpen = v; } },
+		obsOpen: { get: () => obsOpen, set: (v) => { obsOpen = v; } },
+		editRetryCall: { get: () => editRetryCall, set: (v) => { editRetryCall = v; } },
+		editRetryTool: {
+			get: () => editRetryTool as unknown,
+			set: (v) => { editRetryTool = v as ToolDefinition | null; },
+		},
+		savedMemories: { get: () => savedMemories, set: (v) => { savedMemories = v; } },
+		subConversations: { get: () => subConversations, set: (v) => { subConversations = v; } },
+		sentinel: () => sentinel ?? null,
+		convList: () => convList ?? null,
+		addSystemMessage,
+		loadMessages,
+		makeOptimisticMessage,
+		handleModelChange,
+		computeLatestLeaf,
+		findLeafByMessageId,
+	});
+	const handleSend = sendApi.handleSend;
+	const handleRegenerate = (msg: Message) => sendApi.handleRegenerate(msg);
+	const handleBranchNavigate = sendApi.handleBranchNavigate;
+	const handleSaveMemory = (msg: Message) => sendApi.handleSaveMemory(msg);
+	const handleRetry = (msg: Message) => sendApi.handleRetry(msg);
+	const handleFallback = (msg: Message, provider: string, model: string) =>
+		sendApi.handleFallback(msg, provider, model);
+	const handleSubConvoSend = sendApi.handleSubConvoSend;
+	const handleSubConvoReturn = sendApi.handleSubConvoReturn;
 
 	function handleEdit(msg: Message) {
 		editingMessageId = msg.id;
 		editContent = msg.content;
 	}
 
-	async function submitEdit(msg: Message) {
-		if (!convId || !editContent.trim()) return;
-		editingMessageId = null;
-
-		try {
-			const result = await sendMessage(convId, {
-				content: editContent,
-				provider: selectedModel?.provider,
-				model: selectedModel?.model,
-				editOf: msg.id,
-				thinkingLevel: modelSupportsReasoning ? thinkingLevel : undefined,
-			});
-
-			// Add the new user message to allMessages
-			allMessages = [...allMessages, result.userMessage];
-
-			// Start streaming for the AI response
-			activeRunId = result.runId;
-			activeRunStartedAt = Date.now();
-			serverStalenessMs = 0;
-			startStreaming(result.runId, convId);
-
-			// Add placeholder assistant message
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${result.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: result.runId,
-				parentMessageId: result.userMessage.id,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-		} catch (err) {
-			error = "Failed to edit message";
-			console.error(err);
-		}
-	}
+	const submitEdit = (msg: Message) => sendApi.handleEditConfirm(msg);
 
 	function cancelEdit() {
 		editingMessageId = null;
 		editContent = "";
 	}
 
-	async function handleRegenerate(msg: Message) {
-		if (!convId) return;
-
-		// Find the user message that preceded this assistant message in the current path
-		const msgIndex = messages.findIndex((m) => m.id === msg.id);
-		if (msgIndex <= 0) return;
-		const precedingUserMsg = messages[msgIndex - 1];
-		if (!precedingUserMsg || precedingUserMsg.role !== "user") return;
-
-		try {
-			// Re-send the user message content with editOf pointing to the assistant message
-			const result = await sendMessage(convId, {
-				content: precedingUserMsg.content,
-				provider: selectedModel?.provider,
-				model: selectedModel?.model,
-				editOf: msg.id,
-				thinkingLevel: modelSupportsReasoning ? thinkingLevel : undefined,
-			});
-
-			// Add the new user message (sibling of the original)
-			allMessages = [...allMessages, result.userMessage];
-
-			// Start streaming
-			activeRunId = result.runId;
-			activeRunStartedAt = Date.now();
-			serverStalenessMs = 0;
-			startStreaming(result.runId, convId);
-
-			// Add placeholder assistant
-			const assistantPlaceholder = makeOptimisticMessage({
-				id: `streaming-${result.runId}`,
-				conversationId: convId,
-				role: "assistant",
-				model: selectedModel?.model ?? null,
-				provider: selectedModel?.provider ?? null,
-				runId: result.runId,
-				parentMessageId: result.userMessage.id,
-			});
-			allMessages = [...allMessages, assistantPlaceholder];
-			activeLeafId = assistantPlaceholder.id;
-		} catch (err) {
-			error = "Failed to regenerate response";
-			console.error(err);
-		}
-	}
-
-	function handleBranchNavigate(messageId: string) {
-		// Navigate to the branch containing this message by finding its leaf
-		activeLeafId = findLeafByMessageId(allMessages, messageId);
-	}
-
 	function handleBranch(msg: Message) {
 		// Branch from this message: set it as the active leaf and focus input
 		activeLeafId = msg.id;
 		requestAnimationFrame(() => chatInput?.focus());
-	}
-
-	async function handleSaveMemory(msg: Message) {
-		try {
-			const res = await userFetch("/api/memories", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					content: msg.content,
-					category: "preferences",
-					confidence: "medium",
-				}),
-			});
-			if (res.status === 201) {
-				const memory = await res.json();
-				savedMemories = new Map(savedMemories).set(msg.id, memory.id);
-			}
-		} catch {
-			// silent
-		}
 	}
 
 	async function handleRemoveMemory(msg: Message) {
@@ -1523,46 +1198,6 @@
 			thinkingLevel = mode.preferredThinkingLevel;
 			localStorage.setItem("ezcorp-thinking-level", mode.preferredThinkingLevel);
 		}
-	}
-
-	async function handleRetry(msg: Message) {
-		// Find by ID first, fall back to content match (handles stale closure after reconcile)
-		let idx = messages.findIndex((m) => m.id === msg.id);
-		if (idx < 0) {
-			idx = messages.findIndex((m) => m.role === msg.role && m.content === msg.content);
-		}
-		if (idx < 0) return;
-
-		// Walk backwards to find the nearest user message
-		let userMsg: Message | undefined;
-		for (let i = idx - 1; i >= 0; i--) {
-			if (messages[i]!.role === "user") {
-				userMsg = messages[i];
-				break;
-			}
-		}
-		if (!userMsg) return;
-
-		allMessages = allMessages.filter((m) => m.id !== messages[idx]!.id);
-		activeLeafId = computeLatestLeaf(allMessages);
-		await handleSend(userMsg.content);
-	}
-
-	async function handleFallback(msg: Message, provider: string, model: string) {
-		const idx = messages.findIndex((m) => m.id === msg.id);
-		if (idx <= 0) return;
-		const userMsg = messages[idx - 1];
-		if (!userMsg || userMsg.role !== "user") return;
-
-		// Remove the error message, then re-send with suggested provider/model
-		allMessages = allMessages.filter((m) => m.id !== msg.id);
-		activeLeafId = computeLatestLeaf(allMessages);
-
-		// Temporarily override selected model for this send
-		const prevModel = selectedModel;
-		selectedModel = { provider, model };
-		await handleSend(userMsg.content);
-		selectedModel = prevModel;
 	}
 
 	async function handleCreate() {

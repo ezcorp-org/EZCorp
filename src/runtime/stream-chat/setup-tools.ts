@@ -379,32 +379,41 @@ export async function setupTools(
           // If subAgentMembers is provided (nested invocation), use it directly
           if (options.subAgentMembers?.length) {
             try {
-              const { getAgentConfig } = await import("../../db/queries/agent-configs");
-              await Promise.all(options.subAgentMembers.map(async (member) => {
-                if (seenIds.has(member.agentConfigId)) return;
-                const cfg = await getAgentConfig(member.agentConfigId);
+              const { getAgentConfigsByIds } = await import("../../db/queries/agent-configs");
+              // Single batched round trip for every sub-agent member id
+              // (was N concurrent `getAgentConfig` calls — typically < 50
+              // members per team, but each was its own SELECT). Walk the
+              // member list in source order, consuming the Map.
+              const memberIds = options.subAgentMembers.map((m) => m.agentConfigId);
+              const memberById = await getAgentConfigsByIds(memberIds);
+              for (const member of options.subAgentMembers) {
+                if (seenIds.has(member.agentConfigId)) continue;
+                const cfg = memberById.get(member.agentConfigId);
                 if (cfg) {
                   seenIds.add(cfg.id);
                   allAvailableAgents.push({ id: cfg.id, name: cfg.name, description: cfg.description });
                 } else {
                   log.warn(`Sub-agent member ${member.agentConfigId} not found in DB — skipped`);
                 }
-              }));
+              }
             } catch { /* Sub-agent member wiring failure is non-fatal */ }
           } else if (options.agentConfigId) {
             try {
-              const { getAgentConfig } = await import("../../db/queries/agent-configs");
+              const { getAgentConfig, getAgentConfigsByIds } = await import("../../db/queries/agent-configs");
               const config = await getAgentConfig(options.agentConfigId);
               const refs = config?.references as { agents?: string[]; extensions?: string[]; members?: import("../../types").TeamMember[]; autoSpinUp?: boolean; teamToolScope?: import("../../types").TeamToolScope } | null;
               if (refs?.agents?.length) {
-                await Promise.all(refs.agents.map(async (agentId) => {
-                  if (seenIds.has(agentId)) return;
-                  const member = await getAgentConfig(agentId);
+                // Single batched round trip for the team's referenced
+                // agents (was N concurrent `getAgentConfig` calls).
+                const memberById = await getAgentConfigsByIds(refs.agents);
+                for (const agentId of refs.agents) {
+                  if (seenIds.has(agentId)) continue;
+                  const member = memberById.get(agentId);
                   if (member) {
                     seenIds.add(member.id);
                     allAvailableAgents.push({ id: member.id, name: member.name, description: member.description });
                   }
-                }));
+                }
                 // If config is a team, store for team prompt injection
                 if (config?.category === "team" && mentionedTeams.length === 0) {
                   orchRun._teamConfig = { name: config.name, prompt: config.prompt, autoSpinUp: refs?.autoSpinUp ?? false };

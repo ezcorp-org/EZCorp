@@ -102,7 +102,9 @@
 		<div class="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3">
 			<h2 class="text-sm font-semibold text-[var(--color-text-primary)]">Observability</h2>
 			<button
+				type="button"
 				onclick={onclose}
+				aria-label="Close"
 				class="rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
 			>
 				<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

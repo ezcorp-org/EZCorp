@@ -192,7 +192,9 @@
 				{/if}
 			</div>
 			<button
+				type="button"
 				onclick={onclose}
+				aria-label="Close"
 				class="rounded p-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)]"
 			>
 				<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -557,7 +557,9 @@
 				</div>
 				<div class="flex-1"></div>
 				<button
+					type="button"
 					onclick={closeTeamPanel}
+					aria-label="Close"
 					class="rounded p-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)]"
 				>
 					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -713,7 +715,9 @@
 			<div class="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3">
 				<h2 class="text-sm font-semibold text-[var(--color-text-primary)]">Team: {teamName ?? 'Unknown'}</h2>
 				<button
+					type="button"
 					onclick={closeTeamPanel}
+					aria-label="Close"
 					class="rounded p-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)]"
 				>
 					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

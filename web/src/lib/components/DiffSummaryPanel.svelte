@@ -110,7 +110,9 @@
 					>Unified</button>
 				</div>
 				<button
+					type="button"
 					onclick={onclose}
+					aria-label="Close"
 					class="rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
 					data-testid="diff-panel-close"
 				>

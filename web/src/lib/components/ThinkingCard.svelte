@@ -18,9 +18,9 @@
 <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] overflow-hidden">
 	<!-- Collapsed header -->
 	<button
+		type="button"
 		onclick={() => expanded = !expanded}
 		class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-secondary)]/50 transition-colors"
-		role="button"
 		aria-expanded={isOpen}
 	>
 		<!-- Brain icon -->

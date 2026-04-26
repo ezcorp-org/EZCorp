@@ -4,13 +4,13 @@ import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
 import * as convQueries from "$server/db/queries/conversations";
-import { getExecutor, getBus } from "$lib/server/context";
+import { getExecutor } from "$lib/server/context";
 import {
   ensureTaskTrackingWired,
   getTaskSnapshotForConversation,
 } from "$server/runtime/task-tracking-host";
 import type { TaskSnapshot } from "$server/runtime/task-tracking-host";
-import { findAssignment, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
+import { broadcastAssignmentUpdate, findAssignment, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
 
 /**
  * POST — Stop a running assignment.
@@ -76,11 +76,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
   }
 
   await writeAndBroadcastSnapshot(params.id, snapshot);
-  getBus().emit("task:assignment_update", {
-    conversationId: params.id,
-    taskId: params.taskId,
-    assignment,
-  });
+  broadcastAssignmentUpdate(params.id, params.taskId, assignment);
 
   return json({ stopped: true, cancelled, assignment });
 };

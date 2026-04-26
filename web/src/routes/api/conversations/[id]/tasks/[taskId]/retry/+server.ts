@@ -13,7 +13,7 @@ import {
   writeTaskSnapshotForConversation,
 } from "$server/runtime/task-tracking-host";
 import type { TaskAssignment, TaskSnapshot } from "$server/runtime/task-tracking-host";
-import { writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
+import { broadcastAssignmentUpdate, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
 
 // Boundary validation. Same shape as the sibling /start endpoint —
 // optional `{ model, provider }` for the auto-spawn path; empty body
@@ -109,13 +109,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
   await writeAndBroadcastSnapshot(params.id, snapshot);
 
-  const bus = getBus();
   for (const a of resetAssignments) {
-    bus.emit("task:assignment_update", {
-      conversationId: params.id,
-      taskId: params.taskId,
-      assignment: a,
-    });
+    broadcastAssignmentUpdate(params.id, params.taskId, a);
   }
 
   // Auto-spawn when there's exactly one runnable assignment. Matches
@@ -136,7 +131,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     const { startAssignment } = await import("$server/runtime/start-assignment");
     const { subConversationId, agentRunId } = await startAssignment({
       executor: getExecutor(),
-      bus,
+      bus: getBus(),
       conversationId: params.id,
       taskId: params.taskId,
       assignment,

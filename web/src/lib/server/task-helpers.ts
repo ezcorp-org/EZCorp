@@ -63,3 +63,28 @@ export async function writeAndBroadcastSnapshot(
     ...(snapshot.activeTaskId !== undefined ? { activeTaskId: snapshot.activeTaskId } : {}),
   });
 }
+
+/**
+ * Emit a `task:assignment_update` bus event with the canonical
+ * `{ conversationId, taskId, assignment }` payload shape used by the
+ * assign POST, retry, and stop handlers. The bundled task-tracking
+ * extension subscribes to this event and persists the merged state
+ * back to its own storage row; the manual handlers also emit it so
+ * client subscriptions update without waiting for the extension's
+ * write-back.
+ *
+ * Callers that need to fan out across multiple assignments (e.g. the
+ * retry handler resetting N failed assignments) should call this once
+ * per assignment.
+ */
+export function broadcastAssignmentUpdate(
+  conversationId: string,
+  taskId: string,
+  assignment: TaskAssignment,
+): void {
+  getBus().emit("task:assignment_update", {
+    conversationId,
+    taskId,
+    assignment,
+  });
+}

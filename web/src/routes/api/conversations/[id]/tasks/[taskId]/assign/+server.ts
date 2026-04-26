@@ -6,12 +6,11 @@ import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
 import * as convQueries from "$server/db/queries/conversations";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
-import { getBus } from "$lib/server/context";
 import {
   getTaskSnapshotForConversation,
   ensureTaskTrackingWired,
 } from "$server/runtime/task-tracking-host";
-import { writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
+import { broadcastAssignmentUpdate, writeAndBroadcastSnapshot } from "$lib/server/task-helpers";
 
 // Boundary validation. POST attaches an agent config to a task (or
 // optional subtask); DELETE removes an existing assignment by id.
@@ -92,11 +91,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   }
 
   await writeAndBroadcastSnapshot(params.id, snapshot);
-  getBus().emit("task:assignment_update", {
-    conversationId: params.id,
-    taskId: params.taskId,
-    assignment,
-  });
+  broadcastAssignmentUpdate(params.id, params.taskId, assignment);
 
   return json({ assignment, snapshot });
 };

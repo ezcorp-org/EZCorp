@@ -5,6 +5,9 @@ import { getMemoryById, updateMemory, updateMemoryStatus, deleteMemory, getMemor
 import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
+import { logger } from "$server/logger";
+
+const log = logger.child("api.memories");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -73,7 +76,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
         const embedding = await generateEmbedding(content);
         await updateMemory(params.id, { embedding });
       } catch (err) {
-        console.error("[api/memories] Re-embedding failed:", err);
+        log.error("re-embedding failed", {
+          error: err instanceof Error ? err.message : String(err),
+          memoryId: params.id,
+        });
       }
     })();
   }

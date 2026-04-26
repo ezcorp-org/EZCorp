@@ -5,6 +5,9 @@ import { upsertSetting } from "$server/db/queries/settings";
 import { OAUTH_CONFIG } from "$lib/server/oauth-config";
 import { startOAuthCallbackServer } from "$server/auth/oauth-callback-server";
 import { errorJson } from "$lib/server/http-errors";
+import { logger } from "$server/logger";
+
+const log = logger.child("api.auth.oauth");
 
 /** Base64url encode without padding. */
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -96,9 +99,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			if (parsedOrigin && parsedOrigin === url.origin) {
 				appOrigin = parsedOrigin;
 			} else {
-				console.warn(
-					`[oauth] Rejected untrusted app_origin=${rawAppOrigin}; falling back to ${url.origin}`,
-				);
+				log.warn("rejected untrusted app_origin; falling back to request origin", {
+					rawAppOrigin,
+					fallbackOrigin: url.origin,
+				});
 			}
 		}
 		const appCallbackUrl = `${appOrigin}/auth/callback`;
@@ -106,9 +110,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 		try {
 			startOAuthCallbackServer(config.callbackPort, appCallbackUrl);
-			console.log(`[oauth] Callback server started on port ${config.callbackPort}, will redirect to ${appCallbackUrl}`);
+			log.info("callback server started", { port: config.callbackPort, appCallbackUrl });
 		} catch (err) {
-			console.error(`[oauth] Failed to start callback server on port ${config.callbackPort}:`, err);
+			log.error("failed to start callback server", {
+				port: config.callbackPort,
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 
 		// sec-M2: store {state, codeVerifier, redirectUri, provider, createdAt}
@@ -131,7 +138,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		// callback POST body still work; they are not secrets.
 		return json({ url: authUrl, state, redirectUri });
 	} catch (e) {
-		console.error(`[oauth] Failed for ${provider}:`, e);
+		log.error("oauth flow failed", {
+			provider,
+			error: e instanceof Error ? e.message : String(e),
+		});
 		return errorJson(400, (e as Error).message);
 	}
 };

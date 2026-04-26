@@ -65,8 +65,9 @@
 			<div class="grid grid-cols-2 gap-3">
 				{#each RATE_CATEGORIES as cat}
 					<div>
-						<label class="mb-1 block text-xs text-[var(--color-text-secondary)]">{cat.label}</label>
+						<label for="security-rate-{cat.key}" class="mb-1 block text-xs text-[var(--color-text-secondary)]">{cat.label}</label>
 						<input
+							id="security-rate-{cat.key}"
 							type="number"
 							min="1"
 							bind:value={rateLimits[cat.key]}
@@ -98,8 +99,9 @@
 			<div class="grid grid-cols-2 gap-3">
 				{#each STORAGE_QUOTAS as q}
 					<div>
-						<label class="mb-1 block text-xs text-[var(--color-text-secondary)]">{q.label}</label>
+						<label for="security-quota-{q.key}" class="mb-1 block text-xs text-[var(--color-text-secondary)]">{q.label}</label>
 						<input
+							id="security-quota-{q.key}"
 							type="number"
 							min="1"
 							bind:value={quotas[q.key]}

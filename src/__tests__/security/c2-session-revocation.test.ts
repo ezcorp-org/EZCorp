@@ -102,6 +102,17 @@ mock.module("../../db/queries/settings", settingsMock);
 
 const sessionsMock = () => ({
   hashToken: async (t: string) => `hash:${t}`,
+  // Hooks call lookupSessionByTokenHash; mirror the same matching logic and
+  // wrap into the {session, viaPrevious} discriminator. Revocation test only
+  // exercises the current-hash path, so viaPrevious stays false.
+  lookupSessionByTokenHash: async (tokenHash: string) => {
+    if (storedSession && storedSession.tokenHash === tokenHash) {
+      return { session: storedSession, viaPrevious: false };
+    }
+    return null;
+  },
+  // Kept so non-hooks consumers (login page, logout endpoint, etc.) imported
+  // through the same module mock still work if ever invoked.
   getSessionByTokenHash: async (tokenHash: string) => {
     if (storedSession && storedSession.tokenHash === tokenHash) return storedSession;
     return null;
@@ -119,6 +130,7 @@ const sessionsMock = () => ({
   touchSession: async (id: string) => {
     touchSessionCalls.push(id);
   },
+  rotateSessionToken: async () => null,
   deleteExpiredSessions: async () => {},
 });
 mock.module("$server/db/queries/sessions", sessionsMock);
@@ -294,7 +306,9 @@ describe("sec-C2: missing session row clears cookies & redirects (browser)", () 
     expect(response).toBeNull();
     expect(redirect).not.toBeNull();
     expect(redirect!.status).toBe(302);
-    expect(redirect!.location).toBe("/login?reason=session_revoked");
+    // GET nav is bounced with a returnTo so the user lands back on the
+    // same page after re-auth (added with the safe-redirect work).
+    expect(redirect!.location).toBe("/login?reason=session_revoked&returnTo=%2Fdashboard");
 
     // Cookies cleared
     expect(deleted.has("ezcorp_session")).toBe(true);

@@ -90,18 +90,26 @@
 	// If multiple dock-mode tools complete in a tight window, only the LAST
 	// fires openDock — see plan §7.6.
 	let openDockTimer: ReturnType<typeof setTimeout> | undefined;
+	const initialStatus = call.status;
+	let firedOnce = $state(false);
 	$effect(() => {
+		// Auto-open ONLY on a live status flip during this page session.
+		// Cards that mount already-complete — scrollback, page reload — are
+		// skipped here so we don't cycle through every historical canvas.
+		// DockHost handles initial mount by picking the latest dock-mode call.
+		if (initialStatus === "complete") return;
+		if (firedOnce) return;
 		if (!routeToDock || !call.id || !call.conversationId) return;
-		// Skip if the user has explicitly dismissed this toolCallId — without
-		// this guard, closeDock triggers an immediate re-open loop.
 		if (store.dismissedDocks[call.conversationId]?.[call.id]) return;
-		// Skip if dock already shows this id.
 		const existing = store.dockState[call.conversationId];
 		if (existing?.toolCallId === call.id) return;
 		clearTimeout(openDockTimer);
 		const id = call.id;
 		const conv = call.conversationId;
-		openDockTimer = setTimeout(() => { openDock(conv, id); }, 500);
+		openDockTimer = setTimeout(() => {
+			openDock(conv, id);
+			firedOnce = true;
+		}, 500);
 		return () => { clearTimeout(openDockTimer); };
 	});
 

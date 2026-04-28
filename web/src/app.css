@@ -67,19 +67,6 @@ html[data-dev-indicator="1"] img[src="/logo.svg"] {
   padding-bottom: 0.5rem;
 }
 
-@media (min-width: 768px) {
-  .chat-input-container {
-    margin-bottom: 0;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-
-  /* Desktop only: collapse padding while typing so the input doesn't feel oversized.
-     Mobile keeps its breathing room above the keyboard / nav. */
-  :root:has(textarea:focus-visible) .chat-input-container {
-    padding-bottom: 0;
-  }
-}
-
 /* WCAG 2.1 AA focus indicators — keyboard-only via :focus-visible */
 :focus-visible {
   outline: 2px solid var(--color-accent, #60a5fa);

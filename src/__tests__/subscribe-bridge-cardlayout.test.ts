@@ -64,6 +64,91 @@ beforeEach(() => {
 	ExtensionRegistry.resetInstance();
 });
 
+describe("validation: subscribeBridge — clarify-brief tool propagation", () => {
+	test("clarify-brief tool start/complete fan-out + persist with cardType=design-brief", async () => {
+		// The new `claude-design:clarify-brief` form-card tool must round-trip
+		// through subscribeBridge the same way knob-changing does. Without
+		// this, the brief card never renders in chat. Mirrors the dock-mode
+		// case below but locks in cardType="design-brief".
+		const registry = ExtensionRegistry.getInstance();
+		registry.registerToolForTest("claude-design__clarify-brief", {
+			name: "claude-design__clarify-brief",
+			description: "Open a structured-brief form card",
+			inputSchema: { type: "object" },
+			cardType: "design-brief",
+			extensionId: "ext-cd",
+			extensionName: "claude-design",
+			originalName: "clarify-brief",
+		});
+
+		const emits: EmittedEvent[] = [];
+		const bus = makeBus(emits);
+		const piAgent = makePiAgent();
+		const ctx: StreamChatContext = {
+			run: { id: "run-1" } as any,
+			controller: new AbortController(),
+			system: undefined,
+			agentTools: [],
+			toolAbortControllers: new Map(),
+			builtinToolDefsMap: new Map(),
+			unsubModeChange: undefined,
+			allTurnsText: "",
+			turnText: "",
+			turnThinking: "",
+			turnHasToolCalls: false,
+			pendingToolArgs: new Map(),
+			unsub: undefined,
+			unsubAgentActivity: [],
+			lastSavedMessageId: null,
+			dbQueue: Promise.resolve(),
+			totalUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as any,
+		} as unknown as StreamChatContext;
+		const host: StreamChatHost = {
+			bus,
+			persist: true,
+			pendingPermissions: new Map(),
+			controllers: new Map(),
+			runConversations: new Map(),
+			activeAgents: new Map(),
+			runs: new Map(),
+			watchdog: { bumpActivity: () => {} } as any,
+			stateMediator: undefined,
+			spawnQuota: {} as any,
+			executor: {} as any,
+		};
+		subscribeBridge(ctx, host, piAgent as any, "conv-1", {}, null);
+
+		piAgent.fire({ type: "turn_start" });
+		piAgent.fire({
+			type: "tool_execution_start",
+			toolCallId: "tc-brief-1",
+			toolName: "claude-design__clarify-brief",
+			args: { fields: [{ key: "tone", label: "Tone", kind: "text" }] },
+		});
+		piAgent.fire({
+			type: "tool_execution_end",
+			toolCallId: "tc-brief-1",
+			toolName: "claude-design__clarify-brief",
+			isError: false,
+			result: {
+				content: [{ type: "text", text: JSON.stringify({ tone: "modern" }) }],
+			},
+		});
+
+		const startEvt = emits.find((e) => e.name === "tool:start");
+		const completeEvt = emits.find((e) => e.name === "tool:complete");
+		expect(startEvt).toBeDefined();
+		expect(completeEvt).toBeDefined();
+		expect(startEvt!.data.cardType).toBe("design-brief");
+		expect(completeEvt!.data.cardType).toBe("design-brief");
+
+		await ctx.dbQueue;
+		const row = persisted.find((r) => r.id === "tc-brief-1");
+		expect(row).toBeDefined();
+		expect(row!.cardType).toBe("design-brief");
+	});
+});
+
 describe("subscribeBridge — cardLayout fan-out", () => {
 	test('extension tool with cardLayout: "dock" → events carry cardLayout AND persistToolCall is called with it', async () => {
 		const registry = ExtensionRegistry.getInstance();

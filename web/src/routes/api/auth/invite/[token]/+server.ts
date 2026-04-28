@@ -6,8 +6,10 @@ import { createUser, getUserByEmail } from "$server/db/queries/users";
 import { hashPassword } from "$server/auth/password";
 import { signJWT, getJwtSecret } from "$server/auth/jwt";
 import { insertAuditEntry } from "$server/db/queries/audit-log";
+import { hashToken, createSession } from "$server/db/queries/sessions";
 import { passwordSchema } from "$lib/server/security/validation";
 import { RateLimiter } from "$lib/server/security/rate-limiter";
+import { getSessionConfig, setSessionCookie } from "$lib/server/auth/session-cookie";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -77,20 +79,26 @@ export const POST: RequestHandler = async ({ params, request, cookies, getClient
   await markInviteUsed(invite.id);
   await insertAuditEntry(user.id, "user:registered");
 
+  const cfg = getSessionConfig();
   const secret = await getJwtSecret();
   const token = await signJWT(
     { id: user.id, email: user.email, name: user.name, role: user.role },
-    secret
+    secret,
+    cfg.lifetimeSeconds,
   );
 
-  const isSecure = process.env.FORCE_SECURE_COOKIES === "true" || request.url.startsWith("https");
-  cookies.set("ezcorp_session", token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge: 30 * 24 * 3600,
-    secure: isSecure,
-  });
+  // Mirror login/setup: persist a session row so hooks.server.ts's revocation
+  // check (missing row = revoked) accepts the cookie on the next nav. Without
+  // this, the freshly-signed-up user lands on /login on their first request
+  // post-signup because no row matches the JWT.
+  const tokenHash = await hashToken(token);
+  const expiresAt = new Date(Date.now() + cfg.lifetimeSeconds * 1000);
+  const userAgent = request.headers.get("user-agent");
+  let ipAddress: string | null = null;
+  try { ipAddress = getClientAddress(); } catch { /* proxy not configured */ }
+  await createSession({ userId: user.id, tokenHash, userAgent, ipAddress, expiresAt });
+
+  setSessionCookie(cookies, token);
 
   return json({
     user: { id: user.id, name: user.name, email: user.email, role: user.role },

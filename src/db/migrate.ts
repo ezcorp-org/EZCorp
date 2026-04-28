@@ -552,6 +552,18 @@ export async function migrate(db: any): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash)`);
 
+  // Sliding-refresh rotation grace: lookup matches either the current hash
+  // or the previous hash (within its grace window). The previous-hash
+  // partial index keeps the lookup cheap without indexing the dominant
+  // NULL state. See web/src/hooks.server.ts sliding-refresh path.
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS previous_token_hash TEXT`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS previous_token_expires_at TIMESTAMP WITH TIME ZONE`);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_sessions_previous_token_hash
+    ON sessions(previous_token_hash)
+    WHERE previous_token_hash IS NOT NULL
+  `);
+
   // ── Phase 43: Error Logs ────────────────────────────────────────
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS error_logs (

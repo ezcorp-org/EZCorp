@@ -28,6 +28,13 @@ vi.mock("$server/auth/jwt", () => ({
 vi.mock("$server/db/queries/audit-log", () => ({
   insertAuditEntry: vi.fn(async () => undefined),
 }));
+// Endpoint persists a session row post-signup so hooks.server.ts's
+// revocation check accepts the cookie on the next request — mock the DB
+// so we don't need PGlite in this unit test.
+vi.mock("$server/db/queries/sessions", () => ({
+  hashToken: vi.fn(async () => "session-hash"),
+  createSession: vi.fn(async () => ({ id: "sess-1" })),
+}));
 
 const { getInviteByToken, markInviteUsed } = await import(
   "$server/db/queries/invites"

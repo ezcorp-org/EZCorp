@@ -6,6 +6,7 @@
 	import { page } from "$app/state";
 	import { initTheme } from "$lib/theme.js";
 	import { matchShortcut, loadCustomShortcuts, type ShortcutBinding } from "$lib/shortcuts.js";
+	import { startAuthKeepalive } from "$lib/auth-keepalive.js";
 	import ProjectRail from "$lib/components/ProjectRail.svelte";
 	import ThemeToggle from "$lib/components/ThemeToggle.svelte";
 	import CommandPalette from "$lib/components/CommandPalette.svelte";
@@ -111,8 +112,10 @@
 
 		document.addEventListener("keydown", handleGlobalKeydown);
 		document.addEventListener("click", closeUserMenu);
+		const stopKeepalive = startAuthKeepalive();
 		return () => {
 			cleanup();
+			stopKeepalive();
 			document.removeEventListener("keydown", handleGlobalKeydown);
 			document.removeEventListener("click", closeUserMenu);
 		};
@@ -136,6 +139,37 @@
 
 	// Chat routes use absolute positioning and need full-bleed (no padding)
 	let isChatRoute = $derived(page.url.pathname.includes('/chat'));
+
+	// Active chat conversation id (from `/chat/<convId>` segment). Used to
+	// drive responsive width for the right-side canvas dock — when a dock
+	// is open in the current conversation, `<main>` shrinks to leave room
+	// for the panel instead of being overlaid.
+	let activeChatConvId = $derived.by((): string | null => {
+		const m = page.url.pathname.match(/\/chat\/([^/?#]+)/);
+		return m?.[1] ?? null;
+	});
+
+	// Viewport-aware mobile breakpoint — mirror DockHost's threshold. On
+	// mobile the dock is a full-screen overlay, so the chat doesn't shrink.
+	let viewportWidth = $state<number>(typeof window !== "undefined" ? window.innerWidth : 1280);
+	$effect(() => {
+		if (typeof window === "undefined") return;
+		const onResize = () => { viewportWidth = window.innerWidth; };
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	});
+	let isMobileViewport = $derived(viewportWidth <= 640);
+
+	// How much to reserve on the right edge for the dock. Zero on:
+	//   - non-chat routes (dock isn't visible)
+	//   - chat routes with no open dock
+	//   - mobile viewports (dock covers the chat)
+	let reservedDockPx = $derived.by((): number => {
+		if (!activeChatConvId) return 0;
+		if (!store.dockState[activeChatConvId]) return 0;
+		if (isMobileViewport) return 0;
+		return store.dockSizePx;
+	});
 
 	let isGlobalProject = $derived(store.activeProjectId === "global");
 
@@ -294,7 +328,17 @@
 	{/if}
 
 	<!-- Main content -->
-	<main class="relative flex-1 overflow-y-auto {isChatRoute ? 'flex flex-col' : ''}">
+	<!--
+	  `padding-right` reserves space for the right-side canvas dock when one
+	  is open in the active chat. Without this, DockHost (position: fixed)
+	  overlays the chat — the user can't see both. The transition matches
+	  the sidebar collapse animation (200ms) for visual consistency, and
+	  drops to 0 on mobile where the dock takes the full viewport.
+	-->
+	<main
+		class="relative flex-1 overflow-y-auto {isChatRoute ? 'flex flex-col' : ''}"
+		style="padding-right: {reservedDockPx}px; transition: padding-right 200ms ease-in-out;"
+	>
 		<!-- Mobile header (hidden on chat routes - chat has its own mobile header) -->
 		{#if !isChatRoute}
 		<div class="flex md:hidden items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3">

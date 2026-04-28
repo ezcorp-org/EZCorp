@@ -9,6 +9,7 @@ import { loginSchema } from "./schema";
 import { validationError } from "$lib/server/security/validation";
 import { errorJson } from "$lib/server/http-errors";
 import { RateLimiter } from "$lib/server/security/rate-limiter";
+import { getSessionConfig, setSessionCookie } from "$lib/server/auth/session-cookie";
 
 // sec-L1: per-IP brute-force throttle. 5 attempts / 15 min hits before
 // any body parse so an attacker spraying credentials can't even keep
@@ -75,33 +76,27 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
     return errorJson(401, "Invalid credentials");
   }
 
+  const cfg = getSessionConfig();
   const secret = await getJwtSecret();
   const token = await signJWT(
     { id: user.id, email: user.email, name: user.name, role: user.role },
-    secret
+    secret,
+    cfg.lifetimeSeconds,
   );
 
   // Create session record for revocation support
   const tokenHash = await hashToken(token);
-  const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000);
+  const expiresAt = new Date(Date.now() + cfg.lifetimeSeconds * 1000);
   const userAgent = request.headers.get("user-agent");
   let ipAddress: string | null = null;
   try { ipAddress = getClientAddress(); } catch { /* proxy not configured */ }
   await createSession({ userId: user.id, tokenHash, userAgent, ipAddress, expiresAt });
 
-  // Only opt-in via FORCE_SECURE_COOKIES. We can't trust request.url to
-  // detect HTTPS reliably — svelte-adapter-bun's get_origin() defaults the
-  // protocol to "https" when ORIGIN env is unset, which would mark the
-  // cookie Secure on a plain-HTTP deployment. Browsers then refuse to
-  // store it, producing an infinite login loop with no audit-log signal.
-  const isSecure = process.env.FORCE_SECURE_COOKIES === "true";
-  cookies.set("ezcorp_session", token, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge: 30 * 24 * 3600,
-    secure: isSecure,
-  });
+  // setSessionCookie centralizes the FORCE_SECURE_COOKIES handling. We can't
+  // trust request.url to detect HTTPS reliably — svelte-adapter-bun's
+  // get_origin() defaults the protocol to "https" when ORIGIN env is unset,
+  // which would mark the cookie Secure on a plain-HTTP deployment.
+  setSessionCookie(cookies, token);
 
   await insertAuditEntry(user.id, "auth:login");
 

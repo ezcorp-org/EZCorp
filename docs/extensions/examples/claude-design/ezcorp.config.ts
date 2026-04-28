@@ -1,4 +1,24 @@
+import { readFileSync } from "node:fs";
 import { defineExtension } from "../../../../src/extensions/sdk/define";
+
+// Load the bundled skill knowledge files at module init so the
+// content can be inlined into the agent prompt. Wrap each read in a
+// try/catch so a missing file degrades to an empty section rather
+// than failing the manifest load (which would prevent the bundled-
+// installer from running at boot).
+function loadSkill(filename: string): string {
+  try {
+    return readFileSync(
+      new URL(`./knowledge/${filename}`, import.meta.url),
+      "utf-8",
+    );
+  } catch {
+    return "";
+  }
+}
+
+const aestheticPhilosophy = loadSkill("design-aesthetic-philosophy.md");
+const systemGuide = loadSkill("design-system-guide.md");
 
 export default defineExtension({
   schemaVersion: 2,
@@ -38,6 +58,49 @@ export default defineExtension({
       },
     },
     {
+      name: "clarify-brief",
+      description:
+        "Open a form card collecting structured design-brief answers from the user. " +
+        "Use BEFORE generate-design when the prompt is missing tone/audience/sections/brand/" +
+        "references/output mode. Skip when the prompt already covers them. Renders inline " +
+        "in the assistant message — text fields become textareas, select fields become " +
+        "single-select dropdowns, multi-select fields become checkbox groups.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          intro: {
+            type: "string",
+            description: "Optional one-line preface above the form.",
+          },
+          fields: {
+            type: "array",
+            description: "Ordered list of fields the form should collect.",
+            items: {
+              type: "object",
+              properties: {
+                key: { type: "string" },
+                label: { type: "string" },
+                kind: {
+                  type: "string",
+                  enum: ["text", "select", "multi-select"],
+                },
+                options: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Required for kind=select / multi-select.",
+                },
+                placeholder: { type: "string" },
+                required: { type: "boolean" },
+              },
+              required: ["key", "label", "kind"],
+            },
+          },
+        },
+        required: ["fields"],
+      },
+      cardType: "design-brief",
+    },
+    {
       name: "generate-design",
       description:
         "Generate an HTML draft. The tool wraps your `bodyMarkup` with a head section " +
@@ -46,6 +109,8 @@ export default defineExtension({
         "scaffolder, not a model caller. Body MUST reference design tokens via " +
         "`var(--color-*)` and `calc(var(--space-unit) * N)` — that's what makes " +
         "subsequent knob tweaks (color/spacing/typography) a one-line CSS-var rewrite. " +
+        "Optionally pass `knobs` (descriptor array) and `knobsTitle` so the canvas " +
+        "sidebar renders inputs that match the variables you actually used. " +
         "Returns the draft id and path.",
       inputSchema: {
         type: "object",
@@ -74,6 +139,39 @@ export default defineExtension({
             type: "string",
             description: "If iterating on a prior draft, pass its id to fork from it.",
           },
+          knobs: {
+            type: "array",
+            description:
+              "Optional descriptor array driving the canvas sidebar. Each descriptor declares " +
+              "ONE knob: key (logical id), label, kind (color|range|select|text), var (CSS variable " +
+              "rewritten on change; auto-derived from kebab(key) when absent), and optional " +
+              "options (for select), min/max/step/unit (for range), behavior=\"scale-spacing\", " +
+              "current (initial value).",
+            items: {
+              type: "object",
+              properties: {
+                key: { type: "string" },
+                label: { type: "string" },
+                kind: {
+                  type: "string",
+                  enum: ["color", "range", "select", "text"],
+                },
+                var: { type: "string" },
+                behavior: { type: "string", enum: ["scale-spacing"] },
+                options: { type: "array", items: { type: "string" } },
+                min: { type: "number" },
+                max: { type: "number" },
+                step: { type: "number" },
+                unit: { type: "string", enum: ["px", "rem", "em", "%", ""] },
+                current: { type: "string" },
+              },
+              required: ["key", "label", "kind"],
+            },
+          },
+          knobsTitle: {
+            type: "string",
+            description: "Sidebar header text (e.g. 'Hero & feature grid knobs').",
+          },
         },
         required: ["prompt", "kind", "bodyMarkup"],
       },
@@ -92,19 +190,8 @@ export default defineExtension({
           knobs: {
             type: "object",
             description:
-              "Knob adjustments. Supported: primaryColor (hex), secondaryColor (hex), " +
-              "spacingScale (e.g. '+10%' or '-5%'), borderRadius (px), density " +
-              "('compact'|'cozy'|'spacious').",
-            properties: {
-              primaryColor: { type: "string" },
-              secondaryColor: { type: "string" },
-              spacingScale: { type: "string" },
-              borderRadius: { type: "string" },
-              density: {
-                type: "string",
-                "x-options": { options: ["compact", "cozy", "spacious"], allowCustom: false },
-              },
-            },
+              "Knob values keyed by descriptor `key`. For legacy drafts (no descriptors), " +
+              "supported keys: primaryColor, secondaryColor, spacingScale, borderRadius, density.",
           },
         },
         required: ["draftId", "knobs"],
@@ -144,6 +231,18 @@ export default defineExtension({
       },
     },
     {
+      name: "list-revisions",
+      description:
+        "List revisions of a draft, newest first. Each revision carries the knobValues " +
+        "that produced it. Useful for showing the user a history and for revert: pass a " +
+        "revision's knobValues back through tweak-design to recreate that state.",
+      inputSchema: {
+        type: "object",
+        properties: { draftId: { type: "string" } },
+        required: ["draftId"],
+      },
+    },
+    {
       name: "get-draft",
       description: "Read a specific draft's HTML and metadata.",
       inputSchema: {
@@ -159,8 +258,9 @@ export default defineExtension({
       name: "open-canvas",
       description:
         "Open the canvas card for a draft. The card renders the draft in a sandboxed " +
-        "iframe with knob sliders along the edge. Knob changes round-trip back to " +
-        "tweak-design via the canvas event subscription.",
+        "iframe with knob inputs along the edge — descriptors come from the draft's meta " +
+        "(falling back to the legacy 5-knob set for older drafts). Knob changes round-" +
+        "trip back to tweak-design via the canvas event subscription.",
       inputSchema: {
         type: "object",
         properties: {
@@ -204,20 +304,105 @@ export default defineExtension({
       "## Workflow",
       "",
       "1. Before any generation, call `extract-design-system` (idempotent). Read the result.",
-      "2. If tokens exist (Tailwind config, CSS vars, tokens.json), CONFORM to them.",
-      "   If the project is greenfield (source: 'greenfield'), commit to a BOLD aesthetic",
-      "   per `design-aesthetic-philosophy` — never default to Inter/Roboto/Arial.",
-      "3. Call `generate-design` with `prompt`, `kind`, AND `bodyMarkup`. YOU author the",
-      "   body markup — the tool only wraps your markup with the <head>, design-tokens",
-      "   <style> block, and Tailwind CDN. Every color, spacing, font-size, and radius",
-      "   MUST go through CSS variables (`var(--color-primary)`, `var(--color-fg)`,",
-      "   `calc(var(--space-unit) * 4)`, `var(--font-display)`, `var(--radius-base)`,",
-      "   etc.). Hard-coded values (e.g. `color: #ff0066`) WILL NOT respond to",
-      "   tweak-design — fix this BEFORE returning.",
-      "4. If the user asks for a refinement, call `tweak-design` with structured knobs.",
+      "2. Decide whether to call `clarify-brief`. SKIP when the user's prompt already",
+      "   covers tone, audience, must-have sections, brand-fixed colors, references,",
+      "   and output mode. Otherwise call `clarify-brief` ONCE with the question set:",
+      "     - tone (kind: select; options: modern, playful, corporate, brutalist, editorial, retro-futuristic, refined-minimal, maximalist)",
+      "     - audience (kind: select; options: developers, executives, designers, general-consumers)",
+      "     - sections (kind: multi-select; options: hero, features, pricing, testimonials, CTA, footer, FAQ, about, gallery, contact)",
+      "     - brand colors (kind: text; placeholder: hex codes or palette names)",
+      "     - references (kind: text; placeholder: URLs or product names)",
+      "     - output mode (kind: select; options: one-pager, multi-section, slide)",
+      "3. Call `generate-design` with `prompt`, `kind`, `bodyMarkup`, AND `knobs`",
+      "   (descriptor array matching the `var(--…)` references in your body) AND",
+      "   `knobsTitle` (one-line description of the design — e.g. 'Hero & feature",
+      "   grid knobs'). YOU author the body markup; the tool only wraps it with the",
+      "   <head>, design-tokens <style> block, and Tailwind CDN.",
+      "4. **Lint rules** (every value MUST satisfy these — `generate-design` rejects",
+      "   markup that doesn't):",
+      "   - Every color through `var(--color-*)` (inline style or `bg-[var(--…)]`",
+      "     arbitrary). NO `style=\"color: #…\"`, NO `class=\"bg-[#…]\"`, NO named",
+      "     Tailwind color utilities like `bg-blue-500` / `text-red-700` /",
+      "     `border-gray-300` / `ring-purple-500`. Named utilities bake values from",
+      "     Tailwind's theme; subsequent knob tweaks have no surface to act on.",
+      "   - Every dimension through `var(--space-*)` / `calc(var(--space-unit) * N)`",
+      "     (inline style) or `p-[calc(var(--space-unit)*4)]` (Tailwind arbitrary).",
+      "     NO inline `padding: 16px`, `gap: 12px`. NO numeric Tailwind utilities",
+      "     like `p-4`, `mx-2`, `gap-8`, `w-64`, `h-32`. (`0`, `100%`, `100vh`,",
+      "     `w-full`, `h-screen`, `min-h-screen`, `w-fit`, `w-auto` are fine.)",
+      "   - Every font-size through `var(--font-size-N)` or `text-[var(--…)]`. NO",
+      "     `text-3xl` / `text-base` / etc.",
+      "   - Every radius through `var(--radius-*)` or `rounded-[var(--…)]`. NO",
+      "     `rounded-lg` / `rounded-2xl` / etc.",
+      "   - Layout-only Tailwind utilities (flex, grid, items-*, justify-*, gap-[…],",
+      "     z-*, overflow-*, transition-*, prose) DO NOT bake values and are fine.",
+      "   Zero hardcoded values. If lint fails you'll receive a `toolError` listing",
+      "   each violation by line — fix and retry.",
+      "5. **Body↔descriptor cross-check**: every `var(--…)` you reference (other than",
+      "   scaffold tokens `--color-bg`, `--color-fg`, `--font-display`, `--font-body`,",
+      "   `--font-mono`, `--space-unit`, scale tokens `--space-N`, `--font-size-N`,",
+      "   `--radius-*`, `--color-neutral-N`) MUST be declared by a `KnobDescriptor` in",
+      "   the `knobs` array passed to `generate-design`. Otherwise the user has no",
+      "   knob for it. The check returns a toolError listing missing descriptors.",
+      "",
+      "   **Knob descriptor rules — `behavior: \"scale-spacing\"` is special:**",
+      "   - Use it ONLY for a single global density / spacing-scale knob that",
+      "     rescales every `--space-*`/`--radius-*` proportionally.",
+      "   - It MUST be `kind: \"range\"` AND `unit: \"%\"`. The value the canvas",
+      "     sends is a signed-delta percent (e.g. `+30%` = 30% larger,",
+      "     `-15%` = 15% smaller, `+0%` = unchanged).",
+      "   - Recommended shape: `{ key: \"spacing\", label: \"Spacing\", kind: \"range\",",
+      "     behavior: \"scale-spacing\", unit: \"%\", min: -30, max: 30, step: 5,",
+      "     current: \"+0%\" }`.",
+      "   - Do NOT pair `behavior: \"scale-spacing\"` with `unit: \"px\"`/`\"rem\"`/etc.",
+      "     — `generate-design` rejects that. (Mistake here once produced",
+      "     1152px space tokens by treating the px slider value as a multiplier.)",
+      "   - For an absolute pixel knob targeting one variable (e.g. `--space-unit`",
+      "     directly, or `--radius-base`), OMIT `behavior` and use",
+      "     `kind: \"range\"` + `unit: \"px\"`. The value is written verbatim.",
+      "6. If the user asks for a refinement, call `tweak-design` with structured knobs.",
       "   Each tweak creates a NEW revision; never mutate prior drafts.",
-      "5. When the user says 'ship it' or 'hand off', call `package-handoff`.",
-      "6. To show the user the live canvas, call `open-canvas` AFTER `generate-design`.",
+      "   To revert to a prior version, call `list-revisions` and pass the chosen",
+      "   revision's `knobValues` back through `tweak-design` — the originalTokensBlock",
+      "   snapshot ensures the result equals that revision's HTML byte-for-byte.",
+      "7. When the user says 'ship it' or 'hand off', call `package-handoff`.",
+      "8. To show the user the live canvas, call `open-canvas` AFTER `generate-design`.",
+      "",
+      "## Quality bar (every generation must satisfy)",
+      "",
+      "Content quality:",
+      "- Real, specific copy. NO 'Lorem ipsum', NO 'Click here', NO 'Learn more' buttons.",
+      "  Every CTA reads like a confident human wrote it for a real product.",
+      "- At least three depths of content per section: heading + supporting line +",
+      "  body/list/CTA. A page of headlines alone is not finished.",
+      "- Real numerical / proper-noun specificity wherever it doesn't lie about facts:",
+      "  'Trusted by 240 teams' if the brief says so, otherwise omit (don't fabricate).",
+      "",
+      "Structure:",
+      "- Semantic HTML: `<header>`, `<main>`, `<nav>`, `<section>` with aria-labels,",
+      "  `<footer>`. Every interactive element is `<button>` or `<a>`, never a `<div>`",
+      "  with onclick.",
+      "- Each section has a clear, single purpose. If you can't articulate it in one",
+      "  sentence, cut or merge.",
+      "- Heading hierarchy: one `<h1>`, multiple `<h2>` for section headers, `<h3>` for",
+      "  nested. Don't skip levels.",
+      "",
+      "Visuals:",
+      "- Contrast: heading text uses `var(--color-fg)` on `var(--color-bg)` (or the",
+      "  inverse pair). Don't put `--color-fg` on a tinted surface — declare a tint",
+      "  variable and a knob descriptor for it.",
+      "- Whitespace via `var(--space-*)`, never raw px. Density should match the chosen",
+      "  tone (compact for editorial, generous for refined-minimal).",
+      "- Hero / above-the-fold has ONE focal element. Multiple 'look at me' elements",
+      "  compete and lose.",
+      "",
+      "Tokens:",
+      "- Every color through `var(--color-*)`. Every spacing through `var(--space-*)`.",
+      "  Every font-size through `var(--font-size-*)`. Every radius through",
+      "  `var(--radius-*)`.",
+      "- For every `var(--…)` you use beyond the scaffold tokens, declare a matching",
+      "  `KnobDescriptor` in the `knobs` array (label + kind + var). The user gets a",
+      "  control for every variable you wired in.",
       "",
       "## Critical: never silently change brand colors or typography during a tweak",
       "",
@@ -229,6 +414,14 @@ export default defineExtension({
       "",
       "Pick a true direction (brutalist, editorial, retro-futuristic, refined minimalism,",
       "maximalist) and execute it precisely. Don't hedge.",
+      "",
+      "## Reference: aesthetic philosophy",
+      "",
+      aestheticPhilosophy,
+      "",
+      "## Reference: design-system guide",
+      "",
+      systemGuide,
     ].join("\n"),
     category: "Design",
     capabilities: ["html-generation", "design-system-extraction", "design-tokens"],
@@ -256,7 +449,7 @@ export default defineExtension({
     filesystem: ["$CWD"],
     shell: false,
     storage: true,
-    eventSubscriptions: ["claude-design:knob-change"],
+    eventSubscriptions: ["claude-design:knob-change", "claude-design:brief-answer"],
     network: ["cdn.jsdelivr.net"],
   },
 

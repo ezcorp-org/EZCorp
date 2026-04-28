@@ -1,9 +1,20 @@
-import { eq, and, sql, lt, desc } from "drizzle-orm";
+import { eq, and, or, sql, lt, gt, desc } from "drizzle-orm";
 import { getDb } from "../connection";
 import { sessions, users } from "../schema";
 import type { Session } from "../schema";
 
 export type { Session };
+
+/**
+ * Result of a token-hash lookup, including which hash it matched on.
+ * `viaPrevious` is true when the inbound token matched `previous_token_hash`
+ * within its grace window — the caller should NOT trigger another rotation
+ * since the row was already rotated by a peer request.
+ */
+export interface SessionLookup {
+  session: Session;
+  viaPrevious: boolean;
+}
 
 /**
  * Hash a raw token string to SHA-256 hex for storage/lookup.
@@ -36,11 +47,31 @@ export async function createSession(opts: {
 }
 
 export async function getSessionByTokenHash(tokenHash: string): Promise<Session | null> {
+  const lookup = await lookupSessionByTokenHash(tokenHash);
+  return lookup?.session ?? null;
+}
+
+/**
+ * Lookup that also reports whether the match came via the rotation-grace
+ * `previous_token_hash` column. Hooks use this to suppress a re-rotation
+ * when another concurrent request just rotated the row.
+ */
+export async function lookupSessionByTokenHash(tokenHash: string): Promise<SessionLookup | null> {
   const rows = await getDb()
     .select()
     .from(sessions)
-    .where(eq(sessions.tokenHash, tokenHash));
-  return rows[0] ?? null;
+    .where(
+      or(
+        eq(sessions.tokenHash, tokenHash),
+        and(
+          eq(sessions.previousTokenHash, tokenHash),
+          gt(sessions.previousTokenExpiresAt, sql`NOW()`),
+        ),
+      ),
+    );
+  const row = rows[0];
+  if (!row) return null;
+  return { session: row, viaPrevious: row.tokenHash !== tokenHash };
 }
 
 export async function revokeSession(id: string): Promise<boolean> {
@@ -118,10 +149,23 @@ export async function rotateSessionToken(opts: {
   oldTokenHash: string;
   newTokenHash: string;
   newExpiresAt: Date;
+  /**
+   * How long the previous (pre-rotation) hash should keep validating.
+   * Bridges concurrent in-flight requests that still carry the old cookie
+   * across the rotation. See `lookupSessionByTokenHash` and the sliding
+   * refresh path in `web/src/hooks.server.ts`.
+   */
+  previousTokenGraceSeconds: number;
 }): Promise<Session | null> {
+  const previousTokenExpiresAt = new Date(Date.now() + opts.previousTokenGraceSeconds * 1000);
   const rows = await getDb()
     .update(sessions)
-    .set({ tokenHash: opts.newTokenHash, expiresAt: opts.newExpiresAt })
+    .set({
+      tokenHash: opts.newTokenHash,
+      expiresAt: opts.newExpiresAt,
+      previousTokenHash: opts.oldTokenHash,
+      previousTokenExpiresAt,
+    })
     .where(and(eq(sessions.id, opts.id), eq(sessions.tokenHash, opts.oldTokenHash)))
     .returning();
   return rows[0] ?? null;

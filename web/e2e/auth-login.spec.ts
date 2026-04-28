@@ -14,7 +14,9 @@ import { makeProject } from "./fixtures/data.js";
  * - POST /api/auth/login on submit
  * - Show error from response body or fallback "Login failed"
  * - Show "Signing in..." and disable button while loading
- * - Redirect to / on success
+ * - Redirect to data.returnTo (sanitized via safeReturnTo) on success — falls
+ *   back to "/" when missing or unsafe (protocol-relative, absolute URL,
+ *   backslash-prefixed, or no leading slash).
  * - Show session-expired banner when ?reason=session_expired
  */
 function loginShellHtml() {
@@ -61,6 +63,16 @@ function loginShellHtml() {
         document.getElementById('session-expired-banner').style.display = 'block';
       }
 
+      // Mirror src/lib/safe-redirect.ts safeReturnTo() — same-origin paths
+      // only; anything that could navigate off-site collapses to "/".
+      function safeReturnTo(raw) {
+        if (!raw) return '/';
+        if (raw.charAt(0) !== '/') return '/';
+        if (raw.indexOf('//') === 0 || raw.indexOf('/\\\\') === 0) return '/';
+        return raw;
+      }
+      var returnTo = safeReturnTo(params.get('returnTo'));
+
       var form = document.getElementById('login-form');
       var submitBtn = document.getElementById('submit-btn');
       var errorBox = document.getElementById('error-box');
@@ -90,7 +102,7 @@ function loginShellHtml() {
             submitBtn.textContent = 'Sign In';
             return;
           }
-          window.location.href = '/';
+          window.location.href = returnTo;
         } catch (err) {
           errorMsg.textContent = 'Network error. Please try again.';
           errorBox.style.display = 'block';
@@ -245,6 +257,75 @@ test.describe("Auth — Login Page", () => {
 		await gotoLogin(page);
 
 		await expect(page.getByText("Have an invite link?")).toBeVisible({ timeout: 5000 });
+	});
+
+	// ── returnTo: restore prior page after re-login ──────────────────
+	// The login page is reached either directly or via hooks.server.ts when
+	// the user's session expires. In the expired case the redirect carries
+	// `?returnTo=<original-path>` so the client can navigate back there
+	// after a successful login. These tests exercise the client-side half
+	// (the server-side capture and sanitization is covered by
+	// hooks-server-return-to.server.test.ts and login-page.server.test.ts).
+
+	test("returnTo: successful login navigates to the captured returnTo path", async ({ page, mockApi }) => {
+		await mockApi({ projects: [makeProject({ id: "proj-1" })] });
+		await page.route("**/api/auth/login", (route: any) => {
+			route.fulfill({ json: { token: "test-jwt", user: { id: "u1", email: "test@example.com" } } });
+		});
+		await gotoLogin(page, "?returnTo=%2Fprojects%2Fproj-1");
+
+		await page.locator('input[type="email"]').fill("test@example.com");
+		await page.locator('input[type="password"]').fill("password123");
+
+		const navigationPromise = page.waitForURL((url: URL) => url.pathname === "/projects/proj-1", { timeout: 5000 });
+		await page.getByRole("button", { name: "Sign In" }).click();
+		await navigationPromise;
+
+		expect(new URL(page.url()).pathname).toBe("/projects/proj-1");
+	});
+
+	test("returnTo: missing param falls back to / on successful login", async ({ page, mockApi }) => {
+		await mockApi({ projects: [makeProject({ id: "proj-1" })] });
+		await page.route("**/api/auth/login", (route: any) => {
+			route.fulfill({ json: { token: "test-jwt", user: { id: "u1", email: "test@example.com" } } });
+		});
+		await gotoLogin(page);
+
+		await page.locator('input[type="email"]').fill("test@example.com");
+		await page.locator('input[type="password"]').fill("password123");
+
+		const navigationPromise = page.waitForURL((url: URL) => url.pathname === "/", { timeout: 5000 });
+		await page.getByRole("button", { name: "Sign In" }).click();
+		await navigationPromise;
+
+		expect(new URL(page.url()).pathname).toBe("/");
+	});
+
+	test("returnTo: protocol-relative URL is sanitized to / (open-redirect guard)", async ({ page, mockApi }) => {
+		await mockApi({ projects: [makeProject({ id: "proj-1" })] });
+		await page.route("**/api/auth/login", (route: any) => {
+			route.fulfill({ json: { token: "test-jwt", user: { id: "u1", email: "test@example.com" } } });
+		});
+		// %2F%2Fevil.com decodes to //evil.com — the safeReturnTo() guard
+		// must collapse this to "/" so the browser stays on the same origin.
+		await gotoLogin(page, "?returnTo=%2F%2Fevil.com%2Fphish");
+
+		await page.locator('input[type="email"]').fill("test@example.com");
+		await page.locator('input[type="password"]').fill("password123");
+
+		const originalHost = new URL(page.url()).host;
+		const navigationPromise = page.waitForURL(
+			(url: URL) => url.pathname === "/" && url.host === originalHost,
+			{ timeout: 5000 },
+		);
+		await page.getByRole("button", { name: "Sign In" }).click();
+		await navigationPromise;
+
+		const final = new URL(page.url());
+		expect(final.host).toBe(originalHost);
+		expect(final.pathname).toBe("/");
+		// Critical: must NOT have navigated off-site.
+		expect(final.host).not.toContain("evil.com");
 	});
 
 	test("submit button re-enables after failed login", async ({ page, mockApi }) => {

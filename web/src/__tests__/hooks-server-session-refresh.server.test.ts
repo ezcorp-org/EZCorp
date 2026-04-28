@@ -42,7 +42,13 @@ vi.mock("$lib/server/security/bearer-auth", () => ({
 }));
 vi.mock("$server/db/queries/sessions", () => ({
   hashToken: vi.fn(async (token: string) => `hash:${token}`),
-  getSessionByTokenHash: vi.fn(async () => ({ id: "sess-1", userId: "u-1" })),
+  // Default lookup: matched on the current tokenHash (not via grace window).
+  // Tests that exercise the revoked / DB-down / grace branches override
+  // this mock per-test.
+  lookupSessionByTokenHash: vi.fn(async () => ({
+    session: { id: "sess-1", userId: "u-1" },
+    viaPrevious: false,
+  })),
   touchSession: vi.fn(async () => {}),
   rotateSessionToken: vi.fn(async () => ({
     id: "sess-1",
@@ -60,7 +66,7 @@ vi.mock("$server/db/queries/settings", () => ({
 }));
 
 import { verifyJWT, signJWT } from "$server/auth/jwt";
-import { rotateSessionToken, getSessionByTokenHash } from "$server/db/queries/sessions";
+import { rotateSessionToken, lookupSessionByTokenHash } from "$server/db/queries/sessions";
 const { handle, __sessionRefreshConfig } = await import("../hooks.server");
 
 const { REFRESH_AFTER_SECONDS, NEW_LIFETIME_SECONDS } = __sessionRefreshConfig;
@@ -103,19 +109,20 @@ describe("hooks.server.ts — sliding session refresh", () => {
     vi.mocked(verifyJWT).mockReset();
     vi.mocked(signJWT).mockReset();
     vi.mocked(rotateSessionToken).mockReset();
-    vi.mocked(getSessionByTokenHash).mockReset();
+    vi.mocked(lookupSessionByTokenHash).mockReset();
 
-    // Defaults: rotated row, fresh signed token, present session row.
+    // Defaults: rotated row, fresh signed token, present session row matched
+    // on the current tokenHash (not via the rotation grace window).
     vi.mocked(signJWT).mockResolvedValue("rotated-token");
     vi.mocked(rotateSessionToken).mockResolvedValue({
       id: "sess-1",
       tokenHash: "hash:rotated-token",
       expiresAt: new Date(),
     } as any);
-    vi.mocked(getSessionByTokenHash).mockResolvedValue({
-      id: "sess-1",
-      userId: "u-1",
-    } as any);
+    vi.mocked(lookupSessionByTokenHash).mockResolvedValue({
+      session: { id: "sess-1", userId: "u-1" } as any,
+      viaPrevious: false,
+    });
   });
 
   test("stale JWT (iat older than REFRESH_AFTER) → signs new token + Set-Cookie with fresh maxAge", async () => {
@@ -212,14 +219,14 @@ describe("hooks.server.ts — sliding session refresh", () => {
     expect(event.cookies.set).not.toHaveBeenCalled();
   });
 
-  test("DB unavailable (getSessionByTokenHash throws) → JWT-only fallback, no rotation attempt", async () => {
+  test("DB unavailable (lookupSessionByTokenHash throws) → JWT-only fallback, no rotation attempt", async () => {
     const staleIat = nowSeconds() - (REFRESH_AFTER_SECONDS + 60);
     vi.mocked(verifyJWT).mockResolvedValue({
       ...BASE_PAYLOAD,
       iat: staleIat,
       exp: staleIat + 30 * 24 * 3600,
     } as any);
-    vi.mocked(getSessionByTokenHash).mockRejectedValue(new Error("DB down"));
+    vi.mocked(lookupSessionByTokenHash).mockRejectedValue(new Error("DB down"));
 
     const event = makeEvent();
     const resolve = vi.fn(async () => new Response("ok", { status: 200 }));
@@ -239,7 +246,7 @@ describe("hooks.server.ts — sliding session refresh", () => {
       iat: staleIat,
       exp: staleIat + 30 * 24 * 3600,
     } as any);
-    vi.mocked(getSessionByTokenHash).mockResolvedValue(null);
+    vi.mocked(lookupSessionByTokenHash).mockResolvedValue(null);
 
     const event = makeEvent();
     const resolve = vi.fn();
@@ -251,6 +258,51 @@ describe("hooks.server.ts — sliding session refresh", () => {
     // Revoked redirect wins; refresh code is never reached.
     expect(vi.mocked(signJWT)).not.toHaveBeenCalled();
     expect(vi.mocked(rotateSessionToken)).not.toHaveBeenCalled();
+  });
+
+  test("inbound matched on previous-token grace → no rotation, no Set-Cookie", async () => {
+    // Peer request just rotated the row; this request still carries the old
+    // cookie. The lookup matched it via the grace column. Hooks must serve
+    // the user normally and skip a redundant rotation — otherwise concurrent
+    // refresh attempts thrash the row and lose the grace bridge.
+    const staleIat = nowSeconds() - (REFRESH_AFTER_SECONDS + 60);
+    vi.mocked(verifyJWT).mockResolvedValue({
+      ...BASE_PAYLOAD,
+      iat: staleIat,
+      exp: staleIat + 30 * 24 * 3600,
+    } as any);
+    vi.mocked(lookupSessionByTokenHash).mockResolvedValue({
+      session: { id: "sess-1", userId: "u-1" } as any,
+      viaPrevious: true,
+    });
+
+    const event = makeEvent();
+    const resolve = vi.fn(async () => new Response("ok", { status: 200 }));
+    const res = (await handle({ event, resolve } as any)) as Response;
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(signJWT)).not.toHaveBeenCalled();
+    expect(vi.mocked(rotateSessionToken)).not.toHaveBeenCalled();
+    expect(event.cookies.set).not.toHaveBeenCalled();
+  });
+
+  test("rotation passes the previous-token grace seconds to rotateSessionToken", async () => {
+    const staleIat = nowSeconds() - (REFRESH_AFTER_SECONDS + 60);
+    vi.mocked(verifyJWT).mockResolvedValue({
+      ...BASE_PAYLOAD,
+      iat: staleIat,
+      exp: staleIat + 30 * 24 * 3600,
+    } as any);
+
+    const event = makeEvent();
+    const resolve = vi.fn(async () => new Response("ok", { status: 200 }));
+    await handle({ event, resolve } as any);
+
+    const callArgs = vi.mocked(rotateSessionToken).mock.calls[0]![0];
+    // Locks the contract that hooks always passes a positive grace value —
+    // a missing or zero value would re-introduce the spurious-revoke bug
+    // this whole change is meant to fix.
+    expect(callArgs.previousTokenGraceSeconds).toBeGreaterThan(0);
   });
 
   test("rotation re-signs with the same identity claims (no privilege drift)", async () => {

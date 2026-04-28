@@ -80,3 +80,66 @@ export function isValidEventName(eventName: unknown): eventName is string {
 export function buildEventUrl(extensionName: string, eventName: string): string {
   return `/api/extensions/${encodeURIComponent(extensionName)}/events/${encodeURIComponent(eventName)}`;
 }
+
+/**
+ * Extract a same-origin pop-out URL from a tool-call output.
+ *
+ * The DockHost surfaces a "Pop out" affordance when the tool result
+ * carries an `iframeSrc` that resolves to a same-origin http(s) URL.
+ * The output may arrive in three shapes (all accepted):
+ *   1. Already-parsed `{ iframeSrc: "..." }` object.
+ *   2. JSON-encoded string `'{"iframeSrc":"..."}'`.
+ *   3. MCP tool-result envelope `{ content: [{ type: "text", text: "<json>" }] }`.
+ *
+ * Security rules (mirror `validateIframeSrc`):
+ *   - Cross-origin URLs return null.
+ *   - `javascript:` / `data:` / `blob:` / `file:` schemes return null.
+ *   - Anything that doesn't shape-match returns null.
+ *
+ * `origin` is injected so the function is testable without a real
+ * `window`. Production callers pass `window.location.origin`.
+ */
+export function extractPopoutUrl(
+  output: unknown,
+  origin: string,
+): string | null {
+  if (output == null) return null;
+
+  const tryParse = (raw: unknown): { iframeSrc?: unknown } | null => {
+    if (!raw) return null;
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw); } catch { return null; }
+    }
+    if (typeof raw === "object" && raw !== null) {
+      if ("content" in (raw as Record<string, unknown>)) {
+        const content = (raw as { content?: unknown[] }).content;
+        if (Array.isArray(content)) {
+          const text = content.find(
+            (c: unknown) => (c as { type?: string }).type === "text",
+          );
+          const t = (text as { text?: unknown })?.text;
+          if (typeof t === "string") {
+            try { return JSON.parse(t); } catch { return null; }
+          }
+        }
+      }
+      return raw as { iframeSrc?: unknown };
+    }
+    return null;
+  };
+
+  const parsed = tryParse(output);
+  const candidate = typeof parsed?.iframeSrc === "string" ? parsed.iframeSrc : null;
+  if (!candidate) return null;
+
+  // Reuse the existing same-origin guard so DockHost and ExtensionIframeCard
+  // share one policy decision.
+  const validation = validateIframeSrc(candidate, origin);
+  if (!validation.ok) return null;
+
+  try {
+    return new URL(candidate, origin).toString();
+  } catch {
+    return null;
+  }
+}

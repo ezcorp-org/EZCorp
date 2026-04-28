@@ -1,5 +1,9 @@
 <script lang="ts">
   import { page } from "$app/stores";
+  import { goto, invalidateAll } from "$app/navigation";
+  import type { PageData } from "./$types";
+
+  let { data }: { data: PageData } = $props();
 
   let email = $state("");
   let password = $state("");
@@ -23,12 +27,15 @@
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        error = data.error || "Login failed";
+        const body = await res.json();
+        error = body.error || "Login failed";
         return;
       }
 
-      window.location.href = "/";
+      // SvelteKit nav + invalidateAll preserves any client state
+      // (open chats, in-flight streams) instead of doing a full document load.
+      await invalidateAll();
+      await goto(data.returnTo);
     } catch {
       error = "Network error. Please try again.";
     } finally {

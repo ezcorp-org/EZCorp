@@ -9,6 +9,7 @@
 	import TaskDetailCard from "./TaskDetailCard.svelte";
 	import AskUserQuestionCard from "./AskUserQuestionCard.svelte";
 	import DesignCanvasCard from "./DesignCanvasCard.svelte";
+	import DesignBriefCard from "./DesignBriefCard.svelte";
 	import DefaultCard from "./DefaultCard.svelte";
 
 	let { toolCall, conversationId, messageId, onsendmessage, mode = 'inline' }: { toolCall: ToolCallState; conversationId?: string; messageId?: string; onsendmessage?: (message: string) => void; mode?: 'inline' | 'dock' } = $props();
@@ -31,7 +32,9 @@
 {:else if cardName === 'AskUserQuestionCard'}
 	<AskUserQuestionCard {toolCall} />
 {:else if cardName === 'DesignCanvasCard'}
-	<DesignCanvasCard {toolCall} {conversationId} {mode} />
+	<DesignCanvasCard {toolCall} {conversationId} {messageId} {mode} />
+{:else if cardName === 'DesignBriefCard'}
+	<DesignBriefCard {toolCall} {conversationId} />
 {:else}
 	<DefaultCard {toolCall} />
 {/if}

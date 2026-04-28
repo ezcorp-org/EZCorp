@@ -56,7 +56,10 @@ vi.mock("$server/db/queries/sessions", async (importActual) => {
   const actual = await importActual<typeof import("$server/db/queries/sessions")>();
   return {
     hashToken: actual.hashToken,
-    getSessionByTokenHash: vi.fn(async () => ({ id: "sess-e2e", userId: "u-e2e" })),
+    lookupSessionByTokenHash: vi.fn(async () => ({
+      session: { id: "sess-e2e", userId: "u-e2e" },
+      viaPrevious: false,
+    })),
     touchSession: vi.fn(async () => {}),
     rotateSessionToken: vi.fn(async () => ({
       id: "sess-e2e",
@@ -67,7 +70,7 @@ vi.mock("$server/db/queries/sessions", async (importActual) => {
 });
 
 import { signJWT, verifyJWT } from "$server/auth/jwt";
-import { hashToken, rotateSessionToken, getSessionByTokenHash } from "$server/db/queries/sessions";
+import { hashToken, rotateSessionToken, lookupSessionByTokenHash } from "$server/db/queries/sessions";
 const { handle, __sessionRefreshConfig } = await import("../hooks.server");
 const { REFRESH_AFTER_SECONDS, NEW_LIFETIME_SECONDS } = __sessionRefreshConfig;
 
@@ -144,16 +147,16 @@ async function mintBackdatedJWT(iatSecondsAgo: number): Promise<string> {
 describe("hooks.server.ts — E2E sliding refresh (real crypto)", () => {
   beforeEach(() => {
     vi.mocked(rotateSessionToken).mockReset();
-    vi.mocked(getSessionByTokenHash).mockReset();
+    vi.mocked(lookupSessionByTokenHash).mockReset();
     vi.mocked(rotateSessionToken).mockResolvedValue({
       id: "sess-e2e",
       tokenHash: "placeholder",
       expiresAt: new Date(),
     } as any);
-    vi.mocked(getSessionByTokenHash).mockResolvedValue({
-      id: "sess-e2e",
-      userId: "u-e2e",
-    } as any);
+    vi.mocked(lookupSessionByTokenHash).mockResolvedValue({
+      session: { id: "sess-e2e", userId: "u-e2e" } as any,
+      viaPrevious: false,
+    });
   });
 
   test("stale REAL JWT → Set-Cookie carries a freshly-signed REAL JWT (same identity, new iat)", async () => {

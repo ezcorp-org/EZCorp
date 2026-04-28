@@ -396,6 +396,12 @@ export const sessions = pgTable("sessions", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(),
+  // Sliding-refresh grace: when the token is rotated we move the previous
+  // hash here for a few seconds so concurrent in-flight requests carrying
+  // the pre-rotation cookie still authenticate (and don't get bounced as
+  // "session_revoked"). NULL once the grace window passes.
+  previousTokenHash: text("previous_token_hash"),
+  previousTokenExpiresAt: timestamp("previous_token_expires_at", { withTimezone: true }),
   userAgent: text("user_agent"),
   ipAddress: text("ip_address"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

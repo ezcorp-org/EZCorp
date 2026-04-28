@@ -34,8 +34,14 @@ vi.mock("$lib/server/security/bearer-auth", () => ({
 vi.mock("$server/db/queries/sessions", () => ({
   hashToken: vi.fn(async () => "hash"),
   // Auth path: present session row so the JWT branch sets locals.user.
-  getSessionByTokenHash: vi.fn(async () => ({ id: "sess-1", userId: "u-1" })),
+  // Hooks use lookupSessionByTokenHash; matched on current hash so the
+  // sliding-refresh block can run (not via grace).
+  lookupSessionByTokenHash: vi.fn(async () => ({
+    session: { id: "sess-1", userId: "u-1" },
+    viaPrevious: false,
+  })),
   touchSession: vi.fn(async () => {}),
+  rotateSessionToken: vi.fn(async () => null),
 }));
 vi.mock("$server/auth/jwt", () => ({
   // Authenticated payload — gets written to event.locals.user at L302.
@@ -263,7 +269,8 @@ describe("hooks.server.ts — onboarding gate", () => {
 
     expect(thrown).toBeDefined();
     if (!isRedirect(thrown)) throw thrown;
-    expect(thrown.location).toBe("/login?reason=session_expired");
+    // GET → returnTo carries the path so the user lands back on /projects/abc after re-auth
+    expect(thrown.location).toBe("/login?reason=session_expired&returnTo=%2Fprojects%2Fabc");
     // getUserById must NOT have been consulted — onboarding gate runs after auth succeeds.
     expect(vi.mocked(getUserById)).not.toHaveBeenCalled();
   });

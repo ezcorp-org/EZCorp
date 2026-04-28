@@ -32,6 +32,7 @@ export function getCardComponentName(cardType: string | undefined, permissionPen
 		case 'task-detail': return 'TaskDetailCard';
 		case 'ask-user-question': return 'AskUserQuestionCard';
 		case 'design-canvas': return 'DesignCanvasCard';
+		case 'design-brief': return 'DesignBriefCard';
 		default: return 'DefaultCard';
 	}
 }

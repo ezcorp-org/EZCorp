@@ -163,20 +163,29 @@ function seedStaleClaudeDesign(): StoredExtension {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("ensureBundledExtensions — eventSubscriptions auto-heal (drift policy)", () => {
+  // The on-disk manifest at `docs/extensions/examples/claude-design/`
+  // declares both `claude-design:knob-change` AND
+  // `claude-design:brief-answer` (the latter added with the form-card
+  // landing). The full disk set is used by every test here; ordering
+  // assertions sort first so the merge order isn't a contract.
+  const DISK_EVENTS = [
+    "claude-design:knob-change",
+    "claude-design:brief-answer",
+  ];
+
   test("preexisting row with NO eventSubscriptions in grant → backfilled with disk additions", async () => {
     seedStaleClaudeDesign();
     await ensureBundledExtensions();
     const row = store.get("claude-design")!;
-    // Disk declares ["claude-design:knob-change"]; auto-heal must
-    // surface it on the runtime grant so the dispatcher picks it up.
-    expect(row.grantedPermissions.eventSubscriptions).toEqual([
-      "claude-design:knob-change",
-    ]);
+    // Auto-heal surfaces the full disk set on the runtime grant so the
+    // dispatcher picks them up.
+    expect((row.grantedPermissions.eventSubscriptions ?? []).slice().sort())
+      .toEqual([...DISK_EVENTS].sort());
     // The DB-stored manifest's permissions block is also backfilled so
     // future drift checks don't see a fake mismatch.
     expect(
-      (row.manifest.permissions as { eventSubscriptions?: string[] }).eventSubscriptions,
-    ).toEqual(["claude-design:knob-change"]);
+      ((row.manifest.permissions as { eventSubscriptions?: string[] }).eventSubscriptions ?? []).slice().sort(),
+    ).toEqual([...DISK_EVENTS].sort());
     // grantedAt timestamp tracks the heal.
     expect(typeof row.grantedPermissions.grantedAt.eventSubscriptions).toBe("number");
   });
@@ -197,7 +206,7 @@ describe("ensureBundledExtensions — eventSubscriptions auto-heal (drift policy
     };
     expect(meta.permission).toBe("eventSubscriptions");
     expect(meta.oldValue).toEqual([]);
-    expect(meta.newValue).toEqual(["claude-design:knob-change"]);
+    expect([...meta.newValue].sort()).toEqual([...DISK_EVENTS].sort());
     expect(meta.actor).toBe("system");
   });
 
@@ -213,18 +222,16 @@ describe("ensureBundledExtensions — eventSubscriptions auto-heal (drift policy
     ).toHaveLength(0);
     // Grant remains the union — no duplication.
     const row = store.get("claude-design")!;
-    expect(row.grantedPermissions.eventSubscriptions).toEqual([
-      "claude-design:knob-change",
-    ]);
+    expect((row.grantedPermissions.eventSubscriptions ?? []).slice().sort())
+      .toEqual([...DISK_EVENTS].sort());
   });
 
   test("when grant ALREADY contains the disk subscription → no backfill, no audit", async () => {
     const row = seedStaleClaudeDesign();
-    row.grantedPermissions.eventSubscriptions = ["claude-design:knob-change"];
+    row.grantedPermissions.eventSubscriptions = [...DISK_EVENTS];
     row.grantedPermissions.grantedAt.eventSubscriptions = 100;
-    (row.manifest.permissions as Record<string, unknown>).eventSubscriptions = [
-      "claude-design:knob-change",
-    ];
+    (row.manifest.permissions as Record<string, unknown>).eventSubscriptions =
+      [...DISK_EVENTS];
     await ensureBundledExtensions();
     expect(
       auditCalls.filter(
@@ -244,8 +251,32 @@ describe("ensureBundledExtensions — eventSubscriptions auto-heal (drift policy
     row.grantedPermissions.grantedAt.eventSubscriptions = 100;
     await ensureBundledExtensions();
     const updated = store.get("claude-design")!;
-    expect(updated.grantedPermissions.eventSubscriptions).toEqual([
-      "legacy:event",
+    expect((updated.grantedPermissions.eventSubscriptions ?? []).slice().sort())
+      .toEqual([...DISK_EVENTS, "legacy:event"].sort());
+  });
+
+  test("validation: bundled grant for claude-design includes BOTH knob-change AND brief-answer post-self-heal", async () => {
+    // Regression: when the disk manifest declared `brief-answer`
+    // (added in the form-card landing) but a stale row from before
+    // that change existed, the union-merge auto-heal must produce a
+    // grant containing BOTH event subscriptions, not just the older
+    // knob-change one. This pins the bundled.ts entry's full set.
+    seedStaleClaudeDesign();
+    await ensureBundledExtensions();
+    const row = store.get("claude-design")!;
+    const granted = row.grantedPermissions.eventSubscriptions ?? [];
+    // Sort so the assertion is order-independent — auto-heal preserves
+    // original order then appends new entries; both shapes are fine.
+    expect([...granted].sort()).toEqual([
+      "claude-design:brief-answer",
+      "claude-design:knob-change",
+    ]);
+    // The DB-stored manifest's permissions block reflects the same set.
+    const manifestEvents =
+      ((row.manifest.permissions as { eventSubscriptions?: string[] })
+        .eventSubscriptions ?? []).slice().sort();
+    expect(manifestEvents).toEqual([
+      "claude-design:brief-answer",
       "claude-design:knob-change",
     ]);
   });

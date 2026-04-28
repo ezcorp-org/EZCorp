@@ -8,8 +8,14 @@ import { RateLimiter } from "$lib/server/security/rate-limiter";
 import { attachBearerAuth } from "$lib/server/security/bearer-auth";
 import { getMaxPayload, payloadTooLarge } from "$lib/server/security/payload";
 import { getSetting } from "$server/db/queries/settings";
-import { hashToken, getSessionByTokenHash, touchSession, rotateSessionToken } from "$server/db/queries/sessions";
+import { hashToken, lookupSessionByTokenHash, touchSession, rotateSessionToken } from "$server/db/queries/sessions";
 import { startBackgroundTimers } from "$server/startup/background-timers";
+import {
+  getSessionConfig,
+  setSessionCookie,
+  clearSessionCookie,
+  getSessionCookieName,
+} from "$lib/server/auth/session-cookie";
 
 const log = logger.child("hooks.server");
 
@@ -133,13 +139,19 @@ const PI_SESSION_MIGRATION_EXPIRES_AT = Date.parse("2026-06-01T00:00:00Z");
 let piSessionMigrationWarned = false;
 
 // Sliding-session refresh: re-issue the JWT (and bump the DB row's expiresAt)
-// once the current token is older than REFRESH_AFTER_SECONDS. The new token
-// gets another NEW_LIFETIME_SECONDS of validity. Keeps active users from
-// being forced to re-authenticate on a hard 30-day boundary while still
-// capping the lifetime of an idle session.
-const REFRESH_AFTER_SECONDS = 7 * 24 * 3600;
-const NEW_LIFETIME_SECONDS = 30 * 24 * 3600;
-export const __sessionRefreshConfig = { REFRESH_AFTER_SECONDS, NEW_LIFETIME_SECONDS };
+// once the current token is older than refreshAfterSeconds. The new token
+// gets another lifetimeSeconds of validity. Keeps active users from being
+// forced to re-authenticate on a hard boundary while still capping the
+// lifetime of an idle session. Lifetimes come from
+// `getSessionConfig()` (env-driven; defaults: 90d total, refresh after 7d,
+// 60s previous-hash grace) so all auth surfaces share one source of truth.
+const _cfg = getSessionConfig();
+export const __sessionRefreshConfig = {
+  ..._cfg,
+  // Back-compat aliases for tests written against the pre-config field names.
+  REFRESH_AFTER_SECONDS: _cfg.refreshAfterSeconds,
+  NEW_LIFETIME_SECONDS: _cfg.lifetimeSeconds,
+};
 
 export const handle: Handle = async ({ event, resolve }) => {
   const { request } = event;
@@ -181,7 +193,22 @@ export const handle: Handle = async ({ event, resolve }) => {
 ;
 
   if (!isPublic) {
-    let sessionToken = event.cookies.get("ezcorp_session");
+    // Build /login URL preserving the page the user was trying to reach so we
+    // can send them back after re-auth. GET only — POST/PUT/PATCH navigations
+    // don't represent a "page the user was on". URLSearchParams handles
+    // encoding; the consumer (login +page.server.ts) re-validates via
+    // safeReturnTo before trusting the value.
+    const buildLoginUrl = (reason?: string): string => {
+      const params = new URLSearchParams();
+      if (reason) params.set("reason", reason);
+      if (request.method === "GET" && url.pathname !== "/login") {
+        params.set("returnTo", url.pathname + url.search);
+      }
+      const qs = params.toString();
+      return qs ? `/login?${qs}` : "/login";
+    };
+
+    let sessionToken = event.cookies.get(getSessionCookieName());
 
     // Migration bridge: accept old pi_session cookie and migrate.
     // sec-M4: disabled after PI_SESSION_MIGRATION_EXPIRES_AT to prevent an
@@ -201,7 +228,7 @@ export const handle: Handle = async ({ event, resolve }) => {
           // Delete old cookie
           event.cookies.set("pi_session", "", { path: "/", httpOnly: true, sameSite: "lax", maxAge: 0 });
           // Set new cookie
-          event.cookies.set("ezcorp_session", legacyToken, { path: "/", httpOnly: true, sameSite: "lax", maxAge: 30 * 24 * 3600 });
+          setSessionCookie(event.cookies, legacyToken);
         }
       }
     }
@@ -258,7 +285,7 @@ export const handle: Handle = async ({ event, resolve }) => {
             headers: { "Content-Type": "application/json" },
           });
         }
-        throw redirect(302, "/login");
+        throw redirect(302, buildLoginUrl());
       }
     } else {
       let secret: string;
@@ -268,31 +295,37 @@ export const handle: Handle = async ({ event, resolve }) => {
       const payload = await verifyJWT(sessionToken, secret);
 
       if (!payload) {
-        event.cookies.delete("ezcorp_session", { path: "/" });
+        clearSessionCookie(event.cookies);
         if (url.pathname.startsWith("/api/")) {
           return new Response(JSON.stringify({ error: "Session expired" }), {
             status: 401,
             headers: { "Content-Type": "application/json" },
           });
         }
-        throw redirect(302, "/login?reason=session_expired");
+        throw redirect(302, buildLoginUrl("session_expired"));
       }
 
       // Session-backed validation: check session record exists.
       // Missing session row = revoked; clear cookies and reject (do not auto-recreate).
+      // The lookup also matches the row's previous_token_hash within its grace
+      // window — that path is taken by concurrent in-flight requests still
+      // carrying the pre-rotation cookie, and `viaPrevious` tells the
+      // refresh block below to skip a redundant rotation.
       let sessionMissing = false;
       let dbAvailable = true;
       let sessionId: string | null = null;
-      let oldTokenHash: string | null = null;
+      let viaPrevious = false;
+      let inboundTokenHash: string | null = null;
       try {
-        oldTokenHash = await hashToken(sessionToken);
-        const session = await getSessionByTokenHash(oldTokenHash);
-        if (!session) {
+        inboundTokenHash = await hashToken(sessionToken);
+        const lookup = await lookupSessionByTokenHash(inboundTokenHash);
+        if (!lookup) {
           sessionMissing = true;
         } else {
-          sessionId = session.id;
+          sessionId = lookup.session.id;
+          viaPrevious = lookup.viaPrevious;
           // Throttled touch to track last activity
-          touchSession(session.id).catch(() => {});
+          touchSession(lookup.session.id).catch(() => {});
         }
       } catch {
         // DB unavailable -- allow JWT-only auth as fallback
@@ -300,7 +333,7 @@ export const handle: Handle = async ({ event, resolve }) => {
       }
 
       if (sessionMissing && dbAvailable) {
-        event.cookies.delete("ezcorp_session", { path: "/" });
+        clearSessionCookie(event.cookies);
         event.cookies.delete("pi_session", { path: "/" });
         if (url.pathname.startsWith("/api/")) {
           return new Response(JSON.stringify({ error: "Session revoked" }), {
@@ -308,44 +341,41 @@ export const handle: Handle = async ({ event, resolve }) => {
             headers: { "Content-Type": "application/json" },
           });
         }
-        throw redirect(302, "/login?reason=session_revoked");
+        throw redirect(302, buildLoginUrl("session_revoked"));
       }
 
       // ── Sliding refresh ────────────────────────────────────────────────
-      // Once the JWT crosses REFRESH_AFTER_SECONDS of age, re-issue it with
-      // another NEW_LIFETIME_SECONDS and bump the DB row's expiresAt. CAS on
-      // (id, oldTokenHash) means concurrent requests can't double-rotate:
-      // the loser sees `rotated === null` and silently keeps using its
-      // inbound cookie, whose hash is still in the row.
+      // Once the JWT crosses refreshAfterSeconds of age, re-issue it with
+      // another lifetimeSeconds and bump the DB row's expiresAt. CAS on
+      // (id, currentTokenHash) means concurrent requests can't double-rotate:
+      // the loser's CAS misses and it serves the request with its inbound
+      // cookie, which the row's `previous_token_hash` still matches for the
+      // grace window.
       //
-      // Skipped when the DB is unavailable (we have no row to rotate) or
-      // when the row was missing (we already cleared the cookies above).
-      if (sessionId && oldTokenHash && dbAvailable) {
+      // Skipped when the DB is unavailable (no row to rotate), the row was
+      // missing (cookies already cleared), or the inbound token already
+      // matched the previous-hash grace slot (peer just rotated).
+      const cfg = __sessionRefreshConfig;
+      if (sessionId && inboundTokenHash && dbAvailable && !viaPrevious) {
         const nowSeconds = Math.floor(Date.now() / 1000);
-        if (nowSeconds - payload.iat > REFRESH_AFTER_SECONDS) {
+        if (nowSeconds - payload.iat > cfg.refreshAfterSeconds) {
           try {
             const newToken = await signJWT(
               { id: payload.id, email: payload.email, name: payload.name, role: payload.role },
               secret,
-              NEW_LIFETIME_SECONDS,
+              cfg.lifetimeSeconds,
             );
             const newTokenHash = await hashToken(newToken);
-            const newExpiresAt = new Date((nowSeconds + NEW_LIFETIME_SECONDS) * 1000);
+            const newExpiresAt = new Date((nowSeconds + cfg.lifetimeSeconds) * 1000);
             const rotated = await rotateSessionToken({
               id: sessionId,
-              oldTokenHash,
+              oldTokenHash: inboundTokenHash,
               newTokenHash,
               newExpiresAt,
+              previousTokenGraceSeconds: cfg.previousTokenGraceSeconds,
             });
             if (rotated) {
-              const isSecure = process.env.FORCE_SECURE_COOKIES === "true";
-              event.cookies.set("ezcorp_session", newToken, {
-                path: "/",
-                httpOnly: true,
-                sameSite: "lax",
-                maxAge: NEW_LIFETIME_SECONDS,
-                secure: isSecure,
-              });
+              setSessionCookie(event.cookies, newToken);
             }
           } catch (err) {
             // Refresh is best-effort: if signing or the CAS update throws
@@ -401,7 +431,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   const response = await resolve(event, {
     transformPageChunk: process.env.EZCORP_DEV_INDICATOR === "1"
-      ? ({ html }) => html.replace("<html ", '<html data-dev-indicator="1" ')
+      ? ({ html }) => html
+          .replace("<html ", '<html data-dev-indicator="1" ')
+          .replace(/<title>(?!DEV )([^<]*)<\/title>/g, "<title>DEV $1</title>")
+          .replaceAll("/favicon-192.png", "/favicon-dev-192.png")
+          .replaceAll("/favicon.ico", "/favicon-dev.ico")
       : undefined,
   });
 

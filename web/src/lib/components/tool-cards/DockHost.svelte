@@ -25,6 +25,7 @@
 	} from "$lib/stores.svelte.js";
 	import { inlineToolStore } from "$lib/inline-tool-store.svelte.js";
 	import ToolCardRouter from "./ToolCardRouter.svelte";
+	import { extractPopoutUrl } from "./iframe-card-logic.js";
 
 	let { conversationId }: { conversationId?: string } = $props();
 
@@ -70,44 +71,12 @@
 
 	// ── Pop-out URL ──────────────────────────────────────────────────
 	// SDK contract: any tool whose result carries a same-origin `iframeSrc`
-	// gets a "Pop out" affordance for free. We parse the same MCP envelope
-	// shapes DesignCanvasCard supports (envelope OR pre-extracted string)
-	// and refuse anything that looks cross-origin or non-http(s).
+	// gets a "Pop out" affordance for free. The pure helper lives in
+	// iframe-card-logic.ts (`extractPopoutUrl`) so it can be unit-tested
+	// against every malformed-output shape without rendering the dock.
 	let popoutUrl = $derived.by((): string | null => {
-		const out = toolCall?.output;
-		if (out == null) return null;
-		const tryParse = (raw: unknown): { iframeSrc?: unknown } | null => {
-			if (!raw) return null;
-			if (typeof raw === "string") {
-				try { return JSON.parse(raw); } catch { return null; }
-			}
-			if (typeof raw === "object" && raw !== null) {
-				if ("content" in (raw as Record<string, unknown>)) {
-					const content = (raw as { content?: unknown[] }).content;
-					if (Array.isArray(content)) {
-						const text = content.find((c: unknown) => (c as { type?: string }).type === "text");
-						const t = (text as { text?: unknown })?.text;
-						if (typeof t === "string") {
-							try { return JSON.parse(t); } catch { return null; }
-						}
-					}
-				}
-				return raw as { iframeSrc?: unknown };
-			}
-			return null;
-		};
-		const parsed = tryParse(out);
-		const candidate = typeof parsed?.iframeSrc === "string" ? parsed.iframeSrc : null;
-		if (!candidate) return null;
-		// Same-origin guard: only allow relative paths or absolute URLs that
-		// resolve to the current origin. Mirrors `validateIframeSrc` policy.
 		if (typeof window === "undefined") return null;
-		try {
-			const resolved = new URL(candidate, window.location.origin);
-			if (resolved.origin !== window.location.origin) return null;
-			if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
-			return resolved.toString();
-		} catch { return null; }
+		return extractPopoutUrl(toolCall?.output, window.location.origin);
 	});
 
 	function handlePopout(): void {
@@ -126,17 +95,46 @@
 	let viewportWidth = $state<number>(typeof window !== "undefined" ? window.innerWidth : 1280);
 	let isMobile = $derived(viewportWidth <= 640);
 
-	// Hydrate persisted dock slot on mount + when convId changes. If the
-	// stored toolCallId is no longer in the inlineToolStore (history purged),
-	// silently bail — `openDock` would write a stale entry otherwise.
+	// Hydrate the dock on mount + when convId changes. Two-step priority:
+	//   1. localStorage persisted slot (the user's last-explicit-open) —
+	//      restore if the toolCallId still exists in inlineToolStore.
+	//   2. Fall back to the most-recently-completed dock-mode tool call in
+	//      this conversation's history. Without this, when scrollback contains
+	//      multiple dock-mode calls and the user closed the dock last session,
+	//      the per-card auto-open effects would fire one after another, cycling
+	//      the dock through every historical canvas. Picking just the latest
+	//      shows ONLY the freshest one.
+	//
+	// Both paths skip silently if `dismissedDocks` already has the toolCallId
+	// (user explicitly closed it earlier in this session).
 	$effect(() => {
 		if (!activeConvId) return;
 		if (store.dockState[activeConvId]) return; // already open
+		// 1: persisted slot wins.
 		const persisted = readPersistedDockSlot(activeConvId);
-		if (!persisted) return;
-		const found = inlineToolStore.getById(persisted.toolCallId);
-		if (!found) return;
-		openDock(activeConvId, persisted.toolCallId);
+		if (persisted) {
+			const found = inlineToolStore.getById(persisted.toolCallId);
+			if (found && !store.dismissedDocks[activeConvId]?.[persisted.toolCallId]) {
+				openDock(activeConvId, persisted.toolCallId);
+				return;
+			}
+		}
+		// 2: most-recently-completed dock-mode call in this conversation.
+		// Sort by `startedAt + duration` (effective completion time); fall back
+		// to startedAt if duration unset. Tie-broken by array order which
+		// reflects insertion (chronological).
+		const candidates = inlineToolStore
+			.getByConversation(activeConvId)
+			.filter((c) => c.cardLayout === "dock" && c.status === "complete" && c.id);
+		if (candidates.length === 0) return;
+		const latest = candidates.reduce((best, cur) => {
+			const bestT = (best.startedAt ?? 0) + (best.duration ?? 0);
+			const curT = (cur.startedAt ?? 0) + (cur.duration ?? 0);
+			return curT >= bestT ? cur : best;
+		});
+		if (!latest.id) return;
+		if (store.dismissedDocks[activeConvId]?.[latest.id]) return;
+		openDock(activeConvId, latest.id);
 	});
 
 	onMount(() => {

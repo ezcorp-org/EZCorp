@@ -3,8 +3,11 @@ import type { PageServerLoad } from "./$types";
 import { getUserCount } from "$server/db/queries/users";
 import { verifyJWT, getJwtSecret } from "$server/auth/jwt";
 import { hashToken, getSessionByTokenHash } from "$server/db/queries/sessions";
+import { safeReturnTo } from "$lib/safe-redirect";
 
-export const load: PageServerLoad = async ({ cookies }) => {
+export const load: PageServerLoad = async ({ cookies, url }) => {
+  const returnTo = safeReturnTo(url.searchParams.get("returnTo"));
+
   const count = await getUserCount();
   if (count === 0) {
     throw redirect(302, "/setup");
@@ -34,7 +37,7 @@ export const load: PageServerLoad = async ({ cookies }) => {
         sessionRowExists = true;
       }
       if (sessionRowExists) {
-        throw redirect(302, "/");
+        throw redirect(302, returnTo);
       }
       // Stale JWT + missing row: clear the cookie here so the next
       // navigation starts clean regardless of what the original
@@ -43,5 +46,5 @@ export const load: PageServerLoad = async ({ cookies }) => {
     }
   }
 
-  return {};
+  return { returnTo };
 };

@@ -91,7 +91,7 @@
 			<div bind:this={diffContainer} class="overflow-x-auto border-t border-[var(--color-border)] diff-card-content">
 				{#if diffHtml}
 					{@html diffHtml}
-				{:else if isNewFile && details.newContent}
+				{:else if isNew && details.newContent}
 					<pre class="p-3 text-xs text-green-300 font-mono whitespace-pre-wrap">{details.newContent}</pre>
 				{:else}
 					<p class="p-3 text-xs text-[var(--color-text-muted)] italic">No diff available</p>

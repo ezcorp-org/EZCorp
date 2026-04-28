@@ -315,6 +315,63 @@ describe("detectAndLogManifestDrift — eventSubscriptions decision matrix", () 
       .toBe(1);
   });
 
+  test("validation: brief-answer addition triggers self-heal on a stale grant carrying only knob-change", async () => {
+    // Mirror the production bug shape after the form-card landing:
+    // disk now declares both `knob-change` and `brief-answer`, but
+    // the stale grant only has knob-change. Auto-heal must add
+    // brief-answer (and emit one backfill audit) without removing
+    // knob-change.
+    mockDiskManifest = {
+      schemaVersion: 2,
+      name: "claude-design",
+      version: "0.1.0",
+      description: "stub",
+      author: { name: "stub" },
+      entrypoint: "./index.ts",
+      tools: [],
+      permissions: {
+        eventSubscriptions: [
+          "claude-design:knob-change",
+          "claude-design:brief-answer",
+        ],
+      },
+    };
+    seedAll({
+      name: "claude-design",
+      row: {
+        id: "ext-1",
+        name: "claude-design",
+        installPath: "docs/extensions/examples/claude-design",
+        enabled: true,
+        isBundled: true,
+        manifest: {
+          schemaVersion: 2,
+          name: "claude-design",
+          version: "0.1.0",
+          permissions: {
+            eventSubscriptions: ["claude-design:knob-change"],
+          },
+        },
+        grantedPermissions: {
+          eventSubscriptions: ["claude-design:knob-change"],
+          grantedAt: { eventSubscriptions: 1 },
+        },
+      },
+    });
+    await ensureBundledExtensions();
+    const granted =
+      (store.get("claude-design")!.grantedPermissions.eventSubscriptions ?? [])
+        .slice()
+        .sort();
+    expect(granted).toEqual([
+      "claude-design:brief-answer",
+      "claude-design:knob-change",
+    ]);
+    expect(
+      auditCounts.get(EXT_AUDIT_ACTIONS.BUNDLED_EVENT_SUBSCRIPTIONS_BACKFILLED) ?? 0,
+    ).toBe(1);
+  });
+
   test("disk has eventSubscriptions but grant.eventSubscriptions is undefined → backfilled to [diskValues]", async () => {
     // Real-world bug shape: the row was installed BEFORE the field
     // existed in `bundled.ts`, so `grantedPermissions.eventSubscriptions`

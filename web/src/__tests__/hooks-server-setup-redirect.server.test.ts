@@ -36,8 +36,9 @@ vi.mock("$lib/server/security/bearer-auth", () => ({
 }));
 vi.mock("$server/db/queries/sessions", () => ({
   hashToken: vi.fn(async () => "hash"),
-  getSessionByTokenHash: vi.fn(async () => null),
+  lookupSessionByTokenHash: vi.fn(async () => null),
   touchSession: vi.fn(async () => {}),
+  rotateSessionToken: vi.fn(async () => null),
 }));
 vi.mock("$server/auth/jwt", () => ({
   verifyJWT: vi.fn(async () => null),
@@ -183,7 +184,8 @@ describe("hooks.server.ts — setup redirect branch", () => {
     expect(thrown).toBeDefined();
     if (!isRedirect(thrown)) throw thrown;
     expect(thrown.status).toBe(302);
-    expect(thrown.location).toBe("/login");
+    // GET → returnTo is included so the user lands back on /projects/abc after login
+    expect(thrown.location).toBe("/login?returnTo=%2Fprojects%2Fabc");
     expect(resolve).not.toHaveBeenCalled();
   });
 });

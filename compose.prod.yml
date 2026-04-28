@@ -42,6 +42,13 @@ services:
       # when traffic reaches the app over HTTPS — otherwise browsers
       # silently drop the cookie and login appears broken.
       FORCE_SECURE_COOKIES: "${FORCE_SECURE_COOKIES:-false}"
+      # Session lifetime tuning — see docs/production-guide.md.
+      # Defaults (90 / 7 / 60) apply if .env.prod doesn't set them; we
+      # forward them explicitly so the container surfaces the live values
+      # to anyone inspecting `docker exec env`.
+      EZCORP_SESSION_LIFETIME_DAYS: "${EZCORP_SESSION_LIFETIME_DAYS:-90}"
+      EZCORP_SESSION_REFRESH_AFTER_DAYS: "${EZCORP_SESSION_REFRESH_AFTER_DAYS:-7}"
+      EZCORP_SESSION_PREVIOUS_TOKEN_GRACE_SECONDS: "${EZCORP_SESSION_PREVIOUS_TOKEN_GRACE_SECONDS:-60}"
       # External update check (default on). Set to "false" to disable the
       # in-app update banner and the periodic GitHub Releases poll.
       EZCORP_CHECK_UPDATES: "${EZCORP_CHECK_UPDATES:-true}"

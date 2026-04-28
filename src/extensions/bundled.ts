@@ -252,7 +252,10 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     permissions: {
       filesystem: ["$CWD"],
       storage: true,
-      eventSubscriptions: ["claude-design:knob-change"],
+      eventSubscriptions: [
+        "claude-design:knob-change",
+        "claude-design:brief-answer",
+      ],
       network: ["cdn.jsdelivr.net"],
       grantedAt: {
         filesystem: Date.now(),

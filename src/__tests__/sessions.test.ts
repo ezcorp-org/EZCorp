@@ -118,6 +118,7 @@ import {
   hashToken,
   createSession,
   getSessionByTokenHash,
+  lookupSessionByTokenHash,
   revokeSession,
   revokeAllUserSessions,
   listSessionsByUser,
@@ -151,6 +152,8 @@ describe("session queries", () => {
         id: "sess-1",
         userId: "user-1",
         tokenHash: "abc",
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
         userAgent: "Mozilla",
         ipAddress: "127.0.0.1",
         expiresAt: new Date(),
@@ -269,19 +272,26 @@ describe("session queries", () => {
       };
       mockRows = [updated];
 
+      const before = Date.now();
       const result = await rotateSessionToken({
         id: "sess-1",
         oldTokenHash: "old-hash",
         newTokenHash: "new-hash",
         newExpiresAt: new Date("2026-12-01"),
+        previousTokenGraceSeconds: 60,
       });
+      const after = Date.now();
 
-      // Set clause must carry both the new hash and the new expiry — if either
-      // is dropped, sessions silently revert or the reaper kills them early.
-      expect(_lastUpdateSet).toEqual({
-        tokenHash: "new-hash",
-        expiresAt: new Date("2026-12-01"),
-      });
+      // Set clause must carry the new hash + expiry, AND the previous-hash
+      // grace fields. The grace fields bridge concurrent in-flight requests
+      // across the rotation — without them, peers carrying the old cookie
+      // get bounced as "session_revoked".
+      expect(_lastUpdateSet.tokenHash).toBe("new-hash");
+      expect(_lastUpdateSet.expiresAt).toEqual(new Date("2026-12-01"));
+      expect(_lastUpdateSet.previousTokenHash).toBe("old-hash");
+      const graceTs = (_lastUpdateSet.previousTokenExpiresAt as Date).getTime();
+      expect(graceTs).toBeGreaterThanOrEqual(before + 60_000);
+      expect(graceTs).toBeLessThanOrEqual(after + 60_000);
       // CAS predicate is non-empty (drizzle wraps it in an SQL builder; we
       // don't introspect the AST — the lost-race test below proves it gates).
       expect(_lastUpdateWhere).toBeDefined();
@@ -298,9 +308,53 @@ describe("session queries", () => {
         oldTokenHash: "stale-hash",
         newTokenHash: "another-new-hash",
         newExpiresAt: new Date("2026-12-01"),
+        previousTokenGraceSeconds: 60,
       });
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe("lookupSessionByTokenHash (rotation grace)", () => {
+    test("reports viaPrevious=false when match is on current tokenHash", async () => {
+      // Mock returns a row whose tokenHash equals the inbound hash → matched
+      // on the current column, not the grace column.
+      const row = {
+        id: "sess-1",
+        tokenHash: "current-hash",
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+      };
+      mockRows = [row];
+
+      const lookup = await lookupSessionByTokenHash("current-hash");
+      expect(lookup).not.toBeNull();
+      expect(lookup?.session).toBe(row as NonNullable<typeof lookup>["session"]);
+      expect(lookup?.viaPrevious).toBe(false);
+    });
+
+    test("reports viaPrevious=true when row's current tokenHash differs from the inbound", async () => {
+      // Simulates a peer just rotated the row: the row's `tokenHash` is the
+      // post-rotation value, but the row also satisfied the WHERE on
+      // previous_token_hash for our (pre-rotation) inbound hash. The
+      // discriminator tells hooks to skip a redundant rotation.
+      const row = {
+        id: "sess-1",
+        tokenHash: "post-rotation-hash",
+        previousTokenHash: "pre-rotation-hash",
+        previousTokenExpiresAt: new Date(Date.now() + 30_000),
+      };
+      mockRows = [row];
+
+      const lookup = await lookupSessionByTokenHash("pre-rotation-hash");
+      expect(lookup).not.toBeNull();
+      expect(lookup?.viaPrevious).toBe(true);
+    });
+
+    test("returns null when no row matches either hash", async () => {
+      mockRows = [];
+      const lookup = await lookupSessionByTokenHash("nope");
+      expect(lookup).toBeNull();
     });
   });
 });

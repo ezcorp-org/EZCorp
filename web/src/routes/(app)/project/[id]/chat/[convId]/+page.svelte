@@ -28,6 +28,8 @@
 		type TaskPanelTask,
 	} from "$lib/stores.svelte.js";
 	import { buildHistoricalBlocks } from "$lib/content-blocks.js";
+	import { recordSnapshot, type StreamSnapshot } from "$lib/chat/reconcile-stream.js";
+	import { runReconcileAfterStream } from "$lib/chat/reconcile-after-stream.js";
 	import {
 		subConvoToAgentCallState,
 		type SubConvoRecord,
@@ -396,6 +398,11 @@
 	let resumedRun = $state(false);
 	let userScrolledUp = $state(false);
 	let observer: IntersectionObserver | undefined;
+
+	// Page-local mirror of `store.streamingMessages[runId]` / `streamingThinking[runId]`.
+	// Survives `stopStreaming`'s synchronous cache-wipe so the post-stream
+	// reconcile can back-fill an empty assistant row from this snapshot.
+	let streamedSnapshot = $state<StreamSnapshot>({});
 
 	let isStreaming = $derived(activeRunId !== null && (store.streamingMessages[activeRunId] !== undefined || store.streamingStatus[activeRunId] !== undefined));
 
@@ -891,6 +898,18 @@
 			.finally(() => { if (gen === loadGeneration) initialLoadDone = true; });
 	});
 
+	// Mirror live streaming text/thinking into a page-local snapshot on every
+	// token flush. Survives `stopStreaming`'s synchronous cache-wipe: when the
+	// store entries become undefined this effect re-runs and `recordSnapshot`
+	// no-ops, leaving the prior value intact for `reconcileAfterStream` to read.
+	$effect(() => {
+		const runId = activeRunId;
+		if (!runId) return;
+		const text = store.streamingMessages[runId];
+		const thinking = store.streamingThinking[runId];
+		streamedSnapshot = recordSnapshot(streamedSnapshot, runId, text, thinking);
+	});
+
 	// Detect external stream completion (run:complete/error cleaned up streaming state)
 	$effect(() => {
 		if (activeRunId && !isStreaming) {
@@ -1046,35 +1065,18 @@
 	}
 
 	async function reconcileAfterStream() {
-		const runId = activeRunId;
-		activeRunId = null;
-		activeRunStartedAt = null;
-		serverStalenessMs = null;
-		try {
-			const freshMessages = await fetchAllMessages(convId);
-			allMessages = freshMessages;
-			// Keep the active leaf pointing to the same branch
-			if (activeLeafId) {
-				// Verify the leaf still exists, otherwise recompute
-				if (!freshMessages.find((m) => m.id === activeLeafId)) {
-					activeLeafId = computeLatestLeaf(freshMessages);
-				}
-			} else {
-				activeLeafId = computeLatestLeaf(freshMessages);
-			}
-
-			// Re-hydrate tool calls so diff panel picks up newly persisted built-in tool calls
-			await hydrateToolCallsFromApi();
-		} catch {
-			if (runId) {
-				const streamedText = store.streamingMessages[runId];
-				if (streamedText) {
-					allMessages = allMessages.map((m) =>
-						m.runId === runId ? { ...m, content: streamedText } : m,
-					);
-				}
-			}
-		}
+		await runReconcileAfterStream({
+			convId: () => convId,
+			activeRunId: { get: () => activeRunId, set: (v) => { activeRunId = v; } },
+			activeRunStartedAt: { set: (v) => { activeRunStartedAt = v; } },
+			serverStalenessMs: { set: (v) => { serverStalenessMs = v; } },
+			allMessages: { get: () => allMessages, set: (v) => { allMessages = v; } },
+			activeLeafId: { get: () => activeLeafId, set: (v) => { activeLeafId = v; } },
+			streamedSnapshot: { get: () => streamedSnapshot, set: (v) => { streamedSnapshot = v; } },
+			fetchAllMessages,
+			computeLatestLeaf,
+			hydrateToolCallsFromApi,
+		});
 	}
 
 	function handleModelChange(provider: string, model: string) {
@@ -1312,6 +1314,11 @@
 			onsettingstoggle={() => (settingsOpen = true)}
 			onpermissionmodechange={(mode) => { permissionModeOverride = mode; }}
 			oncallclick={scrollToToolCall}
+			onrename={async (title) => {
+				if (!currentConversation) return;
+				const updated = await updateConversation(convId, { title });
+				currentConversation = updated;
+			}}
 		/>
 
 		<!-- Messages -->

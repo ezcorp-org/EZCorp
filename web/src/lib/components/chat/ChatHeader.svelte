@@ -43,6 +43,7 @@
 		onsettingstoggle: () => void;
 		onpermissionmodechange: (mode: PermissionMode | undefined) => void;
 		oncallclick: (callId: string) => void;
+		onrename: (title: string) => void | Promise<void>;
 	}
 
 	let {
@@ -72,7 +73,40 @@
 		onsettingstoggle,
 		onpermissionmodechange,
 		oncallclick,
+		onrename,
 	}: Props = $props();
+
+	let editing = $state(false);
+	let editValue = $state("");
+	let saving = $state(false);
+
+	function startEditing() {
+		if (!currentConversation) return;
+		editValue = currentConversation.title ?? "";
+		editing = true;
+	}
+
+	function cancelEdit() {
+		editing = false;
+		saving = false;
+	}
+
+	async function saveEdit() {
+		if (!editing || saving) return;
+		const trimmed = editValue.trim();
+		const original = currentConversation?.title ?? "";
+		if (!trimmed || trimmed === original) {
+			cancelEdit();
+			return;
+		}
+		saving = true;
+		try {
+			await onrename(trimmed);
+			editing = false;
+		} finally {
+			saving = false;
+		}
+	}
 </script>
 
 <!-- Chat Header -->
@@ -88,9 +122,46 @@
 			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
 		</svg>
 	</button>
-	<span class="truncate text-sm font-medium text-[var(--color-text-secondary)] flex-1 min-w-0">
-		<MentionText text={currentConversation?.title ?? "Chat"} />
-	</span>
+	{#if editing}
+		<form
+			class="flex-1 min-w-0 flex items-center gap-2"
+			onsubmit={(e) => { e.preventDefault(); saveEdit(); }}
+		>
+			<!-- svelte-ignore a11y_autofocus -->
+			<input
+				data-testid="chat-title-input"
+				type="text"
+				bind:value={editValue}
+				autofocus
+				disabled={saving}
+				onkeydown={(e) => { if (e.key === "Escape") cancelEdit(); }}
+				class="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface-tertiary)] px-2 py-1 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none"
+			/>
+			<button
+				data-testid="chat-title-save"
+				type="submit"
+				disabled={saving}
+				class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
+			>Save</button>
+			<button
+				data-testid="chat-title-cancel"
+				type="button"
+				onclick={cancelEdit}
+				disabled={saving}
+				class="rounded px-2 py-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+			>Cancel</button>
+		</form>
+	{:else}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<span
+			data-testid="chat-title"
+			title="Double-click to rename"
+			ondblclick={startEditing}
+			class="truncate text-sm font-medium text-[var(--color-text-secondary)] flex-1 min-w-0 cursor-text select-none"
+		>
+			<MentionText text={currentConversation?.title ?? "Chat"} />
+		</span>
+	{/if}
 	<div class="flex items-center gap-1 shrink-0">
 		<!-- Context usage -->
 		<ContextUsageIndicator

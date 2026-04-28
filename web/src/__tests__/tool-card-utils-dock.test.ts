@@ -29,3 +29,15 @@ describe("shouldRenderInDock", () => {
 		expect(shouldRenderInDock("inline", "error")).toBe(false);
 	});
 });
+
+describe("validation: shouldRenderInDock additional gaps", () => {
+	test("undefined cardLayout + complete → false (legacy NULL → inline)", () => {
+		expect(shouldRenderInDock(undefined, "complete")).toBe(false);
+	});
+
+	test('cardLayout="dock" + status="error" → false (only complete docks)', () => {
+		// Errored dock-mode tool calls keep their pill in chat history;
+		// they don't take over the dock.
+		expect(shouldRenderInDock("dock", "error")).toBe(false);
+	});
+});

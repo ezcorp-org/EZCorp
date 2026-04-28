@@ -15,13 +15,22 @@
 	/** Dock-routing: when complete + cardLayout="dock", render a DockOpenPill instead. */
 	let routeToDock = $derived(shouldRenderInDock(toolCall.cardLayout, toolCall.status));
 
-	// Auto-open dock when this card first becomes a dock-routed complete entry
-	// (debounced 500ms — multi-tool turns coalesce to the last completion).
-	// Skips when the user has explicitly closed THIS toolCallId in this
-	// conversation; clearing the flag requires a manual reopen via the
-	// chat-history `DockOpenPill`.
+	// Auto-open dock when this card's status FLIPS from non-complete to
+	// complete DURING THIS PAGE SESSION (i.e. live tool completion). Cards
+	// that mount already-complete — scrollback, page reload — don't auto-open
+	// here; DockHost handles initial mount restoration by picking the most
+	// recently completed dock-mode tool call (avoids cycling through every
+	// historical canvas).
+	//
+	// Each card fires AT MOST ONCE via `firedOnce`. Manual re-opens via the
+	// chat-history `DockOpenPill` bypass this effect entirely.
+	const initialStatus = toolCall.status;
 	let openDockTimer: ReturnType<typeof setTimeout> | undefined;
+	let firedOnce = $state(false);
 	$effect(() => {
+		// Skip cards that mounted already-complete — DockHost picks the latest.
+		if (initialStatus === "complete") return;
+		if (firedOnce) return;
 		if (!routeToDock || !toolCall.id || !conversationId) return;
 		if (store.dismissedDocks[conversationId]?.[toolCall.id]) return;
 		const existing = store.dockState[conversationId];
@@ -29,7 +38,10 @@
 		clearTimeout(openDockTimer);
 		const id = toolCall.id;
 		const conv = conversationId;
-		openDockTimer = setTimeout(() => { openDock(conv, id); }, 500);
+		openDockTimer = setTimeout(() => {
+			openDock(conv, id);
+			firedOnce = true;
+		}, 500);
 		return () => { clearTimeout(openDockTimer); };
 	});
 	let expanded = $state(false);

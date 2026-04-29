@@ -6,10 +6,17 @@
  */
 
 import { getSetting } from "../../db/queries/settings";
+import type { ToolCategory } from "./types";
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export type ToolCategory = "read" | "write" | "execute";
+// Re-export so existing callers that import ToolCategory from this module
+// keep working — the type now lives in `./types` (single source of truth).
+// Phase 48 added 'ez' to the union; Ez tools are always auto-approved
+// (they're proposal/informational, the user's own panel triggers them,
+// and the actual mutation surface is the destination form's Submit
+// button — no LLM-driven side effects to gate on).
+export type { ToolCategory };
 export type PermissionMode = "ask" | "auto-edit" | "yolo";
 
 const VALID_MODES = new Set<PermissionMode>(["ask", "auto-edit", "yolo"]);
@@ -17,9 +24,9 @@ const VALID_MODES = new Set<PermissionMode>(["ask", "auto-edit", "yolo"]);
 // ── Permission Matrix ───────────────────────────────────────────────
 
 const AUTO_APPROVE: Record<PermissionMode, Set<ToolCategory>> = {
-  ask: new Set(["read"]),
-  "auto-edit": new Set(["read", "write"]),
-  yolo: new Set(["read", "write", "execute"]),
+  ask: new Set<ToolCategory>(["read", "ez"]),
+  "auto-edit": new Set<ToolCategory>(["read", "write", "ez"]),
+  yolo: new Set<ToolCategory>(["read", "write", "execute", "ez"]),
 };
 
 /**

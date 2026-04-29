@@ -34,7 +34,13 @@ const createMessage = vi.fn();
 const insertAttachment = vi.fn();
 const deleteAttachmentsForMessage = vi.fn();
 const getProject = vi.fn();
-const streamChat = vi.fn(() => ({ catch: () => Promise.resolve() }));
+// streamChat is variadic in production (conversationId, content, options);
+// declare the signature so streamChat.mock.calls[N] is a 3-tuple in tests.
+const streamChat = vi.fn(
+  (_conversationId: string, _content: string, _options: Record<string, unknown>) => ({
+    catch: () => Promise.resolve(),
+  }),
+);
 const checkTokenBudget = vi.fn();
 
 vi.mock("$server/db/queries/conversations", () => ({
@@ -121,7 +127,7 @@ describe("POST /api/conversations/[id]/messages — Ez allowlist plumbing", () =
     getConversation.mockReset();
     createMessage.mockReset();
     streamChat.mockReset();
-    streamChat.mockReturnValue({ catch: () => Promise.resolve() });
+    streamChat.mockReturnValue({ catch: () => Promise.resolve() } as ReturnType<typeof streamChat>);
     checkTokenBudget.mockResolvedValue({ allowed: true });
     createMessage.mockResolvedValue({ id: "msg-1", parentMessageId: null });
   });

@@ -3,27 +3,51 @@
 	 * Phase 48 Wave 3 — slide-in Ez chat panel.
 	 *
 	 * The panel renders the user's single Ez conversation in a fixed
-	 * 480px-wide drawer on the right. Composition lives here because
-	 * the regular `ChatInput` mounts a much heavier loadout (mode/agent
-	 * pickers, thinking-level selectors) — for Ez the surface is locked
-	 * to a single mode, so we ship a smaller composer inline. ChatMessage
-	 * isn't reused for the same reason: its props graph (tool calls,
-	 * agent calls, content blocks, branch nav, ...) implies a chat
-	 * runtime we don't have here. The panel renders messages with the
-	 * same visual vocabulary (role-tinted bubbles, markdown body,
-	 * inline tool cards) but as its own simpler composition.
+	 * 480px-wide drawer on the right. It reuses the same building blocks
+	 * the regular chat page uses:
 	 *
-	 * The "view full thread" link routes to `/conversations/<id>` so
-	 * users can drop into the regular chat surface for search, fork,
-	 * share, etc. — the panel is a *view* into the same conversation,
-	 * not a fork of it.
+	 *   - `ChatInput.svelte` for composition — the literal same component
+	 *     the chat page imports. We pass `lockedMode={ modeSlug: 'ez',
+	 *     label: 'Ez' }` so the model / mode / thinking-level pickers and
+	 *     the attachment button collapse into a single static "Ez" chip,
+	 *     since the Ez conversation's `modeId` is pinned server-side.
+	 *     This guarantees the panel composer's mention popover, chip
+	 *     rendering, and Enter/Shift+Enter behavior stay in lock-step
+	 *     with the chat page — there's no second textarea variant to
+	 *     keep in sync.
 	 *
-	 * Streaming is handled by reloading on `run:complete` events from
-	 * the same SSE bus the rest of the app uses; the panel listens
-	 * specifically for events scoped to the Ez conversation. We do NOT
-	 * try to reuse the global chat store because (a) it's
-	 * project-scoped and (b) hooking into it would couple the panel
-	 * to every chat-route assumption.
+	 *   - `ChatMessage.svelte` for rendering. Every prop on ChatMessage
+	 *     beyond `message` is optional with a sensible default, so the
+	 *     panel passes only what makes sense in Ez context (streaming
+	 *     text + status from the global store, conversationId, an
+	 *     `onsendmessage` for tool-call follow-ups). Branch nav, retry,
+	 *     edit, save-memory, regenerate, etc. are intentionally not
+	 *     wired — the panel is a streamlined surface, full control lives
+	 *     on the regular chat page (linked via "Full thread").
+	 *
+	 *   - The same SSE consumption pattern as the chat page: when
+	 *     `api.sendMessage` returns a runId, we register it with
+	 *     `startStreaming(runId, conversationId)`. The global SSE
+	 *     subscriber (initStores → createWSClient) routes
+	 *     `run:token` / `run:status` / `run:complete` events into
+	 *     `store.streamingMessages[runId]`, which we read via the
+	 *     `currentStreamingText` derived. `run:turn_saved` and
+	 *     `run:complete` events fire the same `ez:turn_saved` /
+	 *     `run:complete` window-event signals the chat page listens to,
+	 *     and we use them to swap streaming placeholders for persisted
+	 *     messages and refresh the message list.
+	 *
+	 *   - Client-side tool dispatch (`fill_form` / `navigate_to`) flows
+	 *     through the same global SSE — `stores.svelte.ts` re-dispatches
+	 *     `ez:client-tool` bus events as window CustomEvents, and we
+	 *     listen for them here. The previous implementation maintained a
+	 *     separate `EventSource('/api/runtime-events?conversationId=…')`;
+	 *     keeping a second SSE alive for the same data was both wasteful
+	 *     and a divergence from how the chat page consumes runtime events.
+	 *
+	 * The "Full thread" link routes to `/conversations/<id>` so users can
+	 * drop into the regular chat surface for search, fork, share, etc. —
+	 * the panel is a *view* into the same conversation, not a fork of it.
 	 */
 	import { onMount, onDestroy } from "svelte";
 	import { page } from "$app/state";
@@ -34,7 +58,13 @@
 	import { dispatch as dispatchClientTool } from "$lib/ez/client-tool-dispatcher.js";
 	import { goto as appGoto } from "$app/navigation";
 	import { fetchAllMessages, sendMessage, type Message } from "$lib/api.js";
-	import EzToolResultCard, { type EzProposeResult } from "./EzToolResultCard.svelte";
+	import {
+		store,
+		startStreaming,
+		stopStreaming,
+	} from "$lib/stores.svelte.js";
+	import ChatInput from "$lib/components/ChatInput.svelte";
+	import ChatMessage from "$lib/components/ChatMessage.svelte";
 
 	let {
 		/** Bypass `getOrCreateEzConversation` — used by tests. */
@@ -56,13 +86,30 @@
 		}
 	});
 	let messages = $state<Message[]>([]);
-	let input = $state("");
-	let sending = $state(false);
+	let activeRunId = $state<string | null>(null);
+	let pendingPrefill = $state<string>("");
 	let error = $state<string | null>(null);
-	let composerEl = $state<HTMLTextAreaElement | null>(null);
 	let scrollEl = $state<HTMLDivElement | null>(null);
 
 	let panelOpen = $derived(ezPanelState.open);
+
+	// Read streaming text/status the same way the chat page does — through
+	// the global store. `startStreaming` populates these slots; the SSE
+	// subscriber appends tokens; `stopStreaming` (fired on `run:complete`)
+	// clears them. The optimistic placeholder assistant message in
+	// `messages` keys off `runId`, so we can pick out the right entry to
+	// fill in.
+	let currentStreamingText = $derived(
+		activeRunId ? store.streamingMessages[activeRunId] : undefined,
+	);
+	let currentStreamingStatus = $derived(
+		activeRunId ? store.streamingStatus[activeRunId] : undefined,
+	);
+	let isStreaming = $derived(
+		activeRunId !== null &&
+			(store.streamingMessages[activeRunId] !== undefined ||
+				store.streamingStatus[activeRunId] !== undefined),
+	);
 
 	// Resolve the conversation id once on first open. Subsequent opens
 	// reuse the cached id; the server enforces uniqueness so this is
@@ -91,158 +138,280 @@
 		}
 	}
 
-	async function send() {
-		if (!conversationId || !input.trim() || sending) return;
-		const text = input.trim();
+	/**
+	 * Build a synthetic Message for the optimistic UI. Mirrors the
+	 * `makeOptimisticMessage` helper on the chat page — we keep the
+	 * defaults aligned so ChatMessage renders both consistently.
+	 */
+	function makeOptimisticMessage(
+		overrides: Partial<Message> & Pick<Message, "conversationId">,
+	): Message {
+		return {
+			id: "",
+			role: "user",
+			content: "",
+			thinkingContent: null,
+			model: null,
+			provider: null,
+			usage: null,
+			runId: null,
+			parentMessageId: null,
+			excluded: false,
+			createdAt: new Date().toISOString(),
+			...overrides,
+		};
+	}
+
+	/**
+	 * `ChatInput` calls this with the trimmed content (and optional
+	 * attachments — unused on the Ez surface because attachments are
+	 * suppressed by `lockedMode`). The composer handles its own
+	 * value/height reset on submit; we surface errors by re-throwing so
+	 * the component can roll back UI state if needed.
+	 */
+	async function send(content: string): Promise<void> {
+		if (!conversationId) throw new Error("Ez conversation not ready");
 		const ezContext = buildEzContextPayload(page, readSnapshot());
-		sending = true;
 		error = null;
+
+		// Optimistic user message — same pattern as the chat page.
+		const convIdNow = conversationId;
+		const optimisticUserMsg = makeOptimisticMessage({
+			id: `temp-${Date.now()}`,
+			conversationId: convIdNow,
+			role: "user",
+			content,
+		});
+		messages = [...messages, optimisticUserMsg];
+
 		try {
-			// We pipe `ezContext` as a JSON string in a synthetic content
-			// envelope. The Wave 4 server hook reads `ezContext` from the
-			// JSON body; until then we still POST it so the wire format
-			// is right when the server side lands.
-			await sendMessage(conversationId, {
-				content: text,
+			const result = await sendMessage(convIdNow, {
+				content,
 				// `ezContext` flows through `api.sendMessage` into the JSON
-				// body. Server-side wiring lands in Wave 4; the endpoint
-				// currently ignores unknown keys, which is forward-compatible.
+				// body; the server reads it from the request payload.
 				ezContext,
 			});
-			input = "";
-			await refreshMessages();
+
+			// Replace the optimistic user message with the real persisted one.
+			messages = messages.map((m) =>
+				m.id === optimisticUserMsg.id ? result.userMessage : m,
+			);
+
+			// Register the runId with the global streaming store so SSE
+			// `run:token` / `run:status` events accumulate into
+			// `store.streamingMessages[runId]`. Same call the chat page
+			// makes — same downstream consumers.
+			const started = startStreaming(result.runId, convIdNow);
+			if (!started) {
+				// Race: run completed/errored before startStreaming
+				// registered. Refetch messages to pick up the persisted
+				// turn(s).
+				activeRunId = null;
+				await refreshMessages();
+				return;
+			}
+			activeRunId = result.runId;
+
+			// Optimistic assistant placeholder — keyed by runId so the
+			// `ez:turn_saved` swap below can find it.
+			const assistantPlaceholder = makeOptimisticMessage({
+				id: `streaming-${result.runId}`,
+				conversationId: convIdNow,
+				role: "assistant",
+				runId: result.runId,
+				parentMessageId: result.userMessage.id,
+			});
+			messages = [...messages, assistantPlaceholder];
+			queueMicrotask(() => {
+				if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+			});
 		} catch (e) {
+			// Roll back the optimistic user message and surface the error.
+			messages = messages.filter((m) => m.id !== optimisticUserMsg.id);
 			error = (e as Error).message;
-		} finally {
-			sending = false;
+			throw e;
 		}
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-			e.preventDefault();
-			void send();
-		}
+	function close() {
+		closeEzPanel();
 	}
-
-	function close() { closeEzPanel(); }
 
 	function viewFullThread() {
 		if (conversationId) void goto(`/conversations/${conversationId}`);
 	}
 
-	// SSE → client-tool dispatch wiring. We listen to the global runtime
-	// event stream the same way the rest of the app does (via /api/runtime-
-	// events) but only for events tagged with our conversation id.
-	let es: EventSource | null = null;
-	function attachStream() {
-		if (typeof window === "undefined" || !conversationId) return;
-		try {
-			es = new EventSource(`/api/runtime-events?conversationId=${encodeURIComponent(conversationId)}`);
-			es.onmessage = (ev) => {
-				try {
-					const parsed = JSON.parse(ev.data) as { type: string; data?: { conversationId?: string } & Record<string, unknown> };
-					if (parsed.type === "ez:client-tool" && parsed.data?.conversationId === conversationId) {
-						const ezData = parsed.data;
-						const toolCallId = String(ezData.toolCallId ?? "");
-						void (async () => {
-							// Phase 48 — round-trip the dispatch result back to the runtime
-							// so the suspended `fill_form` / `navigate_to` Promise can
-							// resolve and the LLM continues. Without this POST the agent
-							// loop would hang on the deferred tool call until the
-							// registry's 5-minute timeout fires. We always POST something —
-							// even on dispatcher failure — so the runtime gets a concrete
-							// failure signal rather than a timeout.
-							let dispatchResult: unknown;
-							try {
-								dispatchResult = await dispatchClientTool(
-									{
-										conversationId: ezData.conversationId!,
-										toolCallId,
-										toolName: String(ezData.toolName ?? ""),
-										input: ezData.input,
-									},
-									{ goto },
-								);
-							} catch (err) {
-								// Dispatcher should never throw (it returns DispatchResult
-								// on every path), but guard defensively so a future
-								// regression can't leak an exception into the SSE handler.
-								dispatchResult = {
-									ok: false,
-									toolName: String(ezData.toolName ?? ""),
-									toolCallId,
-									error: (err as Error)?.message ?? "dispatcher threw",
-									code: "rejected",
-								};
-							}
-							if (!toolCallId || !conversationId) return;
-							try {
-								await fetch(
-									`/api/conversations/${encodeURIComponent(conversationId)}/tool-results`,
-									{
-										method: "POST",
-										headers: { "content-type": "application/json" },
-										body: JSON.stringify({ toolCallId, result: dispatchResult }),
-									},
-								);
-							} catch {
-								// Network failure — the registry's 5-min timeout is the
-								// fallback. We swallow the error rather than surface it in
-								// the panel because the user typically can't act on it.
-							}
-						})();
-					}
-					if (parsed.type === "run:complete" && parsed.data?.conversationId === conversationId) {
-						void refreshMessages();
-					}
-				} catch {
-					// Heartbeat or malformed frame — ignore.
-				}
-			};
-			es.onerror = () => { /* let the browser auto-reconnect */ };
-		} catch {
-			// SSE unavailable in this environment (e.g. tests) — silent.
-		}
+	// ── Window-event listeners (replace bespoke EventSource) ─────────
+	//
+	// `stores.svelte.ts` dispatches `ez:turn_saved` and `ez:client-tool`
+	// as window CustomEvents — we ride those instead of opening a second
+	// SSE connection. `run:complete` clean-up runs through the same path
+	// as the chat page (stopStreaming clears the per-run slots in the
+	// global store).
+
+	function handleTurnSaved(e: Event) {
+		const detail = (e as CustomEvent).detail as {
+			runId: string;
+			conversationId: string;
+			messageId: string;
+			parentMessageId: string | null;
+			content: string;
+		};
+		if (detail.conversationId !== conversationId) return;
+		if (!activeRunId || detail.runId !== activeRunId) return;
+
+		// Replace the streaming placeholder with the persisted assistant
+		// turn, then queue a fresh placeholder for the next turn (mirrors
+		// the chat page; tool calls and follow-ups sit between turns).
+		const realMsg = makeOptimisticMessage({
+			id: detail.messageId,
+			conversationId: detail.conversationId,
+			role: "assistant",
+			content: detail.content,
+			runId: detail.runId,
+			parentMessageId: detail.parentMessageId,
+		});
+		messages = [
+			...messages.filter((m) => m.id !== `streaming-${detail.runId}`),
+			realMsg,
+		];
+
+		const nextPlaceholder = makeOptimisticMessage({
+			id: `streaming-${detail.runId}`,
+			conversationId: detail.conversationId,
+			role: "assistant",
+			runId: detail.runId,
+			parentMessageId: detail.messageId,
+		});
+		messages = [...messages, nextPlaceholder];
+
+		queueMicrotask(() => {
+			if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+		});
 	}
-	function detachStream() { es?.close(); es = null; }
+
+	function handleClientTool(e: Event) {
+		const detail = (e as CustomEvent).detail as
+			| {
+					conversationId?: string;
+					toolCallId?: string;
+					toolName?: string;
+					input?: unknown;
+			  }
+			| undefined;
+		if (!detail) return;
+		if (detail.conversationId !== conversationId) return;
+
+		const toolCallId = String(detail.toolCallId ?? "");
+		const toolName = String(detail.toolName ?? "");
+		void (async () => {
+			// Round-trip the dispatch result back to the runtime so the
+			// suspended `fill_form` / `navigate_to` Promise can resolve.
+			// Without the POST the agent loop hangs on the deferred tool
+			// call until the registry's 5-min timeout fires. We always
+			// POST something — even on dispatcher failure — so the
+			// runtime gets a concrete failure signal rather than waiting
+			// out the timeout.
+			let dispatchResult: unknown;
+			try {
+				dispatchResult = await dispatchClientTool(
+					{
+						conversationId: detail.conversationId!,
+						toolCallId,
+						toolName,
+						input: detail.input,
+					},
+					{ goto },
+				);
+			} catch (err) {
+				// Dispatcher should never throw (it returns DispatchResult
+				// on every path), but guard defensively so a future
+				// regression can't leak an exception into the SSE handler.
+				dispatchResult = {
+					ok: false,
+					toolName,
+					toolCallId,
+					error: (err as Error)?.message ?? "dispatcher threw",
+					code: "rejected",
+				};
+			}
+			if (!toolCallId || !conversationId) return;
+			try {
+				await fetch(
+					`/api/conversations/${encodeURIComponent(conversationId)}/tool-results`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ toolCallId, result: dispatchResult }),
+					},
+				);
+			} catch {
+				// Network failure — the registry's 5-min timeout is the
+				// fallback. We swallow the error rather than surface it in
+				// the panel because the user typically can't act on it.
+			}
+		})();
+	}
+
+	// `run:complete` is observable via the global store: when the active
+	// runId's slots disappear, `stopStreaming` ran. Refetch the message
+	// list at that point so any final tool calls / persisted turns land.
+	let lastObservedActiveRun = $state<string | null>(null);
+	$effect(() => {
+		const runId = activeRunId;
+		if (!runId) {
+			lastObservedActiveRun = null;
+			return;
+		}
+		// Started streaming (or re-attached after navigation): track it.
+		if (lastObservedActiveRun !== runId) {
+			lastObservedActiveRun = runId;
+			return;
+		}
+		// Same runId, but the streaming slot disappeared — completion.
+		if (
+			store.streamingMessages[runId] === undefined &&
+			store.streamingStatus[runId] === undefined
+		) {
+			activeRunId = null;
+			lastObservedActiveRun = null;
+			void refreshMessages();
+		}
+	});
 
 	$effect(() => {
 		if (!panelOpen) return;
 		void (async () => {
 			await ensureConversation();
 			const prefill = consumePendingPrompt();
-			if (prefill) input = prefill;
+			if (prefill) pendingPrefill = prefill;
 			await refreshMessages();
-			// Focus the composer after the panel renders.
-			queueMicrotask(() => composerEl?.focus());
-			detachStream();
-			attachStream();
 		})();
 	});
 
-	// Detach the SSE stream when the panel closes so we don't keep an
-	// open EventSource for a closed UI surface.
+	// Detach any in-flight streaming run when the panel closes so we
+	// don't keep an open subscription for a hidden surface.
 	$effect(() => {
-		if (!panelOpen) detachStream();
+		if (!panelOpen && activeRunId) {
+			stopStreaming(activeRunId);
+			activeRunId = null;
+		}
 	});
 
-	onDestroy(() => detachStream());
-
-	function tryParseProposeResult(content: string): EzProposeResult | null {
-		// propose_* tools currently surface as either a JSON-encoded
-		// content string or a tool-call card; until the server-side
-		// rendering pipeline lands we look for `openUrl` in the content.
-		try {
-			const parsed = JSON.parse(content) as Partial<EzProposeResult> | undefined;
-			if (parsed && typeof parsed.openUrl === "string") return parsed as EzProposeResult;
-		} catch { /* not JSON */ }
-		return null;
-	}
-
-	// Avoid SSR access to `window` during hydration tests.
 	onMount(() => {
 		if (panelOpen && !conversationId) void ensureConversation();
+		if (typeof window !== "undefined") {
+			window.addEventListener("ez:turn_saved", handleTurnSaved);
+			window.addEventListener("ez:client-tool", handleClientTool);
+		}
+	});
+
+	onDestroy(() => {
+		if (typeof window !== "undefined") {
+			window.removeEventListener("ez:turn_saved", handleTurnSaved);
+			window.removeEventListener("ez:client-tool", handleClientTool);
+		}
+		if (activeRunId) stopStreaming(activeRunId);
 	});
 </script>
 
@@ -293,13 +462,16 @@
 				</div>
 			{:else}
 				{#each messages as msg (msg.id)}
-					{@const propose = msg.role === "tool" || msg.role === "assistant" ? tryParseProposeResult(msg.content) : null}
-					<div class="ez-msg ez-msg--{msg.role}" data-testid="ez-message" data-role={msg.role}>
-						{#if propose}
-							<EzToolResultCard result={propose} {goto} />
-						{:else}
-							<div class="ez-msg__body">{msg.content}</div>
-						{/if}
+					{@const isStreamingMsg =
+						msg.id === `streaming-${activeRunId}` && isStreaming}
+					<div data-testid="ez-message" data-role={msg.role}>
+						<ChatMessage
+							message={msg}
+							streamingText={isStreamingMsg ? currentStreamingText : undefined}
+							streamingStatus={isStreamingMsg ? currentStreamingStatus : undefined}
+							conversationId={conversationId ?? undefined}
+							onsendmessage={(text) => void send(text)}
+						/>
 					</div>
 				{/each}
 			{/if}
@@ -309,27 +481,16 @@
 			<div class="ez-panel__error" role="alert">{error}</div>
 		{/if}
 
-		<div class="ez-panel__composer">
-			<textarea
-				bind:this={composerEl}
-				bind:value={input}
-				rows="2"
-				placeholder="Ask Ez to do something for you…"
-				aria-label="Message Ez"
-				data-testid="ez-panel-input"
-				disabled={!conversationId}
-				onkeydown={handleKeydown}
-			></textarea>
-			<button
-				type="button"
-				class="ez-panel__send"
-				disabled={!conversationId || !input.trim() || sending}
-				data-testid="ez-panel-send"
-				onclick={() => void send()}
-			>
-				{sending ? "Sending…" : "Send"}
-			</button>
-		</div>
+		<ChatInput
+			placeholder="Ask Ez to do something for you…"
+			disabled={!conversationId}
+			streaming={isStreaming}
+			lockedMode={{ modeSlug: 'ez', label: 'Ez' }}
+			initialValue={pendingPrefill}
+			autofocus
+			onsubmit={(content) => { void send(content); }}
+			onstop={() => { if (activeRunId) stopStreaming(activeRunId); activeRunId = null; }}
+		/>
 	</div>
 {/if}
 
@@ -386,35 +547,15 @@
 	.ez-panel__messages {
 		flex: 1;
 		overflow-y: auto;
-		padding: 1rem;
+		padding: 0.5rem 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.65rem;
 	}
 	.ez-panel__empty {
 		color: var(--color-text-muted);
 		font-size: 0.875rem;
-		padding: 0.5rem 0;
+		padding: 0.75rem 1rem;
 	}
-	.ez-msg {
-		max-width: 100%;
-		font-size: 0.875rem;
-		line-height: 1.45;
-	}
-	.ez-msg__body {
-		white-space: pre-wrap;
-		word-break: break-word;
-		padding: 0.55rem 0.75rem;
-		border-radius: 0.5rem;
-		background: var(--color-surface-secondary);
-		color: var(--color-text-primary);
-	}
-	.ez-msg--user .ez-msg__body {
-		background: var(--color-accent, #4c8cff);
-		color: white;
-		align-self: flex-end;
-	}
-	.ez-msg--user { align-self: flex-end; max-width: 80%; }
 	.ez-panel__error {
 		color: #d44a4a;
 		background: rgba(212, 74, 74, 0.08);
@@ -422,37 +563,4 @@
 		padding: 0.5rem 1rem;
 		font-size: 0.8rem;
 	}
-	.ez-panel__composer {
-		display: flex;
-		gap: 0.5rem;
-		padding: 0.75rem;
-		border-top: 1px solid var(--color-border);
-		background: var(--color-surface-secondary);
-		align-items: flex-end;
-	}
-	.ez-panel__composer textarea {
-		flex: 1;
-		resize: none;
-		font-family: inherit;
-		font-size: 0.875rem;
-		padding: 0.5rem 0.65rem;
-		border-radius: 0.4rem;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface);
-		color: var(--color-text-primary);
-		outline: none;
-	}
-	.ez-panel__composer textarea:focus { border-color: var(--color-accent, #4c8cff); }
-	.ez-panel__composer textarea:disabled { opacity: 0.6; }
-	.ez-panel__send {
-		padding: 0.55rem 0.95rem;
-		border-radius: 0.4rem;
-		border: none;
-		background: var(--color-accent, #4c8cff);
-		color: white;
-		font-weight: 600;
-		cursor: pointer;
-		font-size: 0.875rem;
-	}
-	.ez-panel__send:disabled { filter: grayscale(0.5); cursor: not-allowed; }
 </style>

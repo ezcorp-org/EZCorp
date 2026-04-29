@@ -582,14 +582,12 @@
 					     conversation's mode server-side, so model / mode /
 					     thinking pickers would be misleading. -->
 					<div class="flex items-center gap-3">
-						<div class="flex flex-col">
-							<span class="toolbar-label" data-tip="This conversation is locked to a fixed mode">Mode</span>
-							<span
-								class="locked-mode-chip"
-								data-testid="chat-input-locked-mode"
-								data-mode-slug={lockedMode?.modeSlug}
-							>{lockedLabel}</span>
-						</div>
+						<span
+							class="locked-mode-chip"
+							data-testid="chat-input-locked-mode"
+							data-mode-slug={lockedMode?.modeSlug}
+							title="This conversation is locked to a fixed mode"
+						>{lockedLabel}</span>
 					</div>
 				{:else}
 					<div class="flex items-center gap-3">

@@ -26,9 +26,19 @@ export interface BuiltInToolMeta {
   mentionable?: boolean;
 }
 
-/** Build the full tool list. Empty after Phase 5 commit 4. */
+/** Build the full tool list. Empty after Phase 5 commit 4. Phase 48 adds
+ *  the Ez concierge tools as a re-population — they're not delivered as
+ *  an extension because they need per-user runtime context (userId,
+ *  conversationId, bus) that the extension subprocess sandbox can't
+ *  carry. The metadata listing here is parameter-only; the executable
+ *  defs come from `runtime/tools/ez/index.ts#getEzToolDefs(ctx)`. */
 function buildToolList(): BuiltInToolMeta[] {
-  return [];
+  // Lazy require to avoid circular import: the ez/index module imports
+  // from this file's sibling (`types`), and pulling it at module-load
+  // time risks an init-order cycle. require() resolves at call time.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getEzToolMetadata } = require("./ez/index") as typeof import("./ez/index");
+  return getEzToolMetadata();
 }
 
 let _cachedTools: BuiltInToolMeta[] | undefined;
@@ -46,6 +56,11 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   // Empty after Phase 5 — every mentionable category now lives in an
   // installed extension and is surfaced through the normal extensions
   // path at web/src/routes/api/mentions/search/+server.ts.
+  // Phase 48 re-introduces a single category for the Ez concierge tools,
+  // intentionally NOT mentionable (Ez is its own panel, not a regular
+  // chat extension) — the description is here only for UI surfaces that
+  // group tools by category.
+  ez: "In-app concierge tools (Ez)",
 };
 
 /** Get mentionable built-in categories for the mention search API. */

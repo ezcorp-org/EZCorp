@@ -1,7 +1,14 @@
 import type { AgentToolResult, AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import type { Tool } from "@mariozechner/pi-ai";
 
-export type ToolCategory = "read" | "write" | "execute";
+/**
+ * "ez" was added in Phase 48 for the in-app concierge tools (propose_*,
+ * summarize_conversation, find_agents, fill_form, navigate_to). Adding a
+ * dedicated category — rather than reusing read/write/execute — keeps the
+ * Ez allowlist mode self-describing and lets the /api/tools listing group
+ * them under their own section.
+ */
+export type ToolCategory = "read" | "write" | "execute" | "ez";
 
 export type PermissionMode = "ask" | "auto-edit" | "yolo";
 
@@ -16,6 +23,17 @@ export interface BuiltinToolDef {
   /** Built-ins are always inline — this field exists for wire compat with
    *  the extension `ToolDefinition.cardLayout` and is not exercised today. */
   cardLayout?: "inline" | "dock";
+  /**
+   * Phase 48 client-side directive marker. When `true`, the tool is NOT a
+   * pure server-side computation — its `execute` body is a stub that emits
+   * an `ez:client-tool` event on the runtime bus and returns a deferred
+   * placeholder. The Ez panel intercepts the event, runs the actual UI
+   * operation (filling a form, navigating), and POSTs the resolution back
+   * to `/api/conversations/.../tool-results` so the LLM continues. Wave 3
+   * wires the panel side; Wave 2 ships the stub + the event-emit. The
+   * field is optional so non-Ez tools don't need to think about it.
+   */
+  clientSide?: boolean;
   /** TypeBox schema wrapping the JSON-Schema describing the tool's args.
    *  Tool factories construct this with `Type.Unsafe({...})`; the inner
    *  parameter type is the pi-ai `Tool<TSchema>["parameters"]` default —

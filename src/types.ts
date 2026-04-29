@@ -298,6 +298,17 @@ export interface AgentEvents {
     conversationId: string;
     answer: string;
   };
+  // ── Ez concierge client-side tools (fill_form, navigate_to). The runtime
+  //    emits this when the LLM calls a `clientSide: true` tool: the panel
+  //    intercepts it via the SSE stream, runs the UI-side resolution
+  //    (form-fill, goto), and POSTs the result back so the LLM continues.
+  //    Wave 2 ships the emit; Wave 3 wires the panel side.
+  "ez:client-tool": {
+    conversationId: string;
+    toolCallId: string;
+    toolName: string;
+    input: unknown;
+  };
   // ── Task Tracking Panel ──
   "task:snapshot": {
     conversationId: string;

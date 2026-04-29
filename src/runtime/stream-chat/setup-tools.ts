@@ -378,35 +378,18 @@ export async function setupTools(
             });
           }
 
-          // Phase 48: append the page-context block to the Ez system
-          // prompt. The persona seeded in the migration explicitly looks
-          // for `<page_context>` to distinguish instrumented from
-          // non-instrumented pages. We only emit the tag for Ez turns —
-          // a regular conversation that somehow received an `ezContext`
-          // payload (defense-in-depth: the messages endpoint shouldn't
-          // forward one for non-Ez convs, but this branch enforces it
-          // even if upstream changes) gets nothing.
-          //
-          // Compact JSON keeps the token cost minimal; the client-side
-          // serializer already capped data at ~500 tokens
-          // (context-serializer.ts:TOKEN_BUDGET). The block is appended
-          // (not prepended) so any earlier memory/KB injection still
-          // dominates positionally.
-          if (options.ezContext !== undefined && options.ezContext !== null) {
-            try {
-              const block = `<page_context>${JSON.stringify(options.ezContext)}</page_context>`;
-              ctx.system = ctx.system ? `${ctx.system}\n\n${block}` : block;
-            } catch (ezCtxErr) {
-              // JSON.stringify can throw on circular refs — log once and
-              // fall through. The Ez panel's serializer already guards
-              // its own input; reaching this branch implies upstream
-              // tampering, in which case dropping the block is the safe
-              // outcome.
-              log.warn("Ez ezContext serialization failed — page_context block omitted", {
-                error: String(ezCtxErr),
-              });
-            }
-          }
+          // NOTE: page_context append for Ez turns is DEFERRED until
+          // after the surrounding Promise.all returns (see the post-
+          // Promise.all block near the bottom of this function). The
+          // memory-injection branch (1) snapshots ctx.system BEFORE its
+          // `await generateEmbedding(...)` and writes back the snapshot
+          // + memory block at the end — clobbering anything else that
+          // mutated ctx.system during the await. Appending here
+          // produced an intermittent silent loss of `<page_context>`
+          // depending on whether memory injection happened to win the
+          // race. Same pattern as the orchestrator-prompt deferral
+          // (see comment at "system prompt injection is deferred"
+          // below) — fixed identically.
         }
         await wireMentionedExtensions(conversationId, userMessage, options.parentMessageId ?? run.id);
         const convExtIds = await getConversationExtensionIds(conversationId);
@@ -671,6 +654,44 @@ export async function setupTools(
       return { resolved: r, initialCred: cred };
     })(),
   ]);
+
+  // ── Post-Promise.all: append the Ez page-context block ───────────────
+  // The persona seeded in the migration explicitly looks for
+  // `<page_context>` to distinguish instrumented from non-instrumented
+  // pages. We only emit the tag for Ez turns — a regular conversation
+  // that somehow received an `ezContext` payload (defense-in-depth: the
+  // messages endpoint shouldn't forward one for non-Ez convs, but this
+  // branch enforces it even if upstream changes) gets nothing.
+  //
+  // Done AFTER Promise.all so the memory-injection branch's snapshot/
+  // write-back race can no longer clobber our append. The orchestrator-
+  // prompt block (applied later in applyAutoSpinUp) prepends to
+  // ctx.system, so the final ordering is:
+  //   [orchestrator-prompt]\n\n[base-system]\n\n[memory-injection]\n\n[page_context]
+  // — `<page_context>` is preserved unconditionally for every Ez turn
+  // that supplied an ezContext payload.
+  //
+  // Compact JSON keeps the token cost minimal; the client-side
+  // serializer already capped data at ~500 tokens
+  // (context-serializer.ts:TOKEN_BUDGET).
+  if (
+    convRecord?.kind === "ez" &&
+    options.ezContext !== undefined &&
+    options.ezContext !== null
+  ) {
+    try {
+      const block = `<page_context>${JSON.stringify(options.ezContext)}</page_context>`;
+      ctx.system = ctx.system ? `${ctx.system}\n\n${block}` : block;
+    } catch (ezCtxErr) {
+      // JSON.stringify can throw on circular refs — log once and fall
+      // through. The Ez panel's serializer already guards its own
+      // input; reaching this branch implies upstream tampering, in
+      // which case dropping the block is the safe outcome.
+      log.warn("Ez ezContext serialization failed — page_context block omitted", {
+        error: String(ezCtxErr),
+      });
+    }
+  }
 
   // The third tuple slot is the only one we surface upward.
   return resolvedModel;

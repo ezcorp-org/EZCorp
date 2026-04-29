@@ -143,15 +143,55 @@
 				try {
 					const parsed = JSON.parse(ev.data) as { type: string; data?: { conversationId?: string } & Record<string, unknown> };
 					if (parsed.type === "ez:client-tool" && parsed.data?.conversationId === conversationId) {
-						void dispatchClientTool(
-							{
-								conversationId: parsed.data.conversationId,
-								toolCallId: String(parsed.data.toolCallId ?? ""),
-								toolName: String(parsed.data.toolName ?? ""),
-								input: parsed.data.input,
-							},
-							{ goto },
-						).catch(() => {});
+						const ezData = parsed.data;
+						const toolCallId = String(ezData.toolCallId ?? "");
+						void (async () => {
+							// Phase 48 — round-trip the dispatch result back to the runtime
+							// so the suspended `fill_form` / `navigate_to` Promise can
+							// resolve and the LLM continues. Without this POST the agent
+							// loop would hang on the deferred tool call until the
+							// registry's 5-minute timeout fires. We always POST something —
+							// even on dispatcher failure — so the runtime gets a concrete
+							// failure signal rather than a timeout.
+							let dispatchResult: unknown;
+							try {
+								dispatchResult = await dispatchClientTool(
+									{
+										conversationId: ezData.conversationId!,
+										toolCallId,
+										toolName: String(ezData.toolName ?? ""),
+										input: ezData.input,
+									},
+									{ goto },
+								);
+							} catch (err) {
+								// Dispatcher should never throw (it returns DispatchResult
+								// on every path), but guard defensively so a future
+								// regression can't leak an exception into the SSE handler.
+								dispatchResult = {
+									ok: false,
+									toolName: String(ezData.toolName ?? ""),
+									toolCallId,
+									error: (err as Error)?.message ?? "dispatcher threw",
+									code: "rejected",
+								};
+							}
+							if (!toolCallId || !conversationId) return;
+							try {
+								await fetch(
+									`/api/conversations/${encodeURIComponent(conversationId)}/tool-results`,
+									{
+										method: "POST",
+										headers: { "content-type": "application/json" },
+										body: JSON.stringify({ toolCallId, result: dispatchResult }),
+									},
+								);
+							} catch {
+								// Network failure — the registry's 5-min timeout is the
+								// fallback. We swallow the error rather than surface it in
+								// the panel because the user typically can't act on it.
+							}
+						})();
 					}
 					if (parsed.type === "run:complete" && parsed.data?.conversationId === conversationId) {
 						void refreshMessages();

@@ -31,8 +31,18 @@ export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 export interface ToolFilterOptions {
-  /** Coarse restriction by tool category. */
-  toolRestriction?: "all" | "read-only" | "none";
+  /**
+   * Coarse restriction by tool category.
+   * - 'all'       — no category-level filter (the default)
+   * - 'read-only' — keep only tools whose builtinDef.category === 'read'
+   * - 'none'      — strip every non-orchestration tool
+   * - 'allowlist' — pass-through; the actual filtering happens in the
+   *                 `allowedTools` step below. This value exists so a mode
+   *                 row can declaratively state "tool selection is governed
+   *                 by allowed_tools" without a separate flag column. The
+   *                 Ez concierge mode uses this. (Phase 48.)
+   */
+  toolRestriction?: "all" | "read-only" | "none" | "allowlist";
   /** If set & non-empty, only these tool names are kept (plus orchestration tools). */
   allowedTools?: string[];
   /** Tool names to always remove (applied after allow list). Orchestration tools are never removed. */
@@ -64,6 +74,15 @@ export function applyToolFilters(
     });
   } else if (opts.toolRestriction === "none") {
     out = out.filter((t) => ORCHESTRATION_TOOLS.has(t.name));
+  } else if (opts.toolRestriction === "allowlist") {
+    // Fail-closed: 'allowlist' restriction without an allowedTools list is a
+    // misconfiguration. Strip everything except orchestration tools so a stray
+    // mode update can't accidentally expose the full toolset to the LLM.
+    // The intended path supplies allowedTools below; this branch only fires
+    // if allowedTools is missing/empty alongside restriction='allowlist'.
+    if (!opts.allowedTools || opts.allowedTools.length === 0) {
+      out = out.filter((t) => ORCHESTRATION_TOOLS.has(t.name));
+    }
   }
 
   if (opts.allowedTools && opts.allowedTools.length > 0) {

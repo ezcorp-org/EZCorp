@@ -41,6 +41,18 @@ export const PUT: RequestHandler = async ({ request, params, locals }) => {
   if (!result.success) {
     return validationError(result.error);
   }
+
+  // Phase 48: the Ez concierge conversation is locked to the builtin 'ez'
+  // mode. Sibling guard to the existing builtin-mode-mutation rejection in
+  // src/db/queries/modes.ts:78. Surfaces as 403 with an actionable error so
+  // a buggy client can't silently re-mode the user's Ez thread.
+  if (conv.kind === "ez" && Object.prototype.hasOwnProperty.call(result.data, "modeId")) {
+    return errorJson(
+      403,
+      "Cannot change the mode of an Ez conversation. The Ez panel is locked to the builtin 'ez' mode.",
+    );
+  }
+
   const updated = await convQueries.updateConversation(params.id, result.data);
   if (!updated) return errorJson(404, "Not found");
   return json(updated);

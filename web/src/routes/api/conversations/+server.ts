@@ -1,6 +1,7 @@
 import { json } from "@sveltejs/kit";
 import * as convQueries from "$server/db/queries/conversations";
 import { getAgentConfig } from "$server/db/queries/agent-configs";
+import { getMode } from "$server/db/queries/modes";
 import { requireAuth } from "$server/auth/middleware";
 import { createConversationSchema } from "./schema";
 import { validationError } from "$lib/server/security/validation";
@@ -48,6 +49,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     }
     systemPrompt = agentConfig.prompt;
     if (!title) title = `Chat with ${agentConfig.name}`;
+  }
+
+  // Phase 48: regular POST cannot adopt the Ez mode. The Ez harness owns
+  // ez-kind conversations and uses getOrCreateEzConversation; allowing the
+  // ez modeId here would let a buggy client mint a non-ez conversation
+  // wired to the concierge persona/allowlist, defeating the lock.
+  if (body.modeId) {
+    const mode = await getMode(body.modeId);
+    if (!mode) return errorJson(404, "Mode not found");
+    if (mode.slug === "ez") {
+      return errorJson(
+        403,
+        "The 'ez' mode is reserved for the Ez concierge. Open the Ez panel instead of creating a regular conversation in this mode.",
+      );
+    }
   }
 
   const conv = await convQueries.createConversation(body.projectId, {

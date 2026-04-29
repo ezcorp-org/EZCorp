@@ -57,6 +57,11 @@ export const conversations = pgTable("conversations", {
   /** Phase 2d: opaque per-conversation bag for runtime-only flags. Currently
    *  holds `spawnDepth: number` tracked by spawn-assignment-handler.ts. */
   metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  /** Phase 48: distinguishes regular per-project chats from the global Ez
+   *  concierge conversation (one per user, enforced by a unique partial index
+   *  `conversations_user_ez_unique` declared in migrate.ts). Mutating modeId
+   *  on a kind='ez' row is rejected at the API layer. */
+  kind: text("kind").notNull().default("regular").$type<"regular" | "ez">(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -72,6 +77,9 @@ export const messages = pgTable("messages", {
   usage: jsonb("usage").$type<{ inputTokens: number; outputTokens: number }>(),
   runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
   parentMessageId: text("parent_message_id"),
+  // When true, load-history drops this row from the array sent to pi-ai on
+  // subsequent turns. The transcript still renders it (struck-through).
+  excluded: boolean("excluded").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -315,7 +323,13 @@ export const modes = pgTable("modes", {
   preferredProvider: text("preferred_provider"),
   preferredThinkingLevel: text("preferred_thinking_level").$type<"off" | "minimal" | "low" | "medium" | "high" | "xhigh">(),
   temperature: real("temperature"),
-  toolRestriction: text("tool_restriction").notNull().default("all").$type<"all" | "read-only" | "none">(),
+  toolRestriction: text("tool_restriction").notNull().default("all").$type<"all" | "read-only" | "none" | "allowlist">(),
+  /** Phase 48: when toolRestriction === 'allowlist', this column carries the
+   *  exact set of tool names that survive filtering (orchestration tools are
+   *  always preserved; see ORCHESTRATION_TOOLS in src/runtime/tools/filter.ts).
+   *  NULL otherwise — the existing applyToolFilters intersection logic treats
+   *  empty/missing allowedTools as a no-op for non-allowlist modes. */
+  allowedTools: text("allowed_tools").array(),
   builtin: boolean("builtin").notNull().default(false),
   userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -557,3 +571,28 @@ export const userCommands = pgTable("user_commands", {
 
 export type UserCommand = typeof userCommands.$inferSelect;
 export type NewUserCommand = typeof userCommands.$inferInsert;
+
+// ── Phase 48: Ez Concierge Drafts ───────────────────────────────────
+// One row per `propose_*` tool call from the Ez concierge mode. The Ez
+// panel renders the result as an "Open prefilled form" card whose URL
+// embeds this row's id; the destination page (e.g. /new-project,
+// /agents/new) reads `?prefill=<id>`, hydrates form state from
+// `payload`, and stamps `consumedAt` on submit. Rows expire 24h after
+// `createdAt` regardless of consumption — sweepExpired() in
+// src/db/queries/ez-drafts.ts is the GC.
+
+export const ezDrafts = pgTable("ez_drafts", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().$type<"project" | "agent" | "extension">(),
+  payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+}, (table) => [
+  index("idx_ez_drafts_user").on(table.userId),
+  index("idx_ez_drafts_expires").on(table.expiresAt),
+]);
+
+export type EzDraft = typeof ezDrafts.$inferSelect;
+export type NewEzDraft = typeof ezDrafts.$inferInsert;

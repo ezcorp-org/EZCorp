@@ -415,7 +415,14 @@ export class AgentExecutor {
     // model is resolved + tools are ready.
     await applyAutoSpinUp(ctx, host, userMessage);
 
-    // Apply mode tool restrictions (filter tools by category)
+    // Apply mode tool restrictions (filter tools by category + allowlist).
+    // Phase 48 extends the contract: when a mode declares
+    // toolRestriction='allowlist' it also sets mode.allowedTools to the
+    // exact set of permitted tool names (orchestration tools always
+    // survive). The Ez concierge uses this path; legacy modes pass through
+    // with toolRestriction in {'all','read-only','none'} and a NULL
+    // allowedTools — applyToolFilters treats that as a no-op for the
+    // allow-step.
     const { applyToolFilters } = await import("./tools/filter");
     if (options.modeId) {
       try {
@@ -424,6 +431,7 @@ export class AgentExecutor {
         if (mode?.toolRestriction) {
           ctx.agentTools = applyToolFilters(ctx.agentTools, ctx.builtinToolDefsMap, {
             toolRestriction: mode.toolRestriction,
+            allowedTools: mode.allowedTools ?? undefined,
           });
         }
       } catch { /* Mode lookup failure is non-fatal — keep all tools */ }

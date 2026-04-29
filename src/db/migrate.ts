@@ -108,6 +108,10 @@ export async function migrate(db: any): Promise<void> {
   // Phase 2 migrations (idempotent — for DBs created before parent_message_id was in CREATE TABLE)
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS thinking_content TEXT`);
+  // Per-message exclude-from-context toggle. Drives the strike-through UI
+  // affordance + filtering in load-history. NOT NULL DEFAULT FALSE so old
+  // rows are equivalent to "included" without backfill.
+  await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE`);
   await db.execute(sql`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS system_prompt TEXT`);
 
   // Backfill: link existing messages in chronological order within each conversation
@@ -814,6 +818,65 @@ export async function migrate(db: any): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_commands_user_id ON user_commands(user_id)`);
+
+  // ── Phase 48: Ez Mode + Conversation Kind + Ez Drafts ─────────────
+  //
+  // Schema deltas + Ez mode seed + ez_drafts table + unique partial index
+  // ensuring one ez-kind conversation per user. The builtin 'ez' mode is
+  // seeded with `tool_restriction = 'allowlist'` and the seven-tool
+  // allowed_tools array; applyToolFilters() in src/runtime/tools/filter.ts
+  // intersects against this list before the LLM ever sees the toolset.
+  //
+  // Idempotent: re-running leaves the existing 'ez' mode untouched
+  // (ON CONFLICT slug DO NOTHING). The `kind` column defaults to 'regular'
+  // so all existing conversations remain unaffected.
+  await db.execute(sql`ALTER TABLE modes ADD COLUMN IF NOT EXISTS allowed_tools TEXT[]`);
+  await db.execute(sql`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'regular'`);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS ez_drafts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      payload JSONB NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+      consumed_at TIMESTAMP WITH TIME ZONE
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ez_drafts_user ON ez_drafts(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ez_drafts_expires ON ez_drafts(expires_at)`);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS conversations_user_ez_unique
+      ON conversations (user_id)
+      WHERE kind = 'ez'
+  `);
+  // Seed Ez mode (allowlist, builtin). Persona text matches Appendix A of
+  // 48-DESIGN.md; tuning it is a normal mode update, not a code change.
+  await db.execute(sql`
+    INSERT INTO modes (
+      id, slug, name, icon, description, system_prompt_instruction,
+      instruction_position, tool_restriction, allowed_tools, builtin
+    ) VALUES (
+      'builtin-ez',
+      'ez',
+      'Ez',
+      '🪄',
+      'In-app concierge for managing your EZCorp setup.',
+      'You are EZ, the in-app concierge for EZCorp. You help users manage and operate their EZCorp setup — creating projects, building agents, installing extensions, summarizing their conversations, navigating the app, and filling forms on their behalf.
+
+You are not a general-purpose assistant. If a user asks for help that isn''t about EZCorp itself (e.g., writing prose, debugging unrelated code), gently redirect them to start a regular project chat.
+
+Always work in proposals: when the user asks for a mutation, call the relevant propose_* tool, which returns a card with a button that opens the prefilled form. The user reviews and submits. Never assume — confirm the inputs you generated.
+
+You receive page context every turn under <page_context> in your prompt. Use it: if the user is on /agents/new and asks "fill it in," call fill_form with the form id from the context. If they''re on a chat page and ask "summarize this," call summarize_conversation with the conversation id from context.
+
+Be terse. The user is doing real work and you are a tool, not a friend.',
+      'replace',
+      'allowlist',
+      ARRAY['propose_create_project', 'propose_create_agent', 'propose_install_extension', 'summarize_conversation', 'find_agents', 'fill_form', 'navigate_to'],
+      TRUE
+    ) ON CONFLICT (slug) DO NOTHING
+  `);
 
   // ── Tool-call analytics dimensions ────────────────────────────────
   // Denormalize user/agent/model/provider onto tool_calls so admin analytics

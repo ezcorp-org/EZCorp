@@ -35,7 +35,9 @@ export async function createMode(data: {
   preferredProvider?: string | null;
   preferredThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
   temperature?: number | null;
-  toolRestriction?: "all" | "read-only" | "none";
+  toolRestriction?: "all" | "read-only" | "none" | "allowlist";
+  /** Phase 48: only meaningful when toolRestriction === 'allowlist'. */
+  allowedTools?: string[] | null;
   userId?: string | null;
 }): Promise<DbMode> {
   const now = new Date();
@@ -51,7 +53,8 @@ export async function createMode(data: {
     preferredProvider: data.preferredProvider ?? null,
     preferredThinkingLevel: (data.preferredThinkingLevel ?? null) as any,
     temperature: data.temperature ?? null,
-    toolRestriction: (data.toolRestriction ?? "all") as "all" | "read-only" | "none",
+    toolRestriction: (data.toolRestriction ?? "all") as "all" | "read-only" | "none" | "allowlist",
+    allowedTools: data.allowedTools ?? null,
     builtin: false,
     userId: data.userId ?? null,
     createdAt: now,
@@ -72,7 +75,8 @@ export async function updateMode(id: string, data: Partial<{
   preferredProvider: string | null;
   preferredThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
   temperature: number | null;
-  toolRestriction: "all" | "read-only" | "none";
+  toolRestriction: "all" | "read-only" | "none" | "allowlist";
+  allowedTools: string[] | null;
 }>): Promise<DbMode | undefined> {
   const existing = await getMode(id);
   if (!existing || existing.builtin) return undefined;

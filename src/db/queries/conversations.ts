@@ -249,6 +249,61 @@ export async function deleteConversation(id: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+// ── Phase 48: Ez concierge conversation (one per user, global scope) ──
+//
+// The Ez floating panel renders the user's single ez-kind conversation.
+// Uniqueness is enforced at the DB level by the partial index
+// `conversations_user_ez_unique` (declared in migrate.ts). This helper is
+// the find-or-create path called on first panel open; calling it twice
+// returns the same row.
+//
+// `projectId` is set to 'global' (the seeded global project from
+// migrate.ts) because Ez conversations are not bound to any specific
+// project — page context per turn carries the current projectId for the
+// LLM's awareness, but the conversation itself spans the user's whole
+// EZCorp setup.
+//
+// `modeId` is locked to the seeded 'builtin-ez' mode. The PUT handler at
+// /api/conversations/[id]/+server.ts rejects modeId mutation when
+// kind === 'ez' (sibling guard to the existing builtin-mode rejection).
+
+export async function getOrCreateEzConversation(userId: string): Promise<Conversation> {
+  if (!userId) throw new Error("userId is required");
+
+  // Fast path: existing row.
+  const existing = await getDb()
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.userId, userId), eq(conversations.kind, "ez")));
+  if (existing[0]) return existing[0];
+
+  // Insert new row. The unique partial index will reject a concurrent second
+  // creation; we don't bother with ON CONFLICT here because the lookup-then-
+  // insert race is benign — losers retry the SELECT and find the winner.
+  try {
+    const rows = await getDb()
+      .insert(conversations)
+      .values({
+        projectId: "global",
+        title: "Ez",
+        userId,
+        modeId: "builtin-ez",
+        kind: "ez",
+      })
+      .returning();
+    return rows[0]!;
+  } catch (err) {
+    // Concurrent insert lost the race against the unique index — retry the
+    // SELECT to surface the winner. Any other error propagates.
+    const retry = await getDb()
+      .select()
+      .from(conversations)
+      .where(and(eq(conversations.userId, userId), eq(conversations.kind, "ez")));
+    if (retry[0]) return retry[0];
+    throw err;
+  }
+}
+
 // ── Messages ─────────────────────────────────────────────────────────
 
 export async function createMessage(
@@ -314,6 +369,7 @@ function rowToMessage(row: Record<string, unknown>): Message {
     usage: row.usage as any,
     runId: (row.run_id as string) ?? null,
     parentMessageId: (row.parent_message_id as string) ?? null,
+    excluded: row.excluded === true,
     createdAt: new Date(row.created_at as string),
   };
 }
@@ -505,6 +561,27 @@ export async function updateMessageContent(
     .update(conversations)
     .set({ updatedAt: sql`NOW()` })
     .where(eq(conversations.id, conversationId));
+  return rows[0]!;
+}
+
+/**
+ * Flip a message's `excluded` flag. When true, load-history drops the row
+ * from the array sent to pi-ai on subsequent turns (the transcript still
+ * shows it, struck-through). Returns null when no row matches the
+ * (conversationId, messageId) pair so the route can map to a 404.
+ */
+export async function setMessageExcluded(
+  conversationId: string,
+  messageId: string,
+  excluded: boolean,
+): Promise<Message | null> {
+  const db = getDb();
+  const rows = await db
+    .update(messages)
+    .set({ excluded })
+    .where(and(eq(messages.conversationId, conversationId), eq(messages.id, messageId)))
+    .returning();
+  if (rows.length === 0) return null;
   return rows[0]!;
 }
 

@@ -16,7 +16,7 @@
  *    survives
  *  - conversationId is required
  */
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, mock } from "bun:test";
 import { setupTestDb, closeTestDb, mockDbConnection } from "./helpers/test-pglite";
 import { expectDetails, expectText } from "./helpers/expect-tool-result";
 
@@ -28,6 +28,32 @@ interface SummaryDetails {
 }
 
 mockDbConnection();
+
+// Phase 48 fix: capture how `defaultSummarize` calls resolveModel so we
+// can assert it threads the per-turn provider/model. The tool's default
+// path uses dynamic `await import("../../../providers/router")` and
+// `await import("../../../providers/llm")`, so module-level mocks
+// installed here intercept those imports at call-time. The injected
+// `summarize` stub used by the legacy tests above bypasses both — those
+// tests never call resolveModel/completeLLM and remain unaffected.
+const resolveModelCalls: Array<[unknown, unknown]> = [];
+let resolveModelImpl: (provider?: unknown, model?: unknown) => Promise<unknown> = async (
+  provider,
+  model,
+) => ({ provider: provider ?? "anthropic", model: model ?? "claude-default", piModel: { _stub: true } });
+
+mock.module("../providers/router", () => ({
+  resolveModel: async (provider?: unknown, model?: unknown) => {
+    resolveModelCalls.push([provider, model]);
+    return resolveModelImpl(provider, model);
+  },
+}));
+
+mock.module("../providers/llm", () => ({
+  completeLLM: async (_piModel: unknown, ctx: { systemPrompt: string }) => ({
+    content: [{ type: "text", text: `STUBBED:${ctx.systemPrompt.slice(0, 12)}` }],
+  }),
+}));
 
 const { createUser } = await import("../db/queries/users");
 const { createConversation, createMessage } = await import("../db/queries/conversations");
@@ -135,5 +161,97 @@ describe("summarize_conversation", () => {
     const result = await tool.execute("s-6", { conversationId: "  " });
     expect(expectDetails<SummaryDetails>(result).isError).toBe(true);
     expectText(result, "conversationId");
+  });
+
+  // ── Phase 48 fix: provider/model threading into defaultSummarize ────
+  // These tests exercise the DEFAULT (non-injected) summarizer path.
+  // resolveModel + completeLLM are mocked at module load (top of file)
+  // so we can assert exactly which arguments resolveModel receives.
+
+  test("default summarizer threads ctx.provider + ctx.model into resolveModel (the bug-fix path)", async () => {
+    resolveModelCalls.length = 0;
+    resolveModelImpl = async (provider, model) => ({ provider, model, piModel: { _stub: true } });
+
+    // No `summarize` injection — exercise the real defaultSummarize.
+    const tool = createSummarizeConversationTool({ provider: "openai", model: "gpt-5.5" });
+    const result = await tool.execute("s-7", { conversationId });
+
+    // The summary came from the stubbed completeLLM, proving
+    // defaultSummarize ran end-to-end without throwing.
+    expectText(result, "STUBBED:");
+    expect(expectDetails<SummaryDetails>(result).isError).toBeUndefined();
+
+    // The user's picked model was the FIRST resolveModel call — not
+    // `(undefined)`. Before the fix, only `(undefined, undefined)` was
+    // ever passed, which routed to the Anthropic-first default tier
+    // and threw "no Anthropic credentials configured" when the user
+    // had only an OpenAI key.
+    expect(resolveModelCalls.length).toBeGreaterThanOrEqual(1);
+    expect(resolveModelCalls[0]).toEqual(["openai", "gpt-5.5"]);
+  });
+
+  test("default summarizer falls back to resolveModel(undefined) when provider+model are absent (legacy behavior preserved)", async () => {
+    resolveModelCalls.length = 0;
+    resolveModelImpl = async (provider, model) => ({
+      provider: provider ?? "anthropic",
+      model: model ?? "claude-default",
+      piModel: { _stub: true },
+    });
+
+    // No provider/model in ctx — same construction as before the fix.
+    const tool = createSummarizeConversationTool({});
+    const result = await tool.execute("s-8", { conversationId });
+
+    expectText(result, "STUBBED:");
+
+    // Single resolveModel call, with `undefined` provider — the legacy
+    // default-tier fallback path. The fix MUST NOT change this branch.
+    expect(resolveModelCalls.length).toBe(1);
+    expect(resolveModelCalls[0]![0]).toBeUndefined();
+    expect(resolveModelCalls[0]![1]).toBeUndefined();
+  });
+
+  test("default summarizer falls back to resolveModel(undefined) when only provider is set (model missing)", async () => {
+    resolveModelCalls.length = 0;
+    resolveModelImpl = async (provider, model) => ({
+      provider: provider ?? "anthropic",
+      model: model ?? "claude-default",
+      piModel: { _stub: true },
+    });
+
+    // Asymmetric input — should NOT be treated as "user picked
+    // openai" because we can't pick a default model for them without
+    // re-implementing tier resolution. Falls through to `(undefined)`.
+    const tool = createSummarizeConversationTool({ provider: "openai" });
+    const result = await tool.execute("s-9", { conversationId });
+
+    expectText(result, "STUBBED:");
+    expect(resolveModelCalls.length).toBe(1);
+    expect(resolveModelCalls[0]![0]).toBeUndefined();
+  });
+
+  test("default summarizer falls back to resolveModel(undefined) if the picked provider+model fails to resolve", async () => {
+    resolveModelCalls.length = 0;
+    let callNum = 0;
+    resolveModelImpl = async (provider, model) => {
+      callNum++;
+      if (callNum === 1) {
+        // Simulate the picked model being unavailable (no credential,
+        // unknown id, etc.) — defaultSummarize should swallow this and
+        // try the legacy default-tier path.
+        throw new Error("simulated picked-model failure");
+      }
+      return { provider: provider ?? "anthropic", model: model ?? "claude-default", piModel: { _stub: true } };
+    };
+
+    const tool = createSummarizeConversationTool({ provider: "openai", model: "gpt-5.5" });
+    const result = await tool.execute("s-10", { conversationId });
+
+    // First call used the picked pair; second call (the fallback) used `undefined`.
+    expect(resolveModelCalls.length).toBe(2);
+    expect(resolveModelCalls[0]).toEqual(["openai", "gpt-5.5"]);
+    expect(resolveModelCalls[1]![0]).toBeUndefined();
+    expect(resolveModelCalls[1]![1]).toBeUndefined();
+    expectText(result, "STUBBED:");
   });
 });

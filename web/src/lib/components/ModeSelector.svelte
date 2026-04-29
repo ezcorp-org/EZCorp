@@ -7,11 +7,21 @@
 		modes = [],
 		onselect,
 		oncreate,
+		disabled = false,
 	}: {
 		selected: Mode | null;
 		modes: Mode[];
 		onselect: (mode: Mode | null) => void;
 		oncreate?: () => void;
+		/**
+		 * When true the selector renders as a static, non-interactive
+		 * indicator: the dropdown can't open, the chevron is hidden, and
+		 * the trigger gets `aria-disabled` + `disabled` attributes so
+		 * keyboard / AT users see the same gating. Used by surfaces that
+		 * pin the conversation's mode server-side (e.g. the Ez panel).
+		 * Defaults to `false` — existing call sites are unaffected.
+		 */
+		disabled?: boolean;
 	} = $props();
 
 	let open = $state(false);
@@ -47,6 +57,10 @@
 	}
 
 	function toggleOpen() {
+		// Disabled mode: trigger is inert. The button already carries
+		// `disabled`, but we guard here too so programmatic callers can't
+		// open the dropdown by sneaking past the DOM gate.
+		if (disabled) return;
 		open = !open;
 		if (open) {
 			search = "";
@@ -82,8 +96,10 @@
 <div class="mode-selector relative">
 	<button
 		onclick={toggleOpen}
-		class="flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors"
-		title="Chat mode — controls AI behavior, tool access, and system prompt"
+		{disabled}
+		aria-disabled={disabled}
+		class="flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors {disabled ? 'mode-selector__trigger--disabled' : ''}"
+		title={disabled ? "Mode is locked for this conversation" : "Chat mode — controls AI behavior, tool access, and system prompt"}
 	>
 		{#if selected}
 			<span>{selected.icon ?? ''}</span>
@@ -94,9 +110,11 @@
 			</svg>
 			<span>Default</span>
 		{/if}
-		<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-		</svg>
+		{#if !disabled}
+			<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+			</svg>
+		{/if}
 	</button>
 
 	{#if open}
@@ -197,3 +215,20 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	/*
+	 * Disabled trigger — used by surfaces that pin the conversation's
+	 * mode (e.g. the Ez panel). The button still occupies the toolbar
+	 * slot for visual continuity with the unlocked layout, but it can't
+	 * be opened. Hover/focus styles fall back to the resting state.
+	 */
+	.mode-selector__trigger--disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.mode-selector__trigger--disabled:hover {
+		border-color: var(--color-border);
+		color: var(--color-text-secondary);
+	}
+</style>

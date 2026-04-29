@@ -58,3 +58,16 @@ export async function consumeDraft(id: string): Promise<EzDraft> {
   });
   return readJson<EzDraft>(res);
 }
+
+/**
+ * "Clear conversation" — wipes every message on the user's Ez
+ * conversation while leaving the conversation row itself in place.
+ * Schema enforces one Ez conversation per user, so we don't delete +
+ * recreate; we just empty the message list. The returned conversationId
+ * is the SAME id the caller already has (callers can keep their SSE
+ * subscription open).
+ */
+export async function clearEzConversation(): Promise<{ conversationId: string; deletedCount: number }> {
+  const res = await fetch("/api/ez/conversation/messages", { method: "DELETE" });
+  return readJson<{ ok: boolean; conversationId: string; deletedCount: number }>(res);
+}

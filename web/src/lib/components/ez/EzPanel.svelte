@@ -55,7 +55,8 @@
 	import { onMount, onDestroy } from "svelte";
 	import { page } from "$app/state";
 	import { ezPanelState, closeEzPanel, consumePendingPrompt } from "$lib/ez/panel-store.svelte.js";
-	import { getOrCreateEzConversation } from "$lib/ez/api.js";
+	import { getOrCreateEzConversation, clearEzConversation } from "$lib/ez/api.js";
+	import Trash2 from "lucide-svelte/icons/trash-2";
 	import { buildEzContextPayload } from "$lib/ez/context-serializer.js";
 	import { readSnapshot } from "$lib/ez/registry.js";
 	import { dispatch as dispatchClientTool } from "$lib/ez/client-tool-dispatcher.js";
@@ -93,6 +94,9 @@
 	let pendingPrefill = $state<string>("");
 	let error = $state<string | null>(null);
 	let scrollEl = $state<HTMLDivElement | null>(null);
+	// "Clear conversation" in-flight flag. Disables the button and
+	// short-circuits a double-click while the DELETE round-trips.
+	let clearing = $state<boolean>(false);
 
 	// ── Model + thinking-level state ─────────────────────────────────
 	//
@@ -310,6 +314,47 @@
 		}
 	}
 
+	/**
+	 * "Clear conversation / start fresh" — wipes every message on the
+	 * server side and resets the panel's local view to an empty state.
+	 * The conversation id stays the same (schema enforces one Ez convo
+	 * per user), so the panel's SSE subscription, ezContext, and locked
+	 * mode all keep working unchanged. The composer's typed-but-unsent
+	 * prompt is left as-is so the user doesn't lose their draft.
+	 *
+	 * Uses the codebase's existing destructive-action confirm pattern
+	 * (e.g. project settings, custom-mode delete) — `window.confirm()`
+	 * with an actionable, single-sentence prompt.
+	 */
+	async function handleClear(): Promise<void> {
+		if (clearing) return;
+		if (!conversationId) return;
+		if (typeof window === "undefined" || !window.confirm("Clear this Ez conversation? All messages will be deleted.")) return;
+
+		clearing = true;
+		error = null;
+		try {
+			// Stop any in-flight stream BEFORE the DB wipe so the SSE
+			// consumer doesn't try to swap a streaming placeholder for a
+			// row that no longer exists. `stopStreaming` clears the per-
+			// run slots in the global store; the next `run:complete`
+			// signal becomes a no-op.
+			if (activeRunId) {
+				stopStreaming(activeRunId);
+				activeRunId = null;
+			}
+			await clearEzConversation();
+			// Wipe local view — show the same empty-state the panel
+			// renders on first open (the `messages.length === 0` branch
+			// in the template).
+			messages = [];
+		} catch (e) {
+			error = `Could not clear conversation: ${(e as Error).message}`;
+		} finally {
+			clearing = false;
+		}
+	}
+
 	function close() {
 		closeEzPanel();
 	}
@@ -515,6 +560,17 @@
 					>
 						Full thread
 					</button>
+					<button
+						type="button"
+						class="ez-panel__icon-btn"
+						aria-label="Clear conversation"
+						title="Clear conversation — start fresh"
+						data-testid="ez-panel-clear"
+						disabled={clearing}
+						onclick={() => void handleClear()}
+					>
+						<Trash2 size={16} aria-hidden="true" />
+					</button>
 				{/if}
 				<button
 					type="button"
@@ -628,6 +684,26 @@
 		border-radius: 0.35rem;
 	}
 	.ez-panel__close:hover { color: var(--color-text-primary); background: var(--color-surface-tertiary); }
+	.ez-panel__icon-btn {
+		background: transparent;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-muted);
+		cursor: pointer;
+		padding: 0.25rem 0.4rem;
+		border-radius: 0.35rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 0;
+	}
+	.ez-panel__icon-btn:hover:not(:disabled) {
+		color: var(--color-text-primary);
+		background: var(--color-surface-tertiary);
+	}
+	.ez-panel__icon-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
 	.ez-panel__messages {
 		flex: 1;
 		overflow-y: auto;

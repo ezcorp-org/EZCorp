@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
 	fetchAllMessagesMock: vi.fn(),
 	searchMentionsMock: vi.fn().mockResolvedValue([]),
 	getOrCreateMock: vi.fn(),
+	clearEzMock: vi.fn(),
 	startStreamingMock: vi.fn().mockReturnValue(true),
 	stopStreamingMock: vi.fn(),
 	fakeStore: { streamingMessages: {}, streamingStatus: {} } as Record<string, unknown>,
@@ -75,6 +76,7 @@ vi.mock("$lib/api", () => ({
 
 vi.mock("$lib/ez/api.js", () => ({
 	getOrCreateEzConversation: () => mocks.getOrCreateMock(),
+	clearEzConversation: () => mocks.clearEzMock(),
 	getDraft: vi.fn(),
 	consumeDraft: vi.fn(),
 }));
@@ -144,6 +146,10 @@ beforeEach(() => {
 		title: null,
 		createdAt: new Date().toISOString(),
 		updatedAt: new Date().toISOString(),
+	});
+	mocks.clearEzMock.mockReset().mockResolvedValue({
+		conversationId: "ez-conv-1",
+		deletedCount: 0,
 	});
 });
 
@@ -327,5 +333,73 @@ describe("EzPanel — close button", () => {
 		await fireEvent.click(close);
 		expect(ezPanelState.open).toBe(false);
 		await waitFor(() => expect(queryByTestId("ez-panel")).toBeNull());
+	});
+});
+
+describe("EzPanel — clear conversation", () => {
+	test("clicking clear (after confirm) calls the API and empties the message list", async () => {
+		// Seed a couple of messages so we can verify the list goes
+		// empty post-clear. The test doesn't care about message
+		// content — only that the rendered `ez-message` count drops
+		// to zero after the DELETE round-trips.
+		mocks.fetchAllMessagesMock.mockResolvedValue([
+			{ id: "m1", role: "user", content: "hello", conversationId: "ez-conv-1", excluded: false, createdAt: "", thinkingContent: null, model: null, provider: null, usage: null, runId: null, parentMessageId: null },
+			{ id: "m2", role: "assistant", content: "hi!", conversationId: "ez-conv-1", excluded: false, createdAt: "", thinkingContent: null, model: null, provider: null, usage: null, runId: null, parentMessageId: null },
+		]);
+		mocks.clearEzMock.mockResolvedValue({ conversationId: "ez-conv-1", deletedCount: 2 });
+
+		// Stub `window.confirm` to auto-accept — the panel's destructive-
+		// action guard uses the codebase's existing confirm() pattern
+		// (see project-settings, custom-mode delete, pipelines).
+		const originalConfirm = window.confirm;
+		window.confirm = vi.fn().mockReturnValue(true);
+
+		openEzPanel();
+		const { findByTestId, findAllByTestId, queryAllByTestId } = render(EzPanel);
+
+		// Wait for bootstrap so messages are rendered before we click.
+		await waitFor(() => expect(mocks.getOrCreateMock).toHaveBeenCalled());
+		const before = await findAllByTestId("ez-message");
+		expect(before).toHaveLength(2);
+
+		const clearBtn = await findByTestId("ez-panel-clear");
+		expect(clearBtn).toHaveAttribute("aria-label", "Clear conversation");
+		await fireEvent.click(clearBtn);
+
+		// Confirm dialog was shown and accepted.
+		expect(window.confirm).toHaveBeenCalledTimes(1);
+
+		// API was hit, message list emptied, conversation id unchanged
+		// (panel still operates against the same conversation).
+		await waitFor(() => expect(mocks.clearEzMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(queryAllByTestId("ez-message")).toHaveLength(0));
+
+		window.confirm = originalConfirm;
+	});
+
+	test("clicking clear and dismissing the confirm dialog is a no-op", async () => {
+		mocks.fetchAllMessagesMock.mockResolvedValue([
+			{ id: "m1", role: "user", content: "hello", conversationId: "ez-conv-1", excluded: false, createdAt: "", thinkingContent: null, model: null, provider: null, usage: null, runId: null, parentMessageId: null },
+		]);
+		const originalConfirm = window.confirm;
+		// User cancels the destructive action — no DELETE should fire,
+		// no messages removed.
+		window.confirm = vi.fn().mockReturnValue(false);
+
+		openEzPanel();
+		const { findByTestId, findAllByTestId } = render(EzPanel);
+		await waitFor(() => expect(mocks.getOrCreateMock).toHaveBeenCalled());
+		await findAllByTestId("ez-message");
+
+		const clearBtn = await findByTestId("ez-panel-clear");
+		await fireEvent.click(clearBtn);
+
+		expect(window.confirm).toHaveBeenCalledTimes(1);
+		expect(mocks.clearEzMock).not.toHaveBeenCalled();
+		// Messages remain in the DOM.
+		const after = await findAllByTestId("ez-message");
+		expect(after).toHaveLength(1);
+
+		window.confirm = originalConfirm;
 	});
 });

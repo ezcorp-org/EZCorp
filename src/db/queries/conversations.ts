@@ -1,6 +1,6 @@
 import { eq, desc, asc, sql, and, or, isNull, inArray, notInArray } from "drizzle-orm";
 import { getDb } from "../connection";
-import { conversations, messages, toolCalls, runs } from "../schema";
+import { conversations, messages, toolCalls, runs, conversationExtensions } from "../schema";
 import { listAttachmentsForMessages } from "./attachments";
 import { getSetting } from "./settings";
 import { logger } from "../../logger";
@@ -365,26 +365,22 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
  * the row. The conversation id stays stable — the caller's SSE
  * subscription, ezContext, and locked mode continue working unchanged.
  *
- * Cascade behavior (see schema.ts FK definitions):
- *   - `attachments.message_id`  → ON DELETE CASCADE (rows wiped)
- *   - `tool_calls.message_id`   → ON DELETE CASCADE (inline calls wiped)
- *   - `tool_calls.conversation_id` rows with NULL messageId (conversation-
- *     level, not message-anchored) are NOT touched here — they belong to
- *     the conversation as a whole. None are expected on Ez conversations.
- *   - `runs` are referenced from messages via `messages.run_id` (set null
- *     on delete) — we don't garbage-collect runs rows, but they're harmless
- *     once unreferenced.
- *   - `active_runs.conversation_id` cascade only fires on conversation
- *     delete (not message delete) — any in-flight stream's active_run row
- *     stays. Caller is expected to stop streaming on the client side
- *     before clearing; the runtime treats a missing message history as a
- *     fresh start regardless.
+ * `tool_calls.message_id` and `conversation_extensions.added_by_message_id`
+ * are `ON DELETE SET NULL`, NOT CASCADE — so wiping `messages` alone leaves
+ * those rows behind and the next turn's `setup-tools` re-wires the
+ * conversation-level extensions and the orphaned tool_calls rows pollute
+ * the message-detail UI. Wipe both adjacent tables explicitly here. Order:
+ * extensions/tool_calls first, messages last (so the message-cascade for
+ * attachments still fires correctly).
  */
 export async function deleteAllMessagesForConversation(conversationId: string): Promise<number> {
   if (!conversationId || typeof conversationId !== "string") {
     throw new Error("conversationId must be a non-empty string");
   }
-  const rows = await getDb()
+  const db = getDb();
+  await db.delete(conversationExtensions).where(eq(conversationExtensions.conversationId, conversationId));
+  await db.delete(toolCalls).where(eq(toolCalls.conversationId, conversationId));
+  const rows = await db
     .delete(messages)
     .where(eq(messages.conversationId, conversationId))
     .returning({ id: messages.id });

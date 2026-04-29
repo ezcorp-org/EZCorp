@@ -1168,6 +1168,20 @@ export function initStores() {
 				break;
 			}
 
+			case "ez:client-tool": {
+				// Forward Ez client-side tool invocations (`fill_form` /
+				// `navigate_to`) to whatever surface is listening — today
+				// that's only EzPanel.svelte. Mirrors the `ez:turn_saved`
+				// pattern: route the bus event into a DOM custom event so
+				// the panel doesn't need a second EventSource of its own.
+				if (typeof window !== "undefined") {
+					window.dispatchEvent(new CustomEvent("ez:client-tool", {
+						detail: event.data,
+					}));
+				}
+				break;
+			}
+
 			case "ext:state": {
 				const { extensionId, extensionName, state } = event.data as {
 					extensionId: string; extensionName: string; state: Record<string, unknown>;

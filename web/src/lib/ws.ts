@@ -11,6 +11,14 @@ export type WSRunEvent = {
 		| "tool:start" | "tool:complete" | "tool:error" | "tool:permission_request"
 		| "agent:spawn" | "agent:status" | "agent:complete"
 		| "task:snapshot" | "task:assignment_update"
+		// Ez concierge client-side tool delivery (Phase 48 Wave 3+). The
+		// runtime emits this when the LLM calls fill_form / navigate_to;
+		// the global subscriber re-dispatches it as a `ez:client-tool`
+		// window CustomEvent so EzPanel can route it through the
+		// client-tool dispatcher. Routed (rather than letting EzPanel keep
+		// its own EventSource) so Ez follows the same SSE consumption
+		// pattern the chat page uses.
+		| "ez:client-tool"
 		| "ext:state";
 	data: Record<string, unknown>;
 };

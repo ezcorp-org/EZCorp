@@ -59,7 +59,7 @@ describe("ez-drafts queries", () => {
   });
 
   test("createDraft requires userId — empty throws", async () => {
-    await expect(
+    expect(
       drafts.createDraft({ userId: "", kind: "agent", payload: {} }),
     ).rejects.toThrow();
   });

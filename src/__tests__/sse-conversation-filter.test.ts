@@ -74,22 +74,22 @@ describe("DIRECT_CARRIER_EVENT_TYPES", () => {
 describe("isAuthorizedForConversation", () => {
   test("returns true when the conversation owner matches the subscriber", async () => {
     const get = makeGetConversation({ "conv-A": { userId: "user-1" } });
-    await expect(isAuthorizedForConversation("user-1", "conv-A", get)).resolves.toBe(true);
+    expect(isAuthorizedForConversation("user-1", "conv-A", get)).resolves.toBe(true);
   });
 
   test("returns false when the conversation belongs to another user", async () => {
     const get = makeGetConversation({ "conv-A": { userId: "user-2" } });
-    await expect(isAuthorizedForConversation("user-1", "conv-A", get)).resolves.toBe(false);
+    expect(isAuthorizedForConversation("user-1", "conv-A", get)).resolves.toBe(false);
   });
 
   test("returns false for a non-existent conversation row", async () => {
     const get = makeGetConversation({});
-    await expect(isAuthorizedForConversation("user-1", "missing", get)).resolves.toBe(false);
+    expect(isAuthorizedForConversation("user-1", "missing", get)).resolves.toBe(false);
   });
 
   test("fails OPEN on DB error (returns true) — avoids UI black-out on transient infra failure", async () => {
     const getThrowing = async () => { throw new Error("db is down"); };
-    await expect(isAuthorizedForConversation("user-1", "conv-A", getThrowing)).resolves.toBe(true);
+    expect(isAuthorizedForConversation("user-1", "conv-A", getThrowing)).resolves.toBe(true);
   });
 
   test("caches membership within TTL — second lookup does not query DB", async () => {

@@ -42,7 +42,7 @@ describe("getOrCreateEzConversation", () => {
   });
 
   test("requires a userId — empty string throws", async () => {
-    await expect(getOrCreateEzConversation("")).rejects.toThrow();
+    expect(getOrCreateEzConversation("")).rejects.toThrow();
   });
 
   test("unique partial index rejects a second direct INSERT of kind='ez' for the same user", async () => {

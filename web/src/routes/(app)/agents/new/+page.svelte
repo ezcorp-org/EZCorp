@@ -6,6 +6,9 @@
 	import AgentConfigForm from "$lib/components/AgentConfigForm.svelte";
 	import TeamBuilderForm from "$lib/components/TeamBuilderForm.svelte";
 	import MetaAgentChat from "$lib/components/MetaAgentChat.svelte";
+	import EzContext from "$lib/components/ez/EzContext.svelte";
+	import AgentPrefillBanner from "$lib/components/ez/AgentPrefillBanner.svelte";
+	import { getDraft, consumeDraft } from "$lib/ez/api.js";
 	import { onMount } from "svelte";
 
 	type Tab = "describe" | "configure";
@@ -19,11 +22,58 @@
 	let submitting = $state(false);
 	let errorMsg = $state("");
 
+	// Ez prefill state — populated by `?prefill=<draftId>` or `fill_form`.
+	let prefillData = $state<Record<string, unknown> | null>(null);
+	/** Re-mount key so AgentConfigForm picks up new `initial` props. */
+	let prefillKey = $state(0);
+	let bannerState = $state<"hidden" | "active" | "expired">("hidden");
+	let consumedDraftId = $state<string | null>(null);
+
 	let isTeamMode = $derived(page.url.searchParams.get("type") === "team");
+
+	let existingAgentNames = $derived(
+		existingConfigs.map((c) => c.name).filter((n): n is string => typeof n === "string"),
+	);
 
 	onMount(async () => {
 		try { existingConfigs = await fetchAgentConfigs(); } catch { /* non-fatal */ }
 	});
+
+	// Hydrate from `?prefill=<draftId>` on mount and on draft id change.
+	let lastFetchedPrefill = "";
+	$effect(() => {
+		const id = page.url.searchParams.get("prefill");
+		if (!id || id === lastFetchedPrefill) return;
+		lastFetchedPrefill = id;
+		consumedDraftId = id;
+		void hydrateFromDraft(id);
+	});
+
+	async function hydrateFromDraft(id: string) {
+		try {
+			const draft = await getDraft(id);
+			if (!draft || draft.consumed || isExpired(draft.expiresAt)) {
+				bannerState = "expired";
+				return;
+			}
+			prefillData = { ...(draft.payload ?? {}) };
+			prefillKey++;
+			// The prefilled form lives under the Configure tab; auto-flip
+			// so the user lands on the populated form immediately.
+			activeTab = "configure";
+			bannerState = "active";
+		} catch {
+			bannerState = "expired";
+		}
+	}
+
+	function isExpired(expiresAt: string | Date | null | undefined): boolean {
+		if (!expiresAt) return false;
+		const t = typeof expiresAt === "string" ? Date.parse(expiresAt) : new Date(expiresAt).getTime();
+		return Number.isFinite(t) && t < Date.now();
+	}
+
+	function dismissBanner() { bannerState = "hidden"; }
 
 	function handleConfigGenerated(config: Record<string, unknown>) {
 		generatedConfig = config;
@@ -39,6 +89,9 @@
 		errorMsg = "";
 		try {
 			await createAgentConfig(data as Parameters<typeof createAgentConfig>[0]);
+			if (consumedDraftId) {
+				try { await consumeDraft(consumedDraftId); } catch { /* swallow */ }
+			}
 			refreshAgentConfigs();
 			goto("/agents");
 		} catch (e) {
@@ -47,7 +100,35 @@
 			submitting = false;
 		}
 	}
+
+	/** Ez `fill_form` handler — invoked by the panel's client-tool dispatcher. */
+	function handleEzFill(values: Record<string, unknown>): void {
+		const next = { ...(prefillData ?? {}) };
+		// Whitelist the well-known keys; the AgentConfigForm reads them via
+		// the same `initial` props it accepts on edit.
+		if (typeof values.name === "string") next.name = values.name;
+		if (typeof values.prompt === "string") next.prompt = values.prompt;
+		if (typeof values.description === "string") next.description = values.description;
+		if (typeof values.category === "string") next.category = values.category;
+		if (Array.isArray(values.capabilities)) next.capabilities = values.capabilities;
+		if (Array.isArray(values.extensions)) next.extensions = values.extensions;
+		if (values.inputSchema && typeof values.inputSchema === "object") next.inputSchema = values.inputSchema;
+		prefillData = next;
+		prefillKey++;
+		// Switch into Configure so the populated form is visible.
+		if (mode === "chat" && activeTab !== "configure") activeTab = "configure";
+	}
 </script>
+
+<EzContext
+	data={{ existingAgentNames }}
+	forms={{
+		"agent-new": {
+			schema: { name: "string", prompt: "string", description: "string", capabilities: "json" },
+			fill: handleEzFill,
+		},
+	}}
+/>
 
 <div class="space-y-6">
 	<div>
@@ -57,6 +138,12 @@
 	</div>
 
 	<div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-6">
+		{#if bannerState === "active"}
+			<AgentPrefillBanner state="active" ondismiss={dismissBanner} />
+		{:else if bannerState === "expired"}
+			<AgentPrefillBanner state="expired" ondismiss={dismissBanner} />
+		{/if}
+
 		{#if isTeamMode}
 			<div class="mb-6">
 				<h2 class="text-2xl font-bold text-[var(--color-text-primary)]">New Team</h2>
@@ -103,7 +190,9 @@
 					<MetaAgentChat onconfig={handleConfigGenerated} />
 				</div>
 			{:else}
-				<AgentConfigForm onsubmit={handleSubmit} {submitting} />
+				{#key prefillKey}
+					<AgentConfigForm initial={prefillData ?? {}} onsubmit={handleSubmit} {submitting} />
+				{/key}
 			{/if}
 		{/if}
 

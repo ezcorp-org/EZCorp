@@ -1,10 +1,69 @@
 <script lang="ts">
 	import { goto } from "$app/navigation";
+	import { page } from "$app/state";
+	import { onMount } from "svelte";
 	import { refreshProjects, setActiveProjectId } from "$lib/stores.svelte.js";
-	import { createDir, createProject } from "$lib/api.js";
+	import { createDir, createProject, fetchProjects, type Project } from "$lib/api.js";
 	import ProjectForm from "$lib/components/ProjectForm.svelte";
+	import EzContext from "$lib/components/ez/EzContext.svelte";
+	import ProjectPrefillBanner from "$lib/components/ez/ProjectPrefillBanner.svelte";
+	import { getDraft, consumeDraft } from "$lib/ez/api.js";
 
 	let submitting = $state(false);
+	let prefillData = $state<{ name?: string; path?: string } | null>(null);
+	/** Bumped after each prefill hydration so the form remounts with the new `initial`. */
+	let prefillKey = $state(0);
+	let bannerState = $state<"hidden" | "active" | "expired">("hidden");
+	let consumedDraftId = $state<string | null>(null);
+	let existingProjectPaths = $state<string[]>([]);
+
+	// Load other projects so Ez (and the user) can see what already exists.
+	// This is best-effort; non-fatal on failure.
+	onMount(async () => {
+		try {
+			const list = await fetchProjects();
+			existingProjectPaths = list.map((p: Project) => p.path).filter(Boolean) as string[];
+		} catch { /* non-fatal */ }
+	});
+
+	// Hydrate from `?prefill=<draftId>` once. Re-running on prefillId change
+	// covers the case where Ez navigates the user here from another page.
+	let lastFetchedPrefill = "";
+	$effect(() => {
+		const id = page.url.searchParams.get("prefill");
+		if (!id || id === lastFetchedPrefill) return;
+		lastFetchedPrefill = id;
+		consumedDraftId = id;
+		void hydrateFromDraft(id);
+	});
+
+	async function hydrateFromDraft(id: string) {
+		try {
+			const draft = await getDraft(id);
+			if (!draft || draft.consumed || isExpired(draft.expiresAt)) {
+				bannerState = "expired";
+				return;
+			}
+			const payload = draft.payload ?? {};
+			prefillData = {
+				name: typeof payload.name === "string" ? payload.name : undefined,
+				path: typeof payload.path === "string" ? payload.path : undefined,
+			};
+			prefillKey++;
+			bannerState = "active";
+		} catch {
+			// 404/expired/cross-user → expired banner.
+			bannerState = "expired";
+		}
+	}
+
+	function isExpired(expiresAt: string | Date | null | undefined): boolean {
+		if (!expiresAt) return false;
+		const t = typeof expiresAt === "string" ? Date.parse(expiresAt) : new Date(expiresAt).getTime();
+		return Number.isFinite(t) && t < Date.now();
+	}
+
+	function dismissBanner() { bannerState = "hidden"; }
 
 	async function handleCreate(data: { name: string; path: string; variables: Record<string, unknown> }) {
 		submitting = true;
@@ -12,6 +71,12 @@
 			// mkdir -p is idempotent, so this is a no-op if the folder already exists.
 			await createDir(data.path);
 			const project = await createProject(data);
+			// Mark the draft consumed so a refresh shows the "expired" banner
+			// rather than re-hydrating the same form. Best-effort — failure
+			// here must not block the flow.
+			if (consumedDraftId) {
+				try { await consumeDraft(consumedDraftId); } catch { /* swallow */ }
+			}
 			refreshProjects();
 			setActiveProjectId(project.id);
 			goto(`/project/${project.id}/chat`);
@@ -19,12 +84,42 @@
 			submitting = false;
 		}
 	}
+
+	/** Ez `fill_form` handler — invoked by the panel's client-tool dispatcher. */
+	function handleEzFill(values: Record<string, unknown>): void {
+		const next: { name?: string; path?: string } = { ...(prefillData ?? {}) };
+		if (typeof values.name === "string") next.name = values.name;
+		if (typeof values.path === "string") next.path = values.path;
+		prefillData = next;
+		prefillKey++;
+		// Showing the prefill banner here would imply a draft origin; an
+		// in-page fill is a different vibe (no `?prefill=` URL), so we
+		// leave the banner state alone.
+	}
 </script>
+
+<EzContext
+	data={{ existingProjectPaths }}
+	forms={{
+		"new-project": {
+			schema: { name: "string", path: "string" },
+			fill: handleEzFill,
+		},
+	}}
+/>
 
 <div class="space-y-6">
 	<h2 class="text-xl font-semibold text-[var(--color-text-primary)]">Create Project</h2>
 
 	<div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-6">
-		<ProjectForm onsubmit={handleCreate} {submitting} />
+		{#if bannerState === "active"}
+			<ProjectPrefillBanner state="active" ondismiss={dismissBanner} />
+		{:else if bannerState === "expired"}
+			<ProjectPrefillBanner state="expired" ondismiss={dismissBanner} />
+		{/if}
+
+		{#key prefillKey}
+			<ProjectForm initial={prefillData ?? undefined} onsubmit={handleCreate} {submitting} />
+		{/key}
 	</div>
 </div>

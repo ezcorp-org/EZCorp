@@ -8,16 +8,24 @@
 		project,
 		onsubmit,
 		submitting = false,
+		initial,
 	}: {
 		project?: Project;
 		onsubmit: (data: { name: string; path: string; icon?: string | null; variables: Record<string, unknown> }) => void;
 		submitting?: boolean;
+		/**
+		 * Optional prefill data — used by the Ez prefill flow. Higher priority
+		 * than the defaults but lower priority than an explicit `project`
+		 * (edit-mode binds to the project record). Only applied at first
+		 * mount; reactive changes from outside use `bindName`/`bindPath`.
+		 */
+		initial?: { name?: string; path?: string };
 	} = $props();
 
-	let name = $state(project?.name ?? "");
+	let name = $state(project?.name ?? initial?.name ?? "");
 	// Default to the host-accessible bind mount from docker-compose so new
 	// projects are visible on the host at ./projects/ by default.
-	let path = $state(project?.path ?? "/app/projects/");
+	let path = $state(project?.path ?? initial?.path ?? "/app/projects/");
 	let icon = $state<string | null>(project?.icon ?? null);
 	let faviconUrl = $state("");
 	let fetchingFavicon = $state(false);

@@ -4,7 +4,8 @@
     "index.ts",
     "scripts/*.ts",
     "src/db/schema.ts",
-    "drizzle.config.ts"
+    "drizzle.config.ts",
+    "worker/src/index.ts"
   ],
   "ignorePatterns": [
     "web/**",
@@ -16,6 +17,9 @@
   "dynamicallyLoaded": [
     "docs/extensions/examples/**",
     "src/__tests__/**",
-    "src/extensions/builtins/**"
+    "src/extensions/builtins/**",
+    "src/db/migrations/**",
+    "src/runtime/commands/**",
+    "src/providers/model-discovery.ts"
   ]
 }

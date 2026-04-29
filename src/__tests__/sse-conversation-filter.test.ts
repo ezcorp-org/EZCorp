@@ -29,13 +29,16 @@ beforeEach(() => __clearMembershipCacheForTests());
 afterEach(() => __clearMembershipCacheForTests());
 
 describe("DIRECT_CARRIER_EVENT_TYPES", () => {
-  test("enumerates the direct-carrier event types (13 from prereqs audit + ask-user:answer; Phase 5's orchestrator:human_* removed by ask-user migration)", () => {
-    expect(DIRECT_CARRIER_EVENT_TYPES.size).toBe(13);
+  test("enumerates the direct-carrier event types (13 from prereqs audit + ask-user:answer + ez:client-tool; Phase 5's orchestrator:human_* removed by ask-user migration)", () => {
+    // 14 entries: 13 from the prereqs audit + ez:client-tool added in
+    // Phase 48 Wave 3 (Ez concierge client-side tool delivery).
+    expect(DIRECT_CARRIER_EVENT_TYPES.size).toBe(14);
     for (const name of [
       "run:complete", "run:error", "run:cancel", "run:turn_saved",
       "tool:start", "tool:complete", "tool:error",
       "tool:permission_request", "tool:permission_mode_change",
       "obs:turn", "ask-user:answer",
+      "ez:client-tool",
       "task:snapshot", "task:assignment_update",
     ]) {
       expect(DIRECT_CARRIER_EVENT_TYPES.has(name as never)).toBe(true);

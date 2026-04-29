@@ -1,23 +1,27 @@
 /**
  * Phase 48 Wave 3 — DOM tests for EzPanel.
  *
- * Post-W4 refactor: EzPanel now uses the same building blocks as the
+ * Post-W4 refactor: EzPanel uses the same building blocks as the
  * regular chat page — the literal `ChatInput` component (with
- * `lockedMode={ modeSlug: 'ez', label: 'Ez' }` to collapse the model /
- * mode / thinking pickers and the attachment button into a single
- * static "Ez" chip) and `ChatMessage` for rendering. The panel
- * composes them into the slide-in drawer chrome and wires up the same
- * SSE consumption pattern via `startStreaming` and the
- * `ez:turn_saved` / `ez:client-tool` window events that
+ * `lockedMode={ modeSlug: 'ez', label: 'Ez' }`) and `ChatMessage` for
+ * rendering. The panel composes them into the slide-in drawer chrome
+ * and wires up the same SSE consumption pattern via `startStreaming`
+ * and the `ez:turn_saved` / `ez:client-tool` window events that
  * `stores.svelte.ts` re-dispatches.
+ *
+ * Locked mode now keeps the Model and Thinking pickers fully
+ * interactive — only the Mode picker is pinned to "Ez" and rendered
+ * disabled (the Ez conversation's `modeId` is fixed server-side, but
+ * provider/model/thinking-level are user choices the panel persists
+ * to its own localStorage keys).
  *
  * Covers:
  *   - panel renders only when the panel-open store is set
  *   - mount triggers `getOrCreateEzConversation` and renders fetched
  *     messages via `ChatMessage`
  *   - the composer is the locked `ChatInput`: the placeholder is the
- *     Ez prompt, no Model / Mode / Thinking pickers render, and a
- *     locked-mode chip is shown in their place
+ *     Ez prompt, the Model column is rendered, the Mode picker is
+ *     present-but-disabled and shows "Ez"
  *   - clicking the close button closes the panel
  *   - sending a message calls `sendMessage` with content + an
  *     `ezContext` payload synthesized from $page + the registry, then
@@ -183,23 +187,36 @@ describe("EzPanel — conversation bootstrap", () => {
 });
 
 describe("EzPanel — composer", () => {
-	test("composer is the locked ChatInput — no model/mode/thinking pickers, single Ez chip", async () => {
+	test("composer is the locked ChatInput — Model picker visible, Mode picker pinned to Ez and disabled", async () => {
 		openEzPanel();
 		const { findByPlaceholderText, queryByText, findByTestId } = render(EzPanel);
 		// ChatInput exposes its textarea via the placeholder we pass in —
-		// no `data-testid="ez-panel-input"`. The Ez surface is locked via
-		// `lockedMode={ modeSlug: 'ez', label: 'Ez' }`, which collapses
-		// the toolbar pickers into one static chip.
+		// no `data-testid="ez-panel-input"`.
 		expect(await findByPlaceholderText(/Ask Ez to do something/i)).toBeInTheDocument();
-		// Picker `<span class="toolbar-label">` captions ("Model" /
-		// "Mode" / "Thinking") must NOT render in locked mode.
-		expect(queryByText(/^Model$/)).toBeNull();
-		expect(queryByText(/^Mode$/)).toBeNull();
+
+		// The Model column renders in locked mode now — users can pick a
+		// provider/model for Ez runs.
+		expect(queryByText(/^Model$/)).not.toBeNull();
+		// The Mode column also renders, but as a disabled <ModeSelector>
+		// pinned to the synthesized "Ez" mode. We tag the wrapping
+		// <div> with `data-testid="chat-input-locked-mode"` so the test
+		// can assert the lock-state without depending on chevron/icon
+		// presence.
+		const lockedMode = await findByTestId("chat-input-locked-mode");
+		expect(lockedMode).toHaveAttribute("data-mode-slug", "ez");
+		expect(lockedMode).toHaveTextContent(/Ez/);
+		// The trigger button inside the locked-mode wrapper must be
+		// disabled (so click events don't open the dropdown).
+		const modeButton = lockedMode.querySelector("button");
+		expect(modeButton).not.toBeNull();
+		expect(modeButton!.disabled).toBe(true);
+		expect(modeButton).toHaveAttribute("aria-disabled", "true");
+
+		// Thinking column only renders once the active model advertises
+		// reasoning support — we haven't selected a model in this test
+		// (no `/api/models` mock), so the column stays hidden. That's
+		// the same behavior as the chat page on first load.
 		expect(queryByText(/^Thinking$/)).toBeNull();
-		// The locked chip stands in for them.
-		const chip = await findByTestId("chat-input-locked-mode");
-		expect(chip).toHaveTextContent(/^Ez$/);
-		expect(chip).toHaveAttribute("data-mode-slug", "ez");
 	});
 
 	test("Send posts content + ezContext to api.sendMessage and starts streaming", async () => {
@@ -233,6 +250,12 @@ describe("EzPanel — composer", () => {
 		expect(payload.ezContext.route.url).toBe("/agents/new");
 		expect(payload.ezContext.data).toEqual({ existingAgentNames: ["Foo"] });
 		expect(payload.ezContext.formIds).toEqual(["agent-new"]);
+		// Locked-mode now ships the user's chosen thinking level inline.
+		// No model is pre-selected (localStorage is empty in jsdom), so
+		// `provider`/`model` stay omitted — the runtime picks its default.
+		expect(payload.thinkingLevel).toBe("medium");
+		expect(payload.provider).toBeUndefined();
+		expect(payload.model).toBeUndefined();
 
 		// Ez follows the same SSE consumption pattern as the chat page —
 		// once `sendMessage` returns a runId, the panel registers it with

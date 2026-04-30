@@ -336,7 +336,7 @@
 				<!-- Overlay for chip rendering -->
 				<div
 					bind:this={overlayEl}
-					class="pointer-events-none absolute inset-0 overflow-hidden text-sm text-[var(--color-text-primary)]"
+					class="panel-chat-textarea-overlay pointer-events-none absolute inset-0 overflow-hidden text-[var(--color-text-primary)]"
 					style="padding: 4px 0.75rem; word-wrap: break-word; white-space: pre-wrap; line-height: 1.75rem; font-family: inherit;"
 					aria-hidden="true"
 				>
@@ -404,6 +404,18 @@
 	.panel-chat-textarea:hover,
 	.panel-chat-textarea:focus {
 		scrollbar-color: var(--color-border) transparent;
+	}
+	.panel-chat-textarea-overlay {
+		font-size: 0.875rem;
+	}
+	/* iOS Safari zooms when a focused input's font-size is < 16px.
+	 * Bump both the textarea and its mirror overlay together so chip
+	 * positions stay aligned. */
+	@media (pointer: coarse) {
+		.panel-chat-textarea,
+		.panel-chat-textarea-overlay {
+			font-size: 16px;
+		}
 	}
 
 	.panel-send-btn {

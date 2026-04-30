@@ -110,7 +110,8 @@
 </script>
 
 <!-- Chat Header -->
-<div class="flex items-center justify-between border-b border-[var(--color-border)] px-2 md:px-4 py-2 gap-1">
+<div class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-[var(--color-border)] px-2 md:px-4 py-2 gap-1">
+	<div class="flex items-center gap-1 min-w-0 md:flex-1">
 	<!-- Mobile menu button -->
 	<button
 		onclick={() => onmobilemenu()}
@@ -162,7 +163,8 @@
 			<MentionText text={currentConversation?.title ?? "Chat"} />
 		</span>
 	{/if}
-	<div class="flex items-center gap-1 shrink-0">
+	</div>
+	<div class="flex items-center gap-1 shrink-0 flex-wrap justify-end">
 		<!-- Context usage -->
 		<ContextUsageIndicator
 			usedTokens={lastTurnInputTokens}

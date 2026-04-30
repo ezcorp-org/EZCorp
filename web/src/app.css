@@ -67,6 +67,15 @@ html[data-dev-indicator="1"] img[src="/logo.svg"] {
   padding-bottom: 0.5rem;
 }
 
+/* iOS Safari auto-zooms when a focused input's font-size is < 16px.
+ * Enforce 16px on touch devices to suppress that zoom while preserving
+ * user-initiated pinch-zoom (unlike user-scalable=no, which breaks WCAG 1.4.4). */
+@media (pointer: coarse) {
+  input, textarea, select {
+    font-size: 16px;
+  }
+}
+
 /* WCAG 2.1 AA focus indicators — keyboard-only via :focus-visible */
 :focus-visible {
   outline: 2px solid var(--color-accent, #60a5fa);

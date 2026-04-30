@@ -197,13 +197,18 @@ export async function loadHistory(
 ): Promise<LoadHistoryResult> {
   // Load history and resolve system prompt in parallel (they're independent)
   const [branchMessages, resolvedSystem] = await Promise.all([
-    // Gather branch-aware conversation history
+    // Gather branch-aware conversation history. Rows the user has flagged
+    // `excluded` are dropped here so pi-ai never sees them — the transcript
+    // still shows them (struck-through), and toggling restores them on the
+    // next turn.
     (async () => {
-      if (options.parentMessageId) {
-        return getConversationPath(options.parentMessageId, conversationId);
-      }
-      const leaf = await getLatestLeaf(conversationId);
-      return leaf ? getConversationPath(leaf.id, conversationId) : [];
+      const path = options.parentMessageId
+        ? await getConversationPath(options.parentMessageId, conversationId)
+        : await (async () => {
+            const leaf = await getLatestLeaf(conversationId);
+            return leaf ? getConversationPath(leaf.id, conversationId) : [];
+          })();
+      return path.filter((m) => !m.excluded);
     })(),
     // Resolve system prompt (conversation > project > global)
     (async () => {

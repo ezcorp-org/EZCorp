@@ -222,6 +222,83 @@ test.describe("Chat — exclude message from LLM context", () => {
 		expect(await hasStrikeThrough(page.getByText("Answer one"))).toBe(true);
 	});
 
+	test("tool-call wrappers inside an excluded assistant row also strike through", async ({ page, mockApi }) => {
+		// Tool cards live inside the assistant message row; before this fix
+		// the strike-through CSS only matched `.excluded-prose` text wrappers,
+		// so an excluded turn rendered with struck text but full-opacity tool
+		// cards — visually inconsistent. The fix adds `excluded-prose` to the
+		// tool-card wrappers in BOTH the contentBlocks branch and the flat
+		// fallback branch, so the same descendant CSS rule reaches them.
+		const seededExcluded = { ...assistantMsg, excluded: true };
+		await mockApi({
+			projects: [proj],
+			conversations: [conv],
+			messages: [userMsg, seededExcluded],
+			messageToolCalls: {
+				[assistantMsg.id]: [
+					{
+						id: "tc-1",
+						extensionId: "ext-1",
+						toolName: "search",
+						input: { query: "weather" },
+						outputSummary: "weather in NYC",
+						success: true,
+						durationMs: 42,
+						status: "success",
+						messageId: assistantMsg.id,
+						cardType: null,
+					},
+				],
+			},
+		});
+
+		await page.goto(`/project/${proj.id}/chat/${conv.id}`);
+
+		const assistantRow = rowOf(page, "Answer one");
+		await expect(assistantRow).toHaveAttribute("data-excluded", "true");
+
+		// The tool-card wrapper carries `id="tool-call-tc-1"` so the assertion
+		// targets exactly the wrapper that owns the excluded-prose class —
+		// not the inner ToolCallCard chrome (which is structured DOM that
+		// would inherit unevenly).
+		const toolWrapper = page.locator("#tool-call-tc-1");
+		await expect(toolWrapper).toBeVisible();
+		expect(await hasStrikeThrough(toolWrapper)).toBe(true);
+	});
+
+	test("memory + thinking cards inside an excluded assistant row also strike through", async ({ page, mockApi }) => {
+		// Mirror of the tool-call test for the other renderable cards
+		// inside an assistant turn — MemoriesCard, ThinkingCard, and the
+		// agent-chip cluster. All three wrappers carry `excluded-prose` so
+		// one CSS rule fades them in lockstep with the prose. The test
+		// confirms the wrappers render AND inherit the strike-through.
+		const seededExcluded = {
+			...assistantMsg,
+			excluded: true,
+			thinkingContent: "scratch reasoning",
+			memoriesUsed: [
+				{ id: "mem-1", content: "remembered thing", category: "fact" },
+			],
+		};
+		await mockApi({
+			projects: [proj],
+			conversations: [conv],
+			messages: [userMsg, seededExcluded],
+		});
+
+		await page.goto(`/project/${proj.id}/chat/${conv.id}`);
+
+		const assistantRow = rowOf(page, "Answer one");
+		await expect(assistantRow).toHaveAttribute("data-excluded", "true");
+
+		// MemoriesCard renders the literal "Memories" label; walk up via
+		// hasStrikeThrough's `.excluded-prose` resolver. Same for the
+		// ThinkingCard (its trigger button starts with "Thinking" and is a
+		// stable affordance — see ThinkingCard.svelte).
+		expect(await hasStrikeThrough(page.getByText("Memories"))).toBe(true);
+		expect(await hasStrikeThrough(page.getByText(/Thinking/i).first())).toBe(true);
+	});
+
 	test("toolbar button stays full-opacity inside an excluded row (negative assertion: chrome is not faded)", async ({ page, mockApi }) => {
 		// Lock down the I1 contract: when a message is excluded, ONLY the
 		// prose strikes through. Toolbar / chrome / sibling content stays

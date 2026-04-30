@@ -66,6 +66,9 @@
 		store,
 		startStreaming,
 		stopStreaming,
+		getStreamingToolCalls,
+		getStreamingAgentCalls,
+		getStreamingContentBlocks,
 	} from "$lib/stores.svelte.js";
 	import ChatInput from "$lib/components/ChatInput.svelte";
 	import ChatMessage from "$lib/components/ChatMessage.svelte";
@@ -606,11 +609,17 @@
 				{#each messages as msg (msg.id)}
 					{@const isStreamingMsg =
 						msg.id === `streaming-${activeRunId}` && isStreaming}
+					{@const streamingTools = isStreamingMsg && activeRunId ? getStreamingToolCalls(activeRunId) : undefined}
+					{@const streamingAgents = isStreamingMsg && activeRunId ? getStreamingAgentCalls(activeRunId) : undefined}
+					{@const streamingBlocks = isStreamingMsg && activeRunId ? getStreamingContentBlocks(activeRunId) : undefined}
 					<div data-testid="ez-message" data-role={msg.role}>
 						<ChatMessage
 							message={msg}
 							streamingText={isStreamingMsg ? currentStreamingText : undefined}
 							streamingStatus={isStreamingMsg ? currentStreamingStatus : undefined}
+							toolCalls={streamingTools && streamingTools.length > 0 ? streamingTools : undefined}
+							agentCalls={streamingAgents && streamingAgents.length > 0 ? streamingAgents : undefined}
+							contentBlocks={streamingBlocks && streamingBlocks.length > 0 ? streamingBlocks : undefined}
 							conversationId={conversationId ?? undefined}
 							onsendmessage={(text) => void send(text)}
 						/>

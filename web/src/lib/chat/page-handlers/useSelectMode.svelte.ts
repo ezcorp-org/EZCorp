@@ -5,12 +5,13 @@
  *
  * Owns all of the per-conversation "select / fork / bulk-op" reactive state:
  *   - `selectMode`            — whether the action bar is visible at all.
- *   - `selectedIds`           — Svelte-proxied Set of selected message ids.
- *                               Mutated IN PLACE (`.add` / `.delete` /
- *                               `.clear`). Replacing the slot would lose the
- *                               proxy identity that makes `selectedIds.size`
- *                               and `selectedIds.has(id)` reactive in the
- *                               template.
+ *   - `selectedIds`           — `SvelteSet` of selected message ids. A plain
+ *                               `$state(new Set())` is NOT reactive on
+ *                               mutation — Svelte 5 only proxies plain
+ *                               objects/arrays, not built-in `Set`/`Map`
+ *                               instances. Use `SvelteSet` so `.add`,
+ *                               `.delete`, `.has`, `.size`, and iteration
+ *                               all flow through the reactive container.
  *   - `selectCloning`         — true while `cloneTurns` is in flight.
  *   - `bulkBusy`              — true while a fan-out bulk op is in flight.
  *   - `bulkStatus`            — transient confirmation text shown in the
@@ -41,6 +42,7 @@
  */
 
 import { goto } from "$app/navigation";
+import { SvelteSet } from "svelte/reactivity";
 import {
 	cloneTurns,
 	setMessageExcluded,
@@ -88,6 +90,13 @@ export interface SelectModeHost {
 	 *  calls in the copied text. Mirrors the page-level helper of the
 	 *  same name. */
 	getHistoricalToolCalls(messageId: string): ToolCallState[];
+	/** Sidebar component handle. Optional so tests don't need to stub it.
+	 *  `handleForkSelection` calls `.refresh()` after a successful clone so
+	 *  the new fork (and the parent's chevron) appear in the sidebar
+	 *  immediately — without it the user lands on a chat that isn't in any
+	 *  visible list until a manual reload. Same shape as the convList slot
+	 *  in `send-message.ts`. */
+	convList?(): { refresh?: () => void } | null | undefined;
 }
 
 /** Plain mutable state shape — backed by `$state` slots in the rune
@@ -220,7 +229,7 @@ export function toggleSelectedMessage(
 
 export async function handleForkSelection(
 	state: SelectModeState,
-	host: Pick<SelectModeHost, "convId" | "projectId" | "allMessages">,
+	host: Pick<SelectModeHost, "convId" | "projectId" | "allMessages" | "convList">,
 ): Promise<void> {
 	if (state.selectedIds.size === 0 || state.selectCloning) return;
 	const orderedIds = orderedSelection(
@@ -236,6 +245,11 @@ export async function handleForkSelection(
 		state.selectedIds.clear();
 		state.lastSelectionAnchor = null;
 		state.selectMode = false;
+		// Refetch the sidebar BEFORE navigating so the new fork (and the
+		// chevron on its source) are present by the time the new chat page
+		// renders. Without this, the user lands on a chat that doesn't exist
+		// in any visible list until they manually reload.
+		host.convList?.()?.refresh?.();
 		goto(`/project/${host.projectId()}/chat/${newConv.id}`);
 	} catch (err) {
 		state.selectError =
@@ -454,7 +468,11 @@ export function useSelectMode(host: SelectModeHost): UseSelectModeReturn {
 	// slots are what makes `selectMode.state.*` reactive in the calling
 	// component's template.
 	let selectMode = $state(false);
-	const selectedIds = $state<Set<string>>(new Set());
+	// `SvelteSet` from `svelte/reactivity`, NOT `$state(new Set())`.
+	// Svelte 5 doesn't proxy built-in `Set`/`Map` instances — `.add` /
+	// `.delete` / `.has` mutations on a plain Set wouldn't trigger
+	// re-renders. SvelteSet is the supported reactive replacement.
+	const selectedIds = new SvelteSet<string>();
 	let selectCloning = $state(false);
 	let bulkBusy = $state(false);
 	let bulkStatus = $state<string | null>(null);
@@ -471,16 +489,16 @@ export function useSelectMode(host: SelectModeHost): UseSelectModeReturn {
 		return {
 			get selectMode() { return selectMode; },
 			set selectMode(v) { selectMode = v; },
-			// `selectedIds` is exposed as a single read of the proxy —
-			// callers mutate `.add`/`.delete`/`.clear` on the SAME proxy
-			// (NOT replacing it), preserving identity.
+			// `selectedIds` is exposed as a single read of the SvelteSet —
+			// callers mutate `.add`/`.delete`/`.clear` on the SAME instance
+			// (NOT replacing it), preserving subscriber identity.
 			get selectedIds() { return selectedIds; },
 			set selectedIds(_v) {
-				// Forbidden — would break the proxy identity. Throw so
+				// Forbidden — would break the SvelteSet identity. Throw so
 				// regressions surface immediately rather than silently
 				// killing template reactivity.
 				throw new Error(
-					"useSelectMode: selectedIds must be mutated in place; replacing the slot breaks Svelte 5 proxy identity",
+					"useSelectMode: selectedIds must be mutated in place; replacing the SvelteSet instance breaks template reactivity",
 				);
 			},
 			get selectCloning() { return selectCloning; },
@@ -534,7 +552,7 @@ export function useSelectMode(host: SelectModeHost): UseSelectModeReturn {
 		set selectMode(v: boolean) { selectMode = v; },
 		// `selectedIds` is exposed without a setter — the spec requires
 		// in-place mutation only. Re-assigning the slot would lose the
-		// proxy identity and break reactivity in the template.
+		// SvelteSet identity and break reactivity in the template.
 		get selectedIds() { return selectedIds; },
 		get selectCloning() { return selectCloning; },
 		set selectCloning(v: boolean) { selectCloning = v; },

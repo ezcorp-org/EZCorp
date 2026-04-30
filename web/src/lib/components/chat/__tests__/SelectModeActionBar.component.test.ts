@@ -6,7 +6,7 @@
  * - Fork / exclude / save-memory paths are disabled when isStreaming,
  *   selectCloning, or bulkBusy is true. (Exclude+save-memory are gated
  *   inside MessageToolbar by passing `undefined`, which hides those
- *   buttons; fork is disabled directly on the "New Chat" button.)
+ *   buttons; fork is disabled directly on the "Fork Chat" button.)
  * - `selectError` and `bulkStatus` render when truthy.
  */
 
@@ -55,14 +55,14 @@ describe("SelectModeActionBar", () => {
 		expect(oncancel).toHaveBeenCalledTimes(1);
 	});
 
-	test("onfork fires when the New Chat button is clicked", async () => {
+	test("onfork fires when the Fork Chat button is clicked", async () => {
 		const onfork = vi.fn();
 		const { getByTestId } = render(SelectModeActionBar, defaultProps({ onfork }));
 		await fireEvent.click(getByTestId("new-chat-from-selection"));
 		expect(onfork).toHaveBeenCalledTimes(1);
 	});
 
-	test("New Chat button is NOT disabled by isStreaming alone (parity with original page)", () => {
+	test("Fork Chat button is NOT disabled by isStreaming alone (parity with original page)", () => {
 		// The original page only disables fork on `selectedIds.size === 0 ||
 		// selectCloning || bulkBusy`. isStreaming gates the header-level
 		// select-mode toggle, not the in-bar fork button. Keeping this here
@@ -73,12 +73,12 @@ describe("SelectModeActionBar", () => {
 		expect(getByTestId("new-chat-from-selection")).not.toBeDisabled();
 	});
 
-	test("New Chat button is disabled when selectCloning", () => {
+	test("Fork Chat button is disabled when selectCloning", () => {
 		const { getByTestId } = render(SelectModeActionBar, defaultProps({ selectCloning: true }));
 		expect(getByTestId("new-chat-from-selection")).toBeDisabled();
 	});
 
-	test("New Chat button is disabled when bulkBusy", () => {
+	test("Fork Chat button is disabled when bulkBusy", () => {
 		const { getByTestId } = render(SelectModeActionBar, defaultProps({ bulkBusy: true }));
 		expect(getByTestId("new-chat-from-selection")).toBeDisabled();
 	});

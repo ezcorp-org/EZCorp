@@ -365,13 +365,14 @@
 					indent: boolean;
 					chevron: "open" | "closed" | null;
 					unreadBadgeCount: number;
+					forkCount: number;
 					onChevronClick?: () => void;
 				},
 			)}
 				{@const isActive = activeConversationId === conv.id}
 				<div class="group relative">
 					{#if renamingId === conv.id}
-						<div class="px-3 py-1.5 {rowOpts.indent ? 'pl-9' : ''}">
+						<div class="pl-7 pr-3 py-1.5 {rowOpts.indent ? 'pl-10' : ''}">
 							<input
 								type="text"
 								bind:value={renameValue}
@@ -384,9 +385,13 @@
 							/>
 						</div>
 					{:else}
+						<!-- Left padding `pl-7` reserves a 28px gutter for the chevron, so
+						     titles line up across all root rows whether or not a chevron
+						     is present. Fork rows step in another notch (`pl-10`) so the
+						     ↳ connector glyph reads as a child of the title above. -->
 						<button
 							onclick={() => onselect(conv.id)}
-							class="flex w-full flex-col px-3 py-2 text-left transition-colors {rowOpts.indent ? 'pl-9' : ''}
+							class="flex w-full flex-col pl-7 pr-3 py-2 text-left transition-colors {rowOpts.indent ? 'pl-10' : ''}
 								{isActive ? 'bg-[var(--color-surface-tertiary)]' : 'hover:bg-[var(--color-surface-tertiary)]/70'}"
 						>
 							<span class="flex items-center gap-1.5 truncate text-sm {isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)]'}">
@@ -397,9 +402,23 @@
 									<span class="shrink-0 rounded bg-amber-600/80 px-1 py-0.5 text-[9px] font-bold uppercase leading-none text-white">TEST</span>
 								{/if}
 								<span class="truncate"><MentionText text={conv.title} /></span>
+								{#if rowOpts.forkCount > 0}
+									<span
+										class="ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--color-surface-tertiary)] px-1.5 py-0.5 text-[9px] font-medium leading-none text-[var(--color-text-muted)]"
+										title="{rowOpts.forkCount} fork{rowOpts.forkCount === 1 ? '' : 's'}"
+										aria-label="{rowOpts.forkCount} fork{rowOpts.forkCount === 1 ? '' : 's'}"
+										data-testid="fork-count-badge"
+									>
+										<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+												d="M6 3v12m0 0a3 3 0 103 3m-3-3a3 3 0 113-3m12-6a3 3 0 11-3-3 3 3 0 013 3zM18 9a9 9 0 01-9 9" />
+										</svg>
+										{rowOpts.forkCount}
+									</span>
+								{/if}
 								{#if rowOpts.unreadBadgeCount > 0}
 									<span
-										class="ml-auto shrink-0 rounded-full bg-green-500/20 px-1.5 py-0.5 text-[9px] font-medium leading-none text-green-300"
+										class="{rowOpts.forkCount > 0 ? '' : 'ml-auto'} shrink-0 rounded-full bg-green-500/20 px-1.5 py-0.5 text-[9px] font-medium leading-none text-green-300"
 										title="{rowOpts.unreadBadgeCount} unread fork{rowOpts.unreadBadgeCount === 1 ? '' : 's'}"
 									>
 										{rowOpts.unreadBadgeCount}
@@ -467,6 +486,7 @@
 						indent: false,
 						chevron: hasForks ? (isCollapsed ? "closed" : "open") : null,
 						unreadBadgeCount: hasForks && isCollapsed ? unreadInForks : 0,
+						forkCount: fam.forks.length,
 						onChevronClick: () => toggleCollapse(fam.root.id),
 					})}
 					{#if hasForks && !isCollapsed}
@@ -475,6 +495,7 @@
 								indent: true,
 								chevron: null,
 								unreadBadgeCount: 0,
+								forkCount: 0,
 							})}
 						{/each}
 					{/if}

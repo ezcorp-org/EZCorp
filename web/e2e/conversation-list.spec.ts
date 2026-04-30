@@ -126,6 +126,107 @@ test.describe("Conversation List", () => {
 		await expect(page.getByText("No conversations yet")).toBeVisible();
 	});
 
+	test.describe("fork grouping", () => {
+		const parent = makeConversation({
+			id: "p-parent",
+			projectId: "proj-1",
+			title: "Parent Chat",
+			updatedAt: new Date(Date.now() - 5 * 3_600_000).toISOString(),
+		});
+		const forkA = makeConversation({
+			id: "p-fork-a",
+			projectId: "proj-1",
+			title: "Forked: try OAuth path",
+			forkedFromConversationId: "p-parent",
+			forkedFromMessageId: "m-1",
+			createdAt: new Date(Date.now() - 4 * 3_600_000).toISOString(),
+			updatedAt: new Date(Date.now() - 1 * 3_600_000).toISOString(),
+		});
+		const forkB = makeConversation({
+			id: "p-fork-b",
+			projectId: "proj-1",
+			title: "Forked: rate limit exploration",
+			forkedFromConversationId: "p-parent",
+			forkedFromMessageId: "m-1",
+			createdAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+			updatedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+		});
+
+		test("parent shows expand chevron; fork rows render indented with ↳ glyph", async ({ page, mockApi }) => {
+			await mockApi({ projects: [proj], conversations: [parent, forkA, forkB] });
+			await page.goto(`/project/${proj.id}/chat`);
+
+			const sidebar = page.locator("div.md\\:w-\\[280px\\]").first();
+			await expect(sidebar).toBeVisible();
+
+			// Chevron is rendered in its open state (default expanded).
+			const chevron = sidebar.getByRole("button", { name: "Collapse forks" });
+			await expect(chevron).toBeVisible();
+
+			// All three rows visible (parent + both forks).
+			await expect(sidebar.getByText("Parent Chat")).toBeVisible();
+			await expect(sidebar.getByText("try OAuth path")).toBeVisible();
+			await expect(sidebar.getByText("rate limit exploration")).toBeVisible();
+
+			// The two forks render with the ↳ connector glyph.
+			const arrows = sidebar.locator("span[aria-hidden='true']", { hasText: "↳" });
+			await expect(arrows).toHaveCount(2);
+
+			// Root rows reserve a chevron gutter (pl-7); fork rows step in
+			// further (pl-10) so the ↳ glyph reads as a child of the title above.
+			const parentBtn = sidebar.locator("button", { hasText: "Parent Chat" }).first();
+			const forkBtn = sidebar.locator("button", { hasText: "try OAuth path" }).first();
+			await expect(parentBtn).toHaveClass(/\bpl-7\b/);
+			await expect(parentBtn).not.toHaveClass(/\bpl-10\b/);
+			await expect(forkBtn).toHaveClass(/\bpl-10\b/);
+		});
+
+		test("clicking chevron collapses the family; reload preserves collapse via localStorage", async ({ page, mockApi }) => {
+			await mockApi({ projects: [proj], conversations: [parent, forkA, forkB] });
+			await page.goto(`/project/${proj.id}/chat`);
+
+			const sidebar = page.locator("div.md\\:w-\\[280px\\]").first();
+
+			// Click the chevron to collapse.
+			await sidebar.getByRole("button", { name: "Collapse forks" }).click();
+
+			// Forks now hidden; parent still visible.
+			await expect(sidebar.getByText("Parent Chat")).toBeVisible();
+			await expect(sidebar.getByText("try OAuth path")).not.toBeVisible();
+			await expect(sidebar.getByText("rate limit exploration")).not.toBeVisible();
+
+			// Chevron has flipped to "Expand" state.
+			await expect(sidebar.getByRole("button", { name: "Expand forks" })).toBeVisible();
+
+			// localStorage persistence — reload and confirm forks stay hidden.
+			await page.reload();
+			await expect(sidebar.getByText("Parent Chat")).toBeVisible();
+			await expect(sidebar.getByText("try OAuth path")).not.toBeVisible();
+			await expect(sidebar.getByRole("button", { name: "Expand forks" })).toBeVisible();
+		});
+
+		test("orphaned fork (parent not in loaded set) renders at top level", async ({ page, mockApi }) => {
+			// Only fork-a is loaded; the parent is missing (paginated off / deleted).
+			// The fork should still render (not silently dropped).
+			await mockApi({ projects: [proj], conversations: [forkA] });
+			await page.goto(`/project/${proj.id}/chat`);
+
+			const sidebar = page.locator("div.md\\:w-\\[280px\\]").first();
+			await expect(sidebar.getByText("try OAuth path")).toBeVisible();
+			// No chevron — orphan has no children to expand/collapse.
+			await expect(sidebar.getByRole("button", { name: /(Collapse|Expand) forks/ })).toHaveCount(0);
+		});
+
+		test("family with no forks renders as a plain row (no chevron)", async ({ page, mockApi }) => {
+			await mockApi({ projects: [proj], conversations: [parent] });
+			await page.goto(`/project/${proj.id}/chat`);
+
+			const sidebar = page.locator("div.md\\:w-\\[280px\\]").first();
+			await expect(sidebar.getByText("Parent Chat")).toBeVisible();
+			await expect(sidebar.getByRole("button", { name: /(Collapse|Expand) forks/ })).toHaveCount(0);
+		});
+	});
+
 	test("paginates via infinite scroll — first page of 30, loads more on scroll", async ({ page, mockApi }) => {
 		// Make 75 conversations, newest first by updatedAt.
 		// Use unique titles (ITEM-N) so we can grep them reliably — the active chat's

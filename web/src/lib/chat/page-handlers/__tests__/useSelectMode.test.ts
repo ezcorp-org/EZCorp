@@ -106,6 +106,7 @@ interface HostState {
 	savedMemories: Map<string, string>;
 	isStreaming: boolean;
 	historicalToolCalls: Map<string, ToolCallState[]>;
+	convListRefresh: ReturnType<typeof mock>;
 }
 
 function makeHost(initial: Partial<HostState> = {}): {
@@ -120,6 +121,7 @@ function makeHost(initial: Partial<HostState> = {}): {
 		savedMemories: new Map(),
 		isStreaming: false,
 		historicalToolCalls: new Map(),
+		convListRefresh: mock(() => {}),
 		...initial,
 	};
 	const host: SelectModeHost = {
@@ -137,6 +139,7 @@ function makeHost(initial: Partial<HostState> = {}): {
 		isStreaming: () => state.isStreaming,
 		getHistoricalToolCalls: (id) =>
 			state.historicalToolCalls.get(id) ?? [],
+		convList: () => ({ refresh: state.convListRefresh }),
 	};
 	return { host, state };
 }
@@ -479,7 +482,7 @@ describe("handleForkSelection", () => {
 		state.selectedIds.add("m3");
 		state.selectedIds.add("m1");
 		state.selectedIds.add("m2");
-		const { host } = makeHost({
+		const { host, state: hostState } = makeHost({
 			convId: "src-conv",
 			projectId: "proj-X",
 			allMessages: ["m1", "m2", "m3", "m4"].map((id) => makeMessage(id)),
@@ -496,6 +499,10 @@ describe("handleForkSelection", () => {
 		]);
 		expect(gotoMock).toHaveBeenCalledTimes(1);
 		expect(gotoMock.mock.calls[0]![0]).toBe("/project/proj-X/chat/new-conv-id");
+		// Sidebar must refetch so the new fork (and the parent's chevron) appear
+		// before the new chat page renders. Without this, the user lands on a
+		// chat that's not in any visible list until manual reload.
+		expect(hostState.convListRefresh).toHaveBeenCalledTimes(1);
 		// Cleanup of selection state.
 		expect(state.selectedIds.size).toBe(0);
 		expect(state.selectMode).toBe(false);
@@ -529,12 +536,14 @@ describe("handleForkSelection", () => {
 		const state = createSelectModeState();
 		state.selectMode = true;
 		state.selectedIds.add("m1");
-		const { host } = makeHost({ allMessages: [makeMessage("m1")] });
+		const { host, state: hostState } = makeHost({ allMessages: [makeMessage("m1")] });
 		await handleForkSelection(state, host);
 		expect(state.selectError).toBe("network down");
 		expect(state.selectCloning).toBe(false);
 		expect(state.selectMode).toBe(true); // unchanged on failure
 		expect(gotoMock).not.toHaveBeenCalled();
+		// Don't refetch the sidebar when there's nothing new to show.
+		expect(hostState.convListRefresh).not.toHaveBeenCalled();
 	});
 });
 

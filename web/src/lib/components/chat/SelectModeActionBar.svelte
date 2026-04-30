@@ -39,13 +39,13 @@
      extend the selection to the previously-clicked turn. -->
 <div class="border-t border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3" data-testid="select-action-bar">
 	<div class="mx-auto flex max-w-3xl flex-col gap-2">
-		<div class="flex items-center justify-between gap-3">
+		<div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-3">
 			<div class="text-sm text-[var(--color-text-primary)]">
 				<span data-testid="selected-count" class="font-medium">{selectedCount}</span>
 				{selectedCount === 1 ? 'turn' : 'turns'} selected
-				<span class="ml-2 text-xs text-[var(--color-text-muted)]">— shift+click to select a range</span>
+				<span class="ml-2 hidden text-xs text-[var(--color-text-muted)] md:inline">— shift+click or long-press to select a range</span>
 			</div>
-			<div class="flex flex-wrap items-center gap-2">
+			<div class="flex flex-wrap items-center justify-end gap-2">
 				<button
 					onclick={() => oncancel()}
 					disabled={selectCloning || bulkBusy}
@@ -75,7 +75,7 @@
 					disabled={selectedCount === 0 || selectCloning || bulkBusy}
 					class="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
 					data-testid="new-chat-from-selection"
-					aria-label="New chat from selection"
+					aria-label="Fork chat from selection"
 				>
 					<!-- Same branch glyph used by MessageToolbar's "Branch from here"
 					     button — signals this fork action ties back to the selected
@@ -86,7 +86,7 @@
 						<circle cx="6" cy="18" r="3" />
 						<path d="M18 9a9 9 0 0 1-9 9" />
 					</svg>
-					{selectCloning ? "Creating…" : "New Chat"}
+					{selectCloning ? "Creating…" : "Fork Chat"}
 				</button>
 			</div>
 		</div>

@@ -309,7 +309,9 @@ describe("executor mode.extensionIds → allowlist filter", () => {
     expect(names.has("c_tool")).toBe(true);
     // d_tool is NOT in the union and must be stripped.
     expect(names.has("d_tool")).toBe(false);
-    expect(getToolsForExtensionCalls.sort()).toEqual(["ext-1", "ext-2"]);
+    // Deduped — wire-step (setup-tools) and filter-step (executor) each
+    // resolve every modeExt id, so duplicates are expected in the call log.
+    expect([...new Set(getToolsForExtensionCalls)].sort()).toEqual(["ext-1", "ext-2"]);
   });
 
   test("overlapping tools across extensions: deduplicated in the allowlist", async () => {
@@ -492,5 +494,39 @@ describe("executor mode.extensionIds → allowlist filter", () => {
     const names = nameSet(capturedAgentOpts.initialState.tools);
     expect(names.has("any_tool")).toBe(true);
     expect(getToolsForExtensionCalls).toEqual([]);
+  });
+
+  // Regression: filter-only is insufficient. The mode picker is useless
+  // unless setup-tools also INJECTS the attached extensions' tools into
+  // ctx.agentTools BEFORE the executor's allowlist filter runs. Without
+  // the wire step (setup-tools.ts:2c-mode), the filter intersects with
+  // tools that were never wired and the LLM ends up with only
+  // orchestration tools — which is exactly the bug the user reported.
+  test("wire-then-filter: mode.extensionIds tools are injected even when agent-config contributes nothing", async () => {
+    // Agent config has NO extension tools. The only way mode.extensionIds
+    // tools can reach ctx.agentTools is if setup-tools wires them.
+    agentToolsMap.set(agentConfigId, []);
+    extensionToolsMap.set("ext-mode-only", [
+      TOOL_DEF("mode_tool_alpha"),
+      TOOL_DEF("mode_tool_beta"),
+    ]);
+
+    const mode = await createMode({
+      name: "Mode-Only Wire",
+      slug: "mode-only-wire-" + Date.now(),
+      systemPromptInstruction: "Tools come exclusively from the mode.",
+      extensionIds: ["ext-mode-only"],
+    });
+
+    const { executor } = createExecutor();
+    await executor.streamChat(topConvId, "do something", {
+      projectId,
+      agentConfigId,
+      modeId: mode.id,
+    });
+
+    const names = nameSet(capturedAgentOpts.initialState.tools);
+    expect(names.has("mode_tool_alpha")).toBe(true);
+    expect(names.has("mode_tool_beta")).toBe(true);
   });
 });

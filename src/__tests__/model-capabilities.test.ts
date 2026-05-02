@@ -1,13 +1,17 @@
 import { test, expect, describe } from "bun:test";
 import {
   getCapabilities,
+  getCapabilitiesWithExtensions,
   isMimeAccepted,
   classifyMime,
+  classifyMimeWithCaps,
   IMAGE_MIMES,
   TEXT_MIMES,
   PDF_MIMES,
   AUDIO_MIMES,
 } from "../providers/model-capabilities";
+
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 describe("model-capabilities", () => {
   test("vision model (Claude) accepts images, text, and PDFs", () => {
@@ -70,5 +74,69 @@ describe("model-capabilities", () => {
     expect(classifyMime("application/pdf")).toBe("pdf");
     expect(classifyMime("audio/mpeg")).toBe("audio");
     expect(classifyMime("application/octet-stream")).toBeNull();
+  });
+
+  describe("getCapabilitiesWithExtensions", () => {
+    test("with no extension MIMEs returns the base capabilities unchanged", () => {
+      const base = getCapabilities("anthropic", "claude-3-5-sonnet-20241022");
+      const overlay = getCapabilitiesWithExtensions("anthropic", "claude-3-5-sonnet-20241022", []);
+      expect(overlay.acceptedMimeTypes).toEqual(base.acceptedMimeTypes);
+      expect(overlay.kinds).toEqual(base.kinds);
+      expect(overlay.kinds).not.toContain("extension-handle");
+      expect(overlay.deliveryFor["extension-handle"]).toBeUndefined();
+    });
+
+    test("supplied MIMEs are added with extension-handle-only delivery", () => {
+      const caps = getCapabilitiesWithExtensions("anthropic", "claude-3-5-sonnet-20241022", [XLSX_MIME]);
+      expect(caps.acceptedMimeTypes).toContain(XLSX_MIME);
+      expect(caps.kinds).toContain("extension-handle");
+      expect(caps.deliveryFor["extension-handle"]).toBe("extension-handle-only");
+      expect(isMimeAccepted(caps, XLSX_MIME)).toBe(true);
+    });
+
+    test("MIMEs already in the base allowlist are not downgraded to extension-handle", () => {
+      // image/png is already a native image MIME on Claude. Even if a
+      // misbehaving extension declares it, the base delivery wins.
+      const caps = getCapabilitiesWithExtensions("anthropic", "claude-3-5-sonnet-20241022", ["image/png"]);
+      expect(classifyMimeWithCaps(caps, "image/png")).toBe("image");
+      expect(caps.deliveryFor.image).toBe("native-image");
+    });
+
+    test("classifyMimeWithCaps returns extension-handle for overlay MIMEs", () => {
+      const caps = getCapabilitiesWithExtensions("anthropic", "claude-3-5-sonnet-20241022", [XLSX_MIME]);
+      expect(classifyMimeWithCaps(caps, XLSX_MIME)).toBe("extension-handle");
+      // Static whitelist still works through the same classifier.
+      expect(classifyMimeWithCaps(caps, "image/png")).toBe("image");
+      expect(classifyMimeWithCaps(caps, "application/pdf")).toBe("pdf");
+      expect(classifyMimeWithCaps(caps, "application/octet-stream")).toBeNull();
+    });
+
+    test("duplicate MIMEs in the extension list dedupe", () => {
+      const caps = getCapabilitiesWithExtensions(
+        "anthropic",
+        "claude-3-5-sonnet-20241022",
+        [XLSX_MIME, XLSX_MIME, "application/x-vnd-foo", XLSX_MIME],
+      );
+      const occurrences = caps.acceptedMimeTypes.filter((m) => m === XLSX_MIME);
+      expect(occurrences).toHaveLength(1);
+      expect(caps.acceptedMimeTypes).toContain("application/x-vnd-foo");
+    });
+
+    test("non-string entries in the extension MIME list are dropped", () => {
+      const caps = getCapabilitiesWithExtensions(
+        "anthropic",
+        "claude-3-5-sonnet-20241022",
+        ["", XLSX_MIME, null as unknown as string, undefined as unknown as string],
+      );
+      expect(caps.acceptedMimeTypes).toContain(XLSX_MIME);
+      expect(caps.acceptedMimeTypes).not.toContain("");
+    });
+
+    test("works on text-only models too — extension-handle is gated by capability, not modality", () => {
+      const caps = getCapabilitiesWithExtensions("my-custom-provider", "some-local-llm", [XLSX_MIME]);
+      expect(caps.kinds).not.toContain("image");
+      expect(caps.kinds).toContain("extension-handle");
+      expect(isMimeAccepted(caps, XLSX_MIME)).toBe(true);
+    });
   });
 });

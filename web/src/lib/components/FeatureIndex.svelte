@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from "svelte";
 	import { searchMentions } from "$lib/api";
+	import { debounce } from "$lib/components/ui/helpers";
 
 	/**
 	 * Per-project Feature Index settings UI.
@@ -279,13 +280,14 @@
 		}
 	}
 
-	async function refreshAddFileResults(featureId: string): Promise<void> {
-		addFileFeatureId = featureId;
-		const q = addFileQuery.trim();
-		if (!q) {
-			addFileResults = [];
-			return;
-		}
+	// Debounced via the shared helper to match the keystroke-rate
+	// pattern used by ChatInput / PanelChatInput / SharedFilePicker
+	// (200ms is the codebase standard — see ChatInput.svelte:486).
+	// Closes audit defect C10. The non-debounced sync entrypoint
+	// `_doRefreshAddFileResults` is kept inline so the empty-query
+	// reset path (clear results immediately) doesn't fire after a
+	// debounce delay — only the network call is rate-limited.
+	const _doRefreshAddFileResults = async (featureId: string, q: string): Promise<void> => {
 		try {
 			// Reuse the @[file:…] autocomplete — same project-scoped
 			// filesystem walker, same symlink-escape rules.
@@ -293,6 +295,19 @@
 		} catch {
 			addFileResults = [];
 		}
+	};
+	const debouncedFetchAddFileResults = debounce(_doRefreshAddFileResults, 200);
+
+	function refreshAddFileResults(featureId: string): void {
+		addFileFeatureId = featureId;
+		const q = addFileQuery.trim();
+		if (!q) {
+			// Empty query clears immediately (no debounce) — stale
+			// results would briefly flash when the user backspaces.
+			addFileResults = [];
+			return;
+		}
+		debouncedFetchAddFileResults(featureId, q);
 	}
 
 	$effect(() => {

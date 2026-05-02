@@ -8,7 +8,7 @@
 		 * descended folder view — selecting it commits the current folder as
 		 * a `@[dir:…]` token instead of descending further.
 		 */
-		kind: 'agent' | 'extension' | 'team' | 'file' | 'dir' | 'dir-target' | 'command';
+		kind: 'agent' | 'extension' | 'team' | 'file' | 'dir' | 'dir-target' | 'command' | 'feature';
 		/**
 		 * For `command` kind: origin namespace, e.g. `"project:claude-commands"`,
 		 * `"user:codex-prompts"`, `"user:db"`. Rendered as a scope + folder

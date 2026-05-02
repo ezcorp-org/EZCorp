@@ -5,6 +5,7 @@
 	import { updateProject, deleteProject as apiDeleteProject, fetchSettings, upsertSetting } from "$lib/api.js";
 	import ProjectForm from "$lib/components/ProjectForm.svelte";
 	import InfoTooltip from "$lib/components/InfoTooltip.svelte";
+	import FeatureIndex from "$lib/components/FeatureIndex.svelte";
 
 	let submitting = $state(false);
 	let globalPrompt = $state("");
@@ -93,6 +94,16 @@
 			</div>
 			<ProjectForm {project} onsubmit={handleUpdate} {submitting} />
 		</div>
+		<!-- Feature Index -->
+		<div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-6">
+			<p class="mb-3 text-xs text-[var(--color-text-secondary)]">
+				Buckets of related files. Mention them in chat with <code>$[feature:name]</code> — the assistant
+				gets a system note listing the feature's files. Run <strong>Scan features</strong> to auto-populate
+				from this project's source roots; user-pinned files survive every rescan.
+			</p>
+			<FeatureIndex projectId={project.id} />
+		</div>
+
 		<!-- Project Custom Instructions -->
 		<div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-6">
 			<h3 class="mb-1 text-lg font-semibold text-[var(--color-text-primary)] flex items-center gap-2">Project Custom Instructions <InfoTooltip text="A system prompt applied to every conversation within this project. Overrides global custom instructions. Can itself be overridden by conversation-level instructions set on individual chats. Priority: conversation > project > global." /></h3>

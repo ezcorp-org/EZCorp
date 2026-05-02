@@ -11,7 +11,7 @@
 		tooltip,
 	}: {
 		name: string;
-		kind: 'agent' | 'extension' | 'team' | 'file' | 'dir' | 'command';
+		kind: 'agent' | 'extension' | 'team' | 'file' | 'dir' | 'command' | 'feature';
 		status?: 'pending' | 'running' | 'complete' | 'error';
 		onclick?: () => void;
 		stretch?: boolean;
@@ -56,6 +56,7 @@
 
 	let isPath = $derived(kind === 'file' || kind === 'dir');
 	let isCommand = $derived(kind === 'command');
+	let isFeature = $derived(kind === 'feature');
 
 	// File / dir chips show the basename in the pill; full path goes into the
 	// tooltip. Dir chips append a trailing `/` so folders are visually distinct
@@ -67,8 +68,8 @@
 	});
 
 	// Sigil prefix matches the stored token syntax: `!` for agent/ext/team,
-	// `@` for file/dir (path kinds), `/` for commands.
-	let sigil = $derived(isPath ? '@' : isCommand ? '/' : '!');
+	// `@` for file/dir (path kinds), `/` for commands, `$` for feature.
+	let sigil = $derived(isPath ? '@' : isCommand ? '/' : isFeature ? '$' : '!');
 
 	// For path chips (file/dir), always surface the full relative path on
 	// hover even without an explicit tooltip prop.

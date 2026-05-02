@@ -342,7 +342,7 @@
 					aria-hidden="true"
 				>
 					{#each segments as seg}
-						{#if seg.type === 'text'}{seg.text}{:else if seg.type === 'mention'}<span class="relative inline"><span class="invisible">{seg.raw}</span><span class="absolute inset-0 flex items-center"><MentionChip name={seg.name} kind={seg.kind === 'ext' ? 'extension' : seg.kind === 'cmd' ? 'command' : seg.kind as 'agent' | 'team' | 'file' | 'dir'} stretch /></span></span>{/if}
+						{#if seg.type === 'text'}{seg.text}{:else if seg.type === 'mention'}<span class="relative inline"><span class="invisible">{seg.raw}</span><span class="absolute inset-0 flex items-center"><MentionChip name={seg.name} kind={seg.kind === 'ext' ? 'extension' : seg.kind === 'cmd' ? 'command' : seg.kind as 'agent' | 'team' | 'file' | 'dir' | 'feature'} stretch /></span></span>{/if}
 					{/each}
 				</div>
 			</div>

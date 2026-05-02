@@ -774,7 +774,7 @@
 							aria-hidden="true"
 						>
 							{#each segments as seg}
-								{#if seg.type === 'text'}{seg.text}{:else if seg.type === 'mention'}<span class="pointer-events-auto relative inline"><span class="invisible">{seg.raw}</span><span class="absolute inset-0 flex items-center"><MentionChip name={seg.name} kind={seg.kind === 'ext' ? 'extension' : seg.kind === 'cmd' ? 'command' : seg.kind as 'agent' | 'team' | 'file' | 'dir'} status={seg.kind === 'ext' ? getExtensionStatus(seg.name) : undefined} onclick={seg.kind === 'ext' ? () => handleChipClick(seg.name) : undefined} stretch /></span></span>{/if}
+								{#if seg.type === 'text'}{seg.text}{:else if seg.type === 'mention'}<span class="pointer-events-auto relative inline"><span class="invisible">{seg.raw}</span><span class="absolute inset-0 flex items-center"><MentionChip name={seg.name} kind={seg.kind === 'ext' ? 'extension' : seg.kind === 'cmd' ? 'command' : seg.kind as 'agent' | 'team' | 'file' | 'dir' | 'feature'} status={seg.kind === 'ext' ? getExtensionStatus(seg.name) : undefined} onclick={seg.kind === 'ext' ? () => handleChipClick(seg.name) : undefined} stretch /></span></span>{/if}
 							{/each}
 						</div>
 					</div>

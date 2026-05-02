@@ -78,6 +78,33 @@
 		);
 	});
 
+	/**
+	 * Read a fetch Response that's already known to be non-OK and turn
+	 * it into a single user-readable string. Surfaces field-level
+	 * validation messages (the `fields` payload from
+	 * `validationError()`) ahead of the generic top-level `error`,
+	 * because a Zod regex message ("Feature name can only contain
+	 * letters, numbers…") is what the user actually needs to see —
+	 * "Validation failed" alone is useless.
+	 *
+	 * Falls back to the generic error or the HTTP status when the body
+	 * doesn't have either field.
+	 */
+	async function readError(res: Response, fallback: string): Promise<string> {
+		const body = (await res.json().catch(() => ({}))) as {
+			error?: string;
+			fields?: Record<string, string>;
+		};
+		if (body.fields && Object.keys(body.fields).length > 0) {
+			// Sort field names for stable display when multiple fields fail.
+			return Object.entries(body.fields)
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, msg]) => msg)
+				.join(" ");
+		}
+		return body.error ?? `${fallback} (HTTP ${res.status})`;
+	}
+
 	async function fetchFeatures(): Promise<void> {
 		loading = features.length === 0;
 		try {
@@ -106,8 +133,7 @@
 					message: `Scan complete — ${features.length} ${features.length === 1 ? "feature" : "features"}`,
 				});
 			} else {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				errorMessage = body.error ?? `Scan failed (HTTP ${res.status})`;
+				errorMessage = await readError(res, "Scan failed");
 				addToast({ type: "error", message: errorMessage });
 			}
 		} catch (e) {
@@ -139,8 +165,7 @@
 				newFeatureDescription = "";
 				newFeatureOpen = false;
 			} else {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				errorMessage = body.error ?? `Create failed (HTTP ${res.status})`;
+				errorMessage = await readError(res, "Create failed");
 			}
 		} catch (e) {
 			errorMessage = `Create failed: ${String(e)}`;
@@ -177,8 +202,7 @@
 					.map((x) => (x.id === f.id ? { ...x, ...updated } : x))
 					.sort((a, b) => a.name.localeCompare(b.name));
 			} else {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				errorMessage = body.error ?? `Save failed (HTTP ${res.status})`;
+				errorMessage = await readError(res, "Save failed");
 			}
 		} catch (e) {
 			errorMessage = `Save failed: ${String(e)}`;
@@ -198,8 +222,7 @@
 				features = features.filter((x) => x.id !== f.id);
 				if (expandedId === f.id) expandedId = null;
 			} else {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				errorMessage = body.error ?? `Delete failed (HTTP ${res.status})`;
+				errorMessage = await readError(res, "Delete failed");
 			}
 		} catch (e) {
 			errorMessage = `Delete failed: ${String(e)}`;
@@ -254,8 +277,7 @@
 					x.id === featureId ? { ...x, ...updated, files: updated.files } : x,
 				);
 			} else {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				errorMessage = body.error ?? `Remove failed (HTTP ${res.status})`;
+				errorMessage = await readError(res, "Remove failed");
 			}
 		} catch (e) {
 			errorMessage = `Remove failed: ${String(e)}`;
@@ -276,8 +298,7 @@
 					x.id === featureId ? { ...x, ...updated, files: updated.files } : x,
 				);
 			} else {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				errorMessage = body.error ?? `Add failed (HTTP ${res.status})`;
+				errorMessage = await readError(res, "Add failed");
 			}
 		} catch (e) {
 			errorMessage = `Add failed: ${String(e)}`;

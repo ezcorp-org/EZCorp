@@ -277,6 +277,87 @@ describe("POST /api/projects/:id/features", () => {
   });
 });
 
+// ── PATCH /api/projects/:id/features/:featureId — VALIDATION MESSAGES
+// ── Locks the user-facing schema messages so a future refactor can't
+// ── silently regress them to Zod's defaults ("Invalid"). The UI
+// ── surfaces these through the `fields` payload of validationError().
+
+describe("PATCH /api/projects/:id/features/:featureId — validation messages", () => {
+  test("rename with a space returns an actionable name-field message (not bare 'Invalid')", async () => {
+    const seeded = await createFeature({
+      projectId,
+      name: "agent-feat",
+      description: "",
+      source: "agent",
+    });
+
+    const res = await call(
+      PATCH,
+      createMockEvent({
+        method: "PATCH",
+        params: { id: projectId, featureId: seeded.id },
+        body: { name: "has a space" },
+        user: MEMBER_USER,
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await jsonFromResponse(res)) as {
+      error?: string;
+      fields?: Record<string, string>;
+    };
+    expect(body.error).toBe("Validation failed");
+    expect(body.fields).toBeDefined();
+    expect(body.fields!.name).toContain("letters, numbers, hyphens, and underscores");
+    // Anti-regression: the bare default Zod message "Invalid" must not
+    // surface here; the user needs to know what the rule actually is.
+    expect(body.fields!.name).not.toBe("Invalid");
+  });
+
+  test("create with a space in the name returns the same actionable message", async () => {
+    const res = await call(
+      POST_create,
+      createMockEvent({
+        method: "POST",
+        params: { id: projectId },
+        body: { name: "spaces not allowed" },
+        user: MEMBER_USER,
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await jsonFromResponse(res)) as {
+      fields?: Record<string, string>;
+    };
+    expect(body.fields!.name).toContain("letters, numbers, hyphens, and underscores");
+  });
+
+  test("empty PATCH body returns the actionable refine message naming the legal fields", async () => {
+    const seeded = await createFeature({
+      projectId,
+      name: "another-feat",
+      description: "",
+      source: "agent",
+    });
+
+    const res = await call(
+      PATCH,
+      createMockEvent({
+        method: "PATCH",
+        params: { id: projectId, featureId: seeded.id },
+        body: {},
+        user: MEMBER_USER,
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await jsonFromResponse(res)) as {
+      fields?: Record<string, string>;
+    };
+    // Refine messages live under the empty path "" because no specific
+    // field failed — the whole object did.
+    const messages = Object.values(body.fields ?? {});
+    expect(messages.some((m) => m.includes("name, description, addFiles, or removeFiles"))).toBe(true);
+  });
+});
+
 // ── PATCH /api/projects/:id/features/:featureId — SOURCE-FLIP POLICY
 // ── (the four explicit cases PM called out)
 

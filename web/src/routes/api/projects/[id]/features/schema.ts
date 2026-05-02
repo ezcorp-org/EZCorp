@@ -14,6 +14,8 @@ import { z } from "zod";
  */
 
 const SLUG_RE = /^[a-z0-9_-]+$/i;
+const SLUG_MESSAGE =
+  "Feature name can only contain letters, numbers, hyphens, and underscores — no spaces or other punctuation.";
 // relpath: project-relative POSIX path. Reject leading `/` (absolute) and
 // reject `..` ONLY when it appears as a path segment — bounded by `/` or
 // the string boundaries. The previous `(?!.*\.\.)` rejected any two
@@ -27,8 +29,15 @@ const SLUG_RE = /^[a-z0-9_-]+$/i;
 const RELPATH_RE = /^(?!\/)(?!.*(?:^|\/)\.\.(?:$|\/)).+$/;
 
 export const createFeatureSchema = z.object({
-  name: z.string().min(1).max(120).regex(SLUG_RE, "name must be alphanumeric with hyphens/underscores"),
-  description: z.string().max(2000).optional(),
+  name: z
+    .string()
+    .min(1, "Feature name is required.")
+    .max(120, "Feature name must be 120 characters or fewer.")
+    .regex(SLUG_RE, SLUG_MESSAGE),
+  description: z
+    .string()
+    .max(2000, "Description must be 2000 characters or fewer.")
+    .optional(),
 });
 
 /**
@@ -43,10 +52,33 @@ export const createFeatureSchema = z.object({
  */
 export const updateFeatureSchema = z
   .object({
-    name: z.string().min(1).max(120).regex(SLUG_RE).optional(),
-    description: z.string().max(2000).optional(),
-    addFiles: z.array(z.string().min(1).max(2000).regex(RELPATH_RE)).max(500).optional(),
-    removeFiles: z.array(z.string().min(1).max(2000)).max(500).optional(),
+    name: z
+      .string()
+      .min(1, "Feature name is required.")
+      .max(120, "Feature name must be 120 characters or fewer.")
+      .regex(SLUG_RE, SLUG_MESSAGE)
+      .optional(),
+    description: z
+      .string()
+      .max(2000, "Description must be 2000 characters or fewer.")
+      .optional(),
+    addFiles: z
+      .array(
+        z
+          .string()
+          .min(1, "File path cannot be empty.")
+          .max(2000, "File path must be 2000 characters or fewer.")
+          .regex(
+            RELPATH_RE,
+            "File path must be project-relative (no leading slash) and contain no `..` segments.",
+          ),
+      )
+      .max(500, "Cannot add more than 500 files in one request.")
+      .optional(),
+    removeFiles: z
+      .array(z.string().min(1, "File path cannot be empty.").max(2000))
+      .max(500, "Cannot remove more than 500 files in one request.")
+      .optional(),
   })
   .refine(
     (data) =>
@@ -54,5 +86,5 @@ export const updateFeatureSchema = z
       data.description !== undefined ||
       (data.addFiles && data.addFiles.length > 0) ||
       (data.removeFiles && data.removeFiles.length > 0),
-    { message: "at least one of name/description/addFiles/removeFiles is required" },
+    { message: "Provide at least one field to change: name, description, addFiles, or removeFiles." },
   );

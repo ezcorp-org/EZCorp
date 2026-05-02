@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { fuzzyScore, fuzzyMatches } from "../lib/fuzzy-match";
+import { fuzzyScore, fuzzyMatches, bestFuzzyScore } from "../lib/fuzzy-match";
 
 describe("fuzzyScore — basics", () => {
 	test("empty query returns 0 (neutral match)", () => {
@@ -158,5 +158,31 @@ describe("fuzzyMatches convenience", () => {
 
 	test("returns false for non-matches", () => {
 		expect(fuzzyMatches("xyz", "foo.ts")).toBe(false);
+	});
+});
+
+describe("bestFuzzyScore", () => {
+	test("returns null when every input is null", () => {
+		expect(bestFuzzyScore([null, null, null])).toBeNull();
+		expect(bestFuzzyScore([])).toBeNull();
+	});
+
+	test("ignores nulls, returns the max of the rest", () => {
+		expect(bestFuzzyScore([null, 5, null, 10, 7])).toBe(10);
+		expect(bestFuzzyScore([null, -3, null])).toBe(-3);
+	});
+
+	test("returns the single non-null value when only one is present", () => {
+		expect(bestFuzzyScore([null, 42, null])).toBe(42);
+	});
+
+	test("handles all-non-null inputs", () => {
+		expect(bestFuzzyScore([1, 2, 3])).toBe(3);
+		expect(bestFuzzyScore([100, 50, 75])).toBe(100);
+	});
+
+	test("preserves zero scores (empty-query neutral match)", () => {
+		expect(bestFuzzyScore([0, null])).toBe(0);
+		expect(bestFuzzyScore([null, 0, null])).toBe(0);
 	});
 });

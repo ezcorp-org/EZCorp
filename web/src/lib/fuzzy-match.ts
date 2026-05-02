@@ -65,3 +65,21 @@ export function fuzzyScore(query: string, target: string): number | null {
 export function fuzzyMatches(query: string, target: string): boolean {
 	return fuzzyScore(query, target) !== null;
 }
+
+/**
+ * Take the maximum non-null score from a list of fuzzy-score results,
+ * or `null` if every input is null. Used by search endpoints that
+ * fuzzy-match against multiple fields per row (e.g. name + description)
+ * and want to rank by the best of any field.
+ *
+ * Replaces ad-hoc chained ternaries that grew hard to read once the
+ * field count exceeded two (audit defect C9 close-out).
+ */
+export function bestFuzzyScore(scores: ReadonlyArray<number | null>): number | null {
+	let best: number | null = null;
+	for (const s of scores) {
+		if (s === null) continue;
+		if (best === null || s > best) best = s;
+	}
+	return best;
+}

@@ -8,7 +8,7 @@ import { eq, and, or, ilike } from "drizzle-orm";
 import { realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import * as projectQueries from "$server/db/queries/projects";
-import { fuzzyScore } from "$lib/fuzzy-match";
+import { fuzzyScore, bestFuzzyScore } from "$lib/fuzzy-match";
 import {
 	EXCLUDED_DIR_NAMES,
 	listFilteredChildren,
@@ -183,14 +183,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 		const scored: Array<{ c: typeof cmds[number]; score: number }> = [];
 		for (const c of cmds) {
-			const nameScore = fuzzyScore(q, c.name);
-			const descScore = fuzzyScore(q, c.description);
-			const best =
-				nameScore !== null && descScore !== null
-					? Math.max(nameScore, descScore)
-					: nameScore !== null
-					? nameScore
-					: descScore;
+			const best = bestFuzzyScore([fuzzyScore(q, c.name), fuzzyScore(q, c.description)]);
 			if (best !== null) scored.push({ c, score: best });
 		}
 		scored.sort((a, b) => b.score - a.score);
@@ -220,17 +213,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 		const matched = q
 			? features
-					.map((f) => {
-						const nameScore = fuzzyScore(q, f.name);
-						const descScore = fuzzyScore(q, f.description);
-						const best =
-							nameScore !== null && descScore !== null
-								? Math.max(nameScore, descScore)
-								: nameScore !== null
-								? nameScore
-								: descScore;
-						return { f, score: best };
-					})
+					.map((f) => ({
+						f,
+						score: bestFuzzyScore([fuzzyScore(q, f.name), fuzzyScore(q, f.description)]),
+					}))
 					.filter((x): x is { f: typeof features[number]; score: number } => x.score !== null)
 					.sort((a, b) => b.score - a.score)
 					.map((x) => x.f)

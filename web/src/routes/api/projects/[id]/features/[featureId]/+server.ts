@@ -123,6 +123,25 @@ export const PATCH: RequestHandler = async ({ request, params, locals }) => {
     });
   }
 
+  // **addFiles** semantics (audit C8 documentation):
+  // The endpoint accepts ANY relpath that passes the schema's
+  // `RELPATH_RE` validation (no leading `/`, no `..` as a path
+  // segment). It does NOT verify the file actually exists on disk.
+  //
+  // This is intentional. Two valid use cases require the loose
+  // semantics:
+  //   1. The user pins a file they're about to create (`agents/new.md`)
+  //      so the LLM knows where to put it.
+  //   2. A previously-pinned file gets deleted from the FS but the
+  //      pin survives — letting the user clean it up later via the
+  //      settings UI rather than losing the entry silently.
+  //
+  // Cost: a typo'd path becomes a ghost entry in the feature's system
+  // note. The LLM tries to read it, gets ENOENT, and either complains
+  // or moves on — discoverable feedback rather than silent corruption.
+  // No security impact (the path went through validatePath-equivalent
+  // schema validation; FS access happens from the LLM's tool calls
+  // which have their own auth).
   if (data.addFiles && data.addFiles.length > 0) {
     for (const relpath of data.addFiles) {
       await featureQueries.addUserFile(params.featureId, relpath);
@@ -138,6 +157,15 @@ export const PATCH: RequestHandler = async ({ request, params, locals }) => {
   // Re-load via getFeature so the response includes the updated file
   // list (post add/remove). This is one round trip — listFeatures
   // would over-fetch the whole project.
+  //
+  // **Read-after-write skew note** (audit C4 documentation):
+  // The re-read may surface state mutated by a concurrent PATCH on
+  // the same row. The endpoint then echoes a row that includes the
+  // sibling's mutations as if they were the caller's. In practice
+  // this is rare — PATCHes are user-initiated and the UI is
+  // single-row inline-edit. If multi-client edit ever becomes a
+  // concern, the queries already `.returning()` their writes; the
+  // endpoint would echo the merged local-write result instead.
   const updated = await featureQueries.getFeature(
     params.id,
     data.name ?? existing.name,

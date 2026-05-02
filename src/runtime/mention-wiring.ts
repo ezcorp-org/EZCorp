@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { parseMentions } from "../../web/src/lib/mention-logic";
+import { parseMentions, STRUCTURED_NAME_CHAR_CLASS } from "../../web/src/lib/mention-logic";
 import { getExtensionsByNames } from "../db/queries/extensions";
 import { getAgentConfigsByNames, getAgentConfigsByIds } from "../db/queries/agent-configs";
 import { getConversationExtensionIds, addConversationExtensions } from "../db/queries/conversation-extensions";
@@ -176,15 +176,20 @@ export type FeatureResolver = (
  * piggy-backing on `parseMentions` from web/src/lib/mention-logic.ts)
  * so this module's expansion is decoupled from the front-end picker
  * wiring — `applyFeatureExpansion` works correctly even before the
- * composer regex grows the `$` sigil. The two will agree once
- * mention-logic.ts is updated, but feature-expansion correctness does
- * not depend on it.
+ * composer regex grows the `$` sigil. The two will agree at every
+ * point in time because the name char class is sourced from the
+ * shared `STRUCTURED_NAME_CHAR_CLASS` constant in mention-logic.ts
+ * (audit defect C12 close-out — eliminates the drift risk between
+ * MENTION_REGEX and this regex).
  *
- * `[^\]]+` matches any non-`]` chars; the parser strips whitespace and
- * skips empty names. The `g` flag is ON via the local copy in the loop
- * — the exported `source` is reusable.
+ * The shared char class matches any non-`]` chars; the parser strips
+ * whitespace and skips empty names. The `g` flag is ON via the local
+ * copy in the loop — the exported `source` is reusable.
  */
-export const FEATURE_TOKEN_RE = /\$\[feature:([^\]]+)\]/g;
+export const FEATURE_TOKEN_RE = new RegExp(
+  `\\$\\[feature:(${STRUCTURED_NAME_CHAR_CLASS})\\]`,
+  "g",
+);
 
 /**
  * Expand `$[feature:<name>]` tokens in `userMessage` into a system-note

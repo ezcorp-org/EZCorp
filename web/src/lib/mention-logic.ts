@@ -14,6 +14,24 @@
  *      src/runtime/mention-wiring.ts::applyFeatureExpansion.)
  */
 
+/**
+ * Char class for the `name` portion inside any `<sigil>[<kind>:<name>]`
+ * structured token. Single source of truth so the final-token regex
+ * (`MENTION_REGEX` below) and the server-side feature-expansion
+ * regex (`src/runtime/mention-wiring.ts::FEATURE_TOKEN_RE`) cannot
+ * drift. If we ever extend the allowed name characters (e.g. allow `:`
+ * inside namespaced feature names), updating this constant updates
+ * every downstream consumer at once.
+ *
+ * NOTE: the LIVE-TRIGGER regexes (BANG_TRIGGER_RE / AT_TRIGGER_RE /
+ * SLASH_TRIGGER_RE / DOLLAR_TRIGGER_RE below) are deliberately
+ * decoupled from this constant — they're matching the raw "user is
+ * typing" sequence, not the final structured token, and have their
+ * own constraints (e.g. DOLLAR_TRIGGER_RE rejects digit-leading tails
+ * to dodge the `$5.00` false-positive — see comment there).
+ */
+export const STRUCTURED_NAME_CHAR_CLASS = "[^\\]]+";
+
 // Structured token regex: matches `![kind:name]` (kind ∈ agent/ext/team),
 // `@[file|dir:name]`, `/[cmd:name]`, or `$[feature:name]`. The four sigils
 // are mutually exclusive at the trigger layer.
@@ -26,7 +44,15 @@
 //   6 = name  when the / alternative matches
 //   7 = kind  (feature)          when the $ alternative matches
 //   8 = name  when the $ alternative matches
-export const MENTION_REGEX = /!\[(agent|ext|team):([^\]]+)\]|@\[(file|dir):([^\]]+)\]|\/\[(cmd):([^\]]+)\]|\$\[(feature):([^\]]+)\]/g;
+export const MENTION_REGEX = new RegExp(
+	[
+		`!\\[(agent|ext|team):(${STRUCTURED_NAME_CHAR_CLASS})\\]`,
+		`@\\[(file|dir):(${STRUCTURED_NAME_CHAR_CLASS})\\]`,
+		`\\/\\[(cmd):(${STRUCTURED_NAME_CHAR_CLASS})\\]`,
+		`\\$\\[(feature):(${STRUCTURED_NAME_CHAR_CLASS})\\]`,
+	].join("|"),
+	"g",
+);
 
 export type MentionKind = "agent" | "ext" | "team" | "file" | "dir" | "cmd" | "feature";
 

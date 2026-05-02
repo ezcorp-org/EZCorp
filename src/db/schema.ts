@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, real, serial, bigint, boolean, index, vector } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, integer, real, serial, bigint, boolean, index, primaryKey, vector } from "drizzle-orm/pg-core";
 import type { PipelineStep } from "../types";
 import type { MemoryProvenance } from "../memory/types";
 import { EMBEDDING_DIMENSIONS } from "../memory/types";
@@ -93,7 +93,7 @@ export const messageAttachments = pgTable("message_attachments", {
   mimeType: text("mime_type").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   storagePath: text("storage_path").notNull(),
-  kind: text("kind").notNull().$type<"image" | "text" | "pdf" | "audio">(),
+  kind: text("kind").notNull().$type<"image" | "text" | "pdf" | "audio" | "extension-handle">(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("idx_msg_attachments_message").on(table.messageId),
@@ -601,3 +601,49 @@ export const ezDrafts = pgTable("ez_drafts", {
 
 export type EzDraft = typeof ezDrafts.$inferSelect;
 export type NewEzDraft = typeof ezDrafts.$inferInsert;
+
+// ── Feature Index (per-project) ────────────────────────────────────
+// Project-scoped registry of "features" (named buckets of associated
+// files). Drives the `$[feature:name]` mention sigil in chat — the
+// composer picker queries this table, and the server-side prompt
+// builder expands the mention into a system note listing the files.
+//
+// `source` columns are LOAD-BEARING for hybrid ownership:
+//  - `features.source` ∈ {'user', 'agent'}: rescans only upsert
+//    'agent'-sourced rows; user-created (or user-renamed) rows are
+//    untouched. PATCH on an 'agent' row flips it to 'user' so the
+//    next scan won't clobber the rename.
+//  - `featureFiles.source` ∈ {'user', 'scan'}: replaceAgentFiles()
+//    only deletes/reinserts 'scan' rows; 'user'-pinned files survive.
+//
+// See docs/plans/2026-05-01-feature-index-design.md.
+
+export const features = pgTable("features", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  source: text("source").notNull().default("user").$type<"user" | "agent">(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("idx_features_project").on(table.projectId),
+  // Slug uniqueness is per-project, enforced by a partial-free unique
+  // index on (project_id, name); declared as a UNIQUE constraint in
+  // migrate.ts so PGlite + external Postgres both accept it.
+]);
+
+export const featureFiles = pgTable("feature_files", {
+  featureId: text("feature_id").notNull().references(() => features.id, { onDelete: "cascade" }),
+  relpath: text("relpath").notNull(),
+  source: text("source").notNull().default("scan").$type<"user" | "scan">(),
+  addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.featureId, table.relpath] }),
+  index("idx_feature_files_feature").on(table.featureId),
+]);
+
+export type Feature = typeof features.$inferSelect;
+export type NewFeature = typeof features.$inferInsert;
+export type FeatureFile = typeof featureFiles.$inferSelect;
+export type NewFeatureFile = typeof featureFiles.$inferInsert;

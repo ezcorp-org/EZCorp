@@ -932,4 +932,34 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
     ) src
     WHERE tool_calls.id = src.tc_id
   `);
+
+  // ── Feature Index (per-project) ───────────────────────────────────
+  // See src/db/migrations/add-feature-index.ts for the rationale.
+  // Tables drive the `$[feature:name]` mention sigil and the per-project
+  // settings page. `source` columns are load-bearing: user edits + pins
+  // survive rescans (enforced in src/db/queries/features.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS features (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'user',
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      UNIQUE(project_id, name)
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_features_project ON features(project_id)`);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS feature_files (
+      feature_id TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+      relpath TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'scan',
+      added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (feature_id, relpath)
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_feature_files_feature ON feature_files(feature_id)`);
 }

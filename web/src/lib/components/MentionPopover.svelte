@@ -15,6 +15,12 @@
 		 * badge so users can tell where the command was loaded from.
 		 */
 		source?: string;
+		/**
+		 * For `feature` kind: number of files in the bucket (union of
+		 * `source='scan'` + `source='user'` rows). Rendered as a "(N files)"
+		 * suffix so users can scan-pick at a glance.
+		 */
+		fileCount?: number;
 	};
 </script>
 
@@ -54,6 +60,7 @@
 	let agents = $derived(items.filter((i) => i.kind === 'agent'));
 	let extensions = $derived(items.filter((i) => i.kind === 'extension'));
 	let commands = $derived(items.filter((i) => i.kind === 'command'));
+	let features = $derived(items.filter((i) => i.kind === 'feature'));
 	let dirs = $derived(items.filter((i) => i.kind === 'dir'));
 	let files = $derived(items.filter((i) => i.kind === 'file'));
 
@@ -76,10 +83,16 @@
 	);
 
 	// `dir-target` always leads the list so the commit action is the most
-	// prominent thing when the user is in a descended view.
+	// prominent thing when the user is in a descended view. `commands` and
+	// `features` (the `/` and `$` sigils) sit at the top because they're
+	// activated by their own dedicated sigil and never coexist with other
+	// kinds in `items` — keyboard-nav still needs a deterministic order
+	// for offset arithmetic, but in practice each $-trigger or /-trigger
+	// produces a single homogeneous group.
 	let flatItems = $derived([
 		...dirTarget,
 		...commands,
+		...features,
 		...teams,
 		...agents,
 		...extensions,
@@ -220,12 +233,44 @@
 					{/each}
 				{/if}
 
+				{#if features.length > 0}
+					<div class="px-2 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
+						Features
+					</div>
+					{#each features as item, i}
+						{@const idx = dirTarget.length + commands.length + i}
+						<button
+							id="mention-item-{idx}"
+							role="option"
+							aria-selected={idx === highlightedIndex}
+							class="flex w-full flex-col gap-0.5 px-4 py-2 text-left transition-colors border-l-2 border-emerald-500/60 {idx === highlightedIndex
+								? 'bg-[var(--color-surface-tertiary)]'
+								: 'hover:bg-[var(--color-surface-tertiary)]/50'}"
+							onclick={() => onselect(item)}
+							onmouseenter={() => (highlightedIndex = idx)}
+						>
+							<div class="flex items-baseline gap-2">
+								<span class="text-sm font-medium text-emerald-300">${item.name}</span>
+								{#if typeof item.fileCount === "number"}
+									<span
+										class="shrink-0 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1 py-0 text-[10px] font-normal tracking-wide text-emerald-200/90"
+										title="{item.fileCount} file{item.fileCount === 1 ? "" : "s"} in this feature"
+									>
+										{item.fileCount} {item.fileCount === 1 ? "file" : "files"}
+									</span>
+								{/if}
+							</div>
+							<span class="truncate text-xs text-[var(--color-text-muted)]">{item.description || "—"}</span>
+						</button>
+					{/each}
+				{/if}
+
 				{#if teams.length > 0}
 					<div class="px-2 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
 						Teams
 					</div>
 					{#each teams as item, i}
-						{@const idx = dirTarget.length + commands.length + i}
+						{@const idx = dirTarget.length + commands.length + features.length + i}
 						<button
 							id="mention-item-{idx}"
 							role="option"
@@ -247,7 +292,7 @@
 						Agents
 					</div>
 					{#each agents as item, i}
-						{@const idx = dirTarget.length + commands.length + teams.length + i}
+						{@const idx = dirTarget.length + commands.length + features.length + teams.length + i}
 						<button
 							id="mention-item-{idx}"
 							role="option"
@@ -269,7 +314,7 @@
 						Extensions
 					</div>
 					{#each extensions as item, i}
-						{@const idx = dirTarget.length + commands.length + teams.length + agents.length + i}
+						{@const idx = dirTarget.length + commands.length + features.length + teams.length + agents.length + i}
 						<button
 							id="mention-item-{idx}"
 							role="option"
@@ -291,7 +336,7 @@
 						Folders
 					</div>
 					{#each dirs as item, i}
-						{@const idx = dirTarget.length + commands.length + teams.length + agents.length + extensions.length + i}
+						{@const idx = dirTarget.length + commands.length + features.length + teams.length + agents.length + extensions.length + i}
 						<button
 							id="mention-item-{idx}"
 							role="option"
@@ -314,7 +359,7 @@
 						Files
 					</div>
 					{#each files as item, i}
-						{@const idx = dirTarget.length + commands.length + teams.length + agents.length + extensions.length + dirs.length + i}
+						{@const idx = dirTarget.length + commands.length + features.length + teams.length + agents.length + extensions.length + dirs.length + i}
 						<button
 							id="mention-item-{idx}"
 							role="option"

@@ -481,6 +481,7 @@
 					description: r.description,
 					kind: r.kind,
 					source: r.source,
+					fileCount: r.fileCount,
 				}));
 			} catch {
 				mentionItems = [];

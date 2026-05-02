@@ -60,6 +60,39 @@ export interface MockOverrides {
 	 * description.
 	 */
 	commands?: Array<{ name: string; description: string; source?: string; body?: string }>;
+	/**
+	 * Feature Index entries returned by the per-project /features endpoints.
+	 * Each entry is a Feature row WITHOUT files (file rows live on
+	 * `featureFiles` keyed by featureId). The mock supports GET (list),
+	 * POST (create), PATCH (rename / edit / add+remove files with the
+	 * source-flip policy), DELETE (cascade), POST /scan (returns the
+	 * "after" list — the spec drives the post-scan state directly), and
+	 * the `/api/mentions/search?type=feature` branch.
+	 */
+	features?: Array<{
+		id: string;
+		projectId: string;
+		name: string;
+		description: string;
+		source: "user" | "agent";
+		fileCount?: number;
+	}>;
+	/** Pre-populated feature_files keyed by featureId. */
+	featureFiles?: Record<string, Array<{ relpath: string; source: "user" | "scan" }>>;
+	/**
+	 * Optional override for what `POST /scan` returns. When present, the
+	 * scan handler returns this verbatim (replacing the in-memory feature
+	 * list); use it to drive the "rescan invariant" specs that need a
+	 * specific post-scan shape (e.g. user-renamed feature still present).
+	 */
+	scanResult?: Array<{
+		id: string;
+		projectId: string;
+		name: string;
+		description: string;
+		source: "user" | "agent";
+		fileCount?: number;
+	}>;
 	/** Override specific routes: URL pattern -> handler */
 	routes?: Record<string, (url: URL) => unknown>;
 	/**
@@ -125,6 +158,40 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 	const subConversationToolCalls = overrides.subConversationToolCalls ?? {};
 	const settings = overrides.settings ?? {};
 	const routes = overrides.routes ?? {};
+
+	// Feature Index — mutable in-memory state so PATCH / DELETE / POST
+	// reflect through subsequent GETs. `scanResult` overrides the post-scan
+	// state for specs that need a specific outcome.
+	const features: Array<{
+		id: string;
+		projectId: string;
+		name: string;
+		description: string;
+		source: "user" | "agent";
+		createdAt: string;
+		updatedAt: string;
+		fileCount: number;
+	}> = (overrides.features ?? []).map((f) => ({
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		fileCount: f.fileCount ?? 0,
+		...f,
+	}));
+	const featureFiles: Record<string, Array<{ featureId: string; relpath: string; source: "user" | "scan"; addedAt: string }>> = {};
+	for (const [featId, fileRows] of Object.entries(overrides.featureFiles ?? {})) {
+		featureFiles[featId] = fileRows.map((r) => ({
+			featureId: featId,
+			relpath: r.relpath,
+			source: r.source,
+			addedAt: new Date().toISOString(),
+		}));
+	}
+	function recomputeCount(featId: string) {
+		const f = features.find((x) => x.id === featId);
+		if (f) f.fileCount = (featureFiles[featId] ?? []).length;
+	}
+	for (const f of features) recomputeCount(f.id);
+	const scanResult = overrides.scanResult;
 	const messageToolCalls: Record<string, Array<any>> = { ...(overrides.messageToolCalls ?? {}) };
 
 	// Phase 48 — Ez panel state. Mutable so the consume route can flip
@@ -664,6 +731,157 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 			return route.fulfill({ json: marketplace });
 		}
 
+		// ── Feature Index ────────────────────────────────────────────
+		// Pattern: /api/projects/:id/features (and sub-paths). Rather than
+		// regex-match in the dispatcher, peel the segments manually.
+		const featurePathMatch = path.match(/^\/api\/projects\/([^/]+)\/features(?:\/(.+))?$/);
+		if (featurePathMatch) {
+			const projectId = featurePathMatch[1]!;
+			const tail = featurePathMatch[2] ?? "";
+
+			// POST /api/projects/:id/features/scan
+			if (tail === "scan" && method === "POST") {
+				if (scanResult) {
+					// Replace the in-memory list with the override.
+					features.length = 0;
+					for (const f of scanResult) {
+						features.push({
+							createdAt: new Date().toISOString(),
+							updatedAt: new Date().toISOString(),
+							fileCount: f.fileCount ?? 0,
+							...f,
+						});
+					}
+				}
+				return route.fulfill({
+					json: features.filter((f) => f.projectId === projectId),
+				});
+			}
+
+			// GET /api/projects/:id/features
+			if (tail === "" && method === "GET") {
+				const list = features
+					.filter((f) => f.projectId === projectId)
+					.sort((a, b) => a.name.localeCompare(b.name));
+				return route.fulfill({ json: list });
+			}
+
+			// POST /api/projects/:id/features
+			if (tail === "" && method === "POST") {
+				const body = (route.request().postDataJSON() ?? {}) as {
+					name?: string;
+					description?: string;
+				};
+				if (!body.name) {
+					return route.fulfill({ status: 400, json: { error: "name required" } });
+				}
+				if (features.find((f) => f.projectId === projectId && f.name === body.name)) {
+					return route.fulfill({
+						status: 409,
+						json: { error: "Feature with this name already exists" },
+					});
+				}
+				const now = new Date().toISOString();
+				const created = {
+					id: `feat-${Math.random().toString(36).slice(2, 10)}`,
+					projectId,
+					name: body.name,
+					description: body.description ?? "",
+					source: "user" as const,
+					createdAt: now,
+					updatedAt: now,
+					fileCount: 0,
+				};
+				features.push(created);
+				return route.fulfill({ status: 201, json: created });
+			}
+
+			// PATCH/DELETE /api/projects/:id/features/:featureId
+			const featureId = tail;
+			const target = features.find(
+				(f) => f.projectId === projectId && f.id === featureId,
+			);
+			if (!target) {
+				return route.fulfill({
+					status: 404,
+					json: { error: "Feature not found" },
+				});
+			}
+
+			if (method === "DELETE") {
+				const idx = features.indexOf(target);
+				features.splice(idx, 1);
+				delete featureFiles[featureId];
+				return route.fulfill({ json: { ok: true } });
+			}
+
+			if (method === "PATCH") {
+				const body = (route.request().postDataJSON() ?? {}) as {
+					name?: string;
+					description?: string;
+					addFiles?: string[];
+					removeFiles?: string[];
+				};
+				if (
+					body.name === undefined &&
+					body.description === undefined &&
+					(!body.addFiles || body.addFiles.length === 0) &&
+					(!body.removeFiles || body.removeFiles.length === 0)
+				) {
+					return route.fulfill({
+						status: 400,
+						json: { error: "at least one field required" },
+					});
+				}
+				if (body.name !== undefined && body.name !== target.name) {
+					if (
+						features.find(
+							(f) => f.projectId === projectId && f.name === body.name,
+						)
+					) {
+						return route.fulfill({
+							status: 409,
+							json: { error: "Feature with this name already exists" },
+						});
+					}
+				}
+				if (body.name !== undefined) target.name = body.name;
+				if (body.description !== undefined) target.description = body.description;
+				// Source-flip: any non-empty PATCH on agent flips to user.
+				if (target.source === "agent") target.source = "user";
+				target.updatedAt = new Date().toISOString();
+				if (body.addFiles) {
+					featureFiles[featureId] = featureFiles[featureId] ?? [];
+					for (const rel of body.addFiles) {
+						if (!featureFiles[featureId]!.find((r) => r.relpath === rel)) {
+							featureFiles[featureId]!.push({
+								featureId,
+								relpath: rel,
+								source: "user",
+								addedAt: new Date().toISOString(),
+							});
+						}
+					}
+				}
+				if (body.removeFiles && featureFiles[featureId]) {
+					featureFiles[featureId] = featureFiles[featureId]!.filter(
+						(r) => !body.removeFiles!.includes(r.relpath),
+					);
+				}
+				recomputeCount(featureId);
+				const filesArr = (featureFiles[featureId] ?? [])
+					.slice()
+					.sort((a, b) => a.relpath.localeCompare(b.relpath));
+				return route.fulfill({
+					json: {
+						...target,
+						files: filesArr,
+						fileCount: filesArr.length,
+					},
+				});
+			}
+		}
+
 		// Mention search
 		if (path === "/api/mentions/search" && method === "GET") {
 			const q = url.searchParams.get("q") ?? "";
@@ -721,6 +939,28 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 					.filter((x) => x.score !== null) as Array<{ f: typeof pathList[number]; score: number }>;
 				scored.sort((a, b) => b.score - a.score);
 				return route.fulfill({ json: scored.slice(0, 10).map((x) => x.f) });
+			}
+
+			// Feature Index — `type=feature` mirrors the real route's
+			// project-scoped fuzzy lookup over the `features` table.
+			if (type === "feature") {
+				if (!projectId) return route.fulfill({ json: [] });
+				const projFeatures = features.filter((f) => f.projectId === projectId);
+				const matched = q
+					? projFeatures.filter(
+							(f) =>
+								f.name.toLowerCase().includes(q.toLowerCase()) ||
+								f.description.toLowerCase().includes(q.toLowerCase()),
+						)
+					: projFeatures;
+				return route.fulfill({
+					json: matched.slice(0, 10).map((f) => ({
+						name: f.name,
+						description: f.description,
+						kind: "feature" as const,
+						fileCount: f.fileCount,
+					})),
+				});
 			}
 
 			// Slash-command search is mutually exclusive with other kinds.

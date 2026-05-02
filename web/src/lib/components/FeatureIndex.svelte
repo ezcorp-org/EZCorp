@@ -2,6 +2,7 @@
 	import { untrack } from "svelte";
 	import { searchMentions } from "$lib/api";
 	import { debounce } from "$lib/components/ui/helpers";
+	import { addToast } from "$lib/toast.svelte.js";
 
 	/**
 	 * Per-project Feature Index settings UI.
@@ -100,12 +101,18 @@
 			const res = await fetch(`/api/projects/${projectId}/features/scan`, { method: "POST" });
 			if (res.ok) {
 				features = await res.json();
+				addToast({
+					type: "success",
+					message: `Scan complete — ${features.length} ${features.length === 1 ? "feature" : "features"}`,
+				});
 			} else {
 				const body = (await res.json().catch(() => ({}))) as { error?: string };
 				errorMessage = body.error ?? `Scan failed (HTTP ${res.status})`;
+				addToast({ type: "error", message: errorMessage });
 			}
 		} catch (e) {
 			errorMessage = `Scan failed: ${String(e)}`;
+			addToast({ type: "error", message: errorMessage });
 		} finally {
 			scanning = false;
 		}

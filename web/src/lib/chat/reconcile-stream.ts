@@ -12,6 +12,13 @@ export type StreamSnapshot = Record<string, StreamSnapshotEntry>;
  * effect fires. Without a snapshot the reconcile sees an empty cache and
  * cannot back-fill an empty assistant row. Returns the same map reference
  * when nothing changed so callers' equality checks don't flip.
+ *
+ * Empty-string semantics: `streamingMessages[runId] = ""` is what
+ * `run:turn_text_reset` sets between turns of a multi-turn run. We must NOT
+ * clobber the previous turn's snapshot with `""` — the prior text is the
+ * thing the post-stream reconcile may need to back-fill. So a non-empty
+ * incoming value updates the snapshot; empty/undefined falls through to
+ * whatever was last captured.
  */
 export function recordSnapshot(
 	snapshot: StreamSnapshot,
@@ -23,14 +30,17 @@ export function recordSnapshot(
 	if (streamingText === undefined && streamingThinking === undefined) return snapshot;
 
 	const prev = snapshot[runId];
-	const next: StreamSnapshotEntry = {
-		content: streamingText ?? prev?.content ?? "",
-		thinking: streamingThinking ?? prev?.thinking ?? "",
-	};
-	if (prev && prev.content === next.content && prev.thinking === next.thinking) {
+	const nextContent = streamingText && streamingText.length > 0
+		? streamingText
+		: prev?.content ?? "";
+	const nextThinking = streamingThinking && streamingThinking.length > 0
+		? streamingThinking
+		: prev?.thinking ?? "";
+
+	if (prev && prev.content === nextContent && prev.thinking === nextThinking) {
 		return snapshot;
 	}
-	return { ...snapshot, [runId]: next };
+	return { ...snapshot, [runId]: { content: nextContent, thinking: nextThinking } };
 }
 
 /** Drop one entry from a snapshot. Same-reference fast path when absent. */
@@ -58,6 +68,20 @@ export function snapshotToMaps(
 	};
 }
 
+/**
+ * Back-fill the LAST assistant message of a run with text from the streaming
+ * cache when the persisted row came back empty.
+ *
+ * Why "last" only: a single run can persist multiple assistant turns —
+ * intermediate ones (memory fetch, tool-only turns) legitimately have empty
+ * content with their meaning encoded in tool calls / memoriesUsed that
+ * hydrate separately. If we patched every empty row with the same runId we'd
+ * duplicate the final turn's text into earlier intermediate turns. Only the
+ * LAST one (which is what the user just saw streaming) is the candidate.
+ *
+ * If the last assistant row is already populated, no patch occurs even if
+ * earlier rows are empty.
+ */
 export function patchAssistantContentFromStream(
 	messages: Message[],
 	runId: string | null,
@@ -66,22 +90,23 @@ export function patchAssistantContentFromStream(
 ): Message[] {
 	if (!runId) return messages;
 
-	let patched = false;
-	const result = messages.map((m) => {
-		if (m.runId !== runId || m.role !== "assistant") return m;
+	let lastIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i]!;
+		if (m.runId === runId && m.role === "assistant") { lastIdx = i; break; }
+	}
+	if (lastIdx < 0) return messages;
 
-		const needsContent = !m.content?.trim() && !!streamingMessages[runId];
-		const needsThinking = !m.thinkingContent && !!streamingThinking[runId];
+	const target = messages[lastIdx]!;
+	const needsContent = !target.content?.trim() && !!streamingMessages[runId];
+	const needsThinking = !target.thinkingContent && !!streamingThinking[runId];
+	if (!needsContent && !needsThinking) return messages;
 
-		if (!needsContent && !needsThinking) return m;
-
-		patched = true;
-		return {
-			...m,
-			...(needsContent ? { content: streamingMessages[runId]! } : {}),
-			...(needsThinking ? { thinkingContent: streamingThinking[runId]! } : {}),
-		};
-	});
-
-	return patched ? result : messages;
+	const result = messages.slice();
+	result[lastIdx] = {
+		...target,
+		...(needsContent ? { content: streamingMessages[runId]! } : {}),
+		...(needsThinking ? { thinkingContent: streamingThinking[runId]! } : {}),
+	};
+	return result;
 }

@@ -69,14 +69,41 @@ describe("patchAssistantContentFromStream", () => {
 		expect(result).toBe(messages);
 	});
 
-	test("8. multiple assistant messages with same runId, only empty one patched", () => {
-		const populated = msg({ id: "m1", content: "existing", runId: "run-1" });
-		const empty = msg({ id: "m2", content: "", runId: "run-1" });
-		const messages = [populated, empty];
+	test("8. earlier message empty, LAST has content → no patch (last is server-of-truth)", () => {
+		// Multi-turn run: message 1 is an empty intermediate (memory-fetch /
+		// tool-only turn), message 2 is the actual response. Under the new
+		// last-only semantics we MUST NOT copy m2's content into m1.
+		const intermediate = msg({ id: "m1", content: "", runId: "run-1" });
+		const final = msg({ id: "m2", content: "the answer", runId: "run-1" });
+		const messages = [intermediate, final];
+		const result = patchAssistantContentFromStream(messages, "run-1", { "run-1": "streamed" }, {});
+		expect(result).toBe(messages);
+		expect(result[0]).toBe(intermediate);
+		expect(result[0]!.content).toBe("");
+		expect(result[1]).toBe(final);
+		expect(result[1]!.content).toBe("the answer");
+	});
+
+	test("8b. multiple assistant messages, both empty content, snapshot has text → only LAST patched", () => {
+		const intermediate = msg({ id: "m1", content: "", runId: "run-1" });
+		const last = msg({ id: "m2", content: "", runId: "run-1" });
+		const messages = [intermediate, last];
 		const result = patchAssistantContentFromStream(messages, "run-1", { "run-1": "streamed" }, {});
 		expect(result).not.toBe(messages);
-		expect(result[0]).toBe(populated);
+		expect(result[0]).toBe(intermediate);
+		expect(result[0]!.content).toBe("");
 		expect(result[1]!.content).toBe("streamed");
+	});
+
+	test("8c. three assistant messages, MIDDLE empty, last populated → no patch", () => {
+		// Only the last assistant row is the candidate; if it has content the
+		// helper leaves the array untouched even when an earlier row is empty.
+		const first = msg({ id: "m1", content: "first", runId: "run-1" });
+		const middle = msg({ id: "m2", content: "", runId: "run-1" });
+		const last = msg({ id: "m3", content: "final", runId: "run-1" });
+		const messages = [first, middle, last];
+		const result = patchAssistantContentFromStream(messages, "run-1", { "run-1": "streamed" }, {});
+		expect(result).toBe(messages);
 	});
 
 	test("9. thinkingContent is empty AND streamingThinking has text → patched", () => {
@@ -166,11 +193,42 @@ describe("recordSnapshot", () => {
 		expect(next).toBe(snap);
 	});
 
-	test("treats empty-string text as observation, not no-op", () => {
+	test("treats empty-string text as observation when no prior snapshot", () => {
 		const snap: StreamSnapshot = {};
 		const next = recordSnapshot(snap, "run-1", "", undefined);
 		expect(next).not.toBe(snap);
 		expect(next["run-1"]).toEqual({ content: "", thinking: "" });
+	});
+
+	test("does NOT clobber prev.content when streamingText is '' (run:turn_text_reset between turns)", () => {
+		// run:turn_text_reset sets streamingMessages[runId] = "" between
+		// multi-turn runs. Without this fix, `??` would propagate the empty
+		// string and we'd lose the previous turn's accumulated text.
+		const snap: StreamSnapshot = { "run-1": { content: "abc", thinking: "" } };
+		const next = recordSnapshot(snap, "run-1", "", undefined);
+		expect(next).toBe(snap);
+		expect(next["run-1"]).toEqual({ content: "abc", thinking: "" });
+	});
+
+	test("does NOT clobber prev.thinking when streamingThinking is ''", () => {
+		const snap: StreamSnapshot = { "run-1": { content: "x", thinking: "kept" } };
+		const next = recordSnapshot(snap, "run-1", undefined, "");
+		expect(next).toBe(snap);
+		expect(next["run-1"]).toEqual({ content: "x", thinking: "kept" });
+	});
+
+	test("non-empty streamingText replaces prev.content", () => {
+		const snap: StreamSnapshot = { "run-1": { content: "abc", thinking: "" } };
+		const next = recordSnapshot(snap, "run-1", "def", undefined);
+		expect(next).not.toBe(snap);
+		expect(next["run-1"]).toEqual({ content: "def", thinking: "" });
+	});
+
+	test("non-empty streamingThinking replaces prev.thinking", () => {
+		const snap: StreamSnapshot = { "run-1": { content: "abc", thinking: "old" } };
+		const next = recordSnapshot(snap, "run-1", undefined, "new");
+		expect(next).not.toBe(snap);
+		expect(next["run-1"]).toEqual({ content: "abc", thinking: "new" });
 	});
 });
 

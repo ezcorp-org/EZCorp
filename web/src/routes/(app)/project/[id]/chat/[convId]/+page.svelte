@@ -30,6 +30,7 @@
 	import { buildHistoricalBlocks } from "$lib/content-blocks.js";
 	import { recordSnapshot, type StreamSnapshot } from "$lib/chat/reconcile-stream.js";
 	import { runReconcileAfterStream } from "$lib/chat/reconcile-after-stream.js";
+	import { filterEmptyAssistantTurns } from "$lib/chat/filter-empty-turns.js";
 	import {
 		subConvoToAgentCallState,
 		type SubConvoRecord,
@@ -458,8 +459,59 @@
 	let topSentinel = $state<HTMLDivElement | undefined>();
 	let loadingOlder = $state(false);
 
-	let visibleMessages = $derived(computeVisibleMessages(messages, visibleMessageCount));
-	let hasOlderMessages = $derived(computeHasOlder(messages.length, visibleMessageCount));
+	// Memory injection dedup: the backend re-runs hybrid search every turn,
+	// so `memoriesUsed` gets populated on every assistant message even when
+	// the retrieved set didn't change. To mirror how memories are actually
+	// injected (once, then held in context until the set changes), we only
+	// surface the MemoriesCard on assistant messages whose memory-id set
+	// *differs* from the previous assistant message's set. An empty/absent
+	// set resets the comparison — a later turn that retrieves memories
+	// again counts as a fresh injection.
+	//
+	// Computed BEFORE `renderableMessages` because the empty-turn filter
+	// depends on it: a row with `memoriesUsed` whose card is deduped onto
+	// an earlier row has nothing visible by itself, so the filter must hide
+	// it (avoids the user-reported blank-bubble bug).
+	let memoryCardVisibleMessageIds = $derived.by(() => {
+		const visible = new Set<string>();
+		let prevKey: string | null = null;
+		for (const msg of messages) {
+			if (msg.role !== "assistant") continue;
+			const mems = msg.memoriesUsed;
+			if (!mems || mems.length === 0) {
+				prevKey = null;
+				continue;
+			}
+			const key = mems.map(m => m.id).sort().join(",");
+			if (key !== prevKey) {
+				visible.add(msg.id);
+				prevKey = key;
+			}
+		}
+		return visible;
+	});
+
+	// Hide assistant messages that have NOTHING to render — empty content,
+	// no thinking, no visible memory card, no hydrated tool/agent calls.
+	// These are intermediate turns of a multi-turn run (e.g. a memory-fetch
+	// turn that only carries `memoriesUsed` server-side and is deduped, or
+	// a tool-only turn) where the meaning lives in tool-call data that
+	// hydrates separately. The `getHistoricalToolCalls` /
+	// `getHistoricalAgentCalls` / `memoryCardVisibleMessageIds` reads are
+	// all reactive, so this filter re-evaluates once hydration completes
+	// and the previously-hidden message reappears with its tool/memory
+	// cards.
+	let renderableMessages = $derived(filterEmptyAssistantTurns(messages, {
+		hasHistoricalToolCalls: (id) => getHistoricalToolCalls(id).length > 0,
+		hasHistoricalAgentCalls: (id) => {
+			const agents = getHistoricalAgentCalls(id);
+			return !!agents && agents.length > 0;
+		},
+		isMemoryCardVisible: (id) => memoryCardVisibleMessageIds.has(id),
+	}));
+
+	let visibleMessages = $derived(computeVisibleMessages(renderableMessages, visibleMessageCount));
+	let hasOlderMessages = $derived(computeHasOlder(renderableMessages.length, visibleMessageCount));
 
 	const PROVIDER_DISPLAY: Record<string, string> = {
 		openai: "OpenAI",
@@ -528,30 +580,14 @@
 	);
 
 
-	// Memory injection dedup: the backend re-runs hybrid search every turn, so `memoriesUsed`
-	// gets populated on every assistant message even when the retrieved set didn't change.
-	// To mirror how memories are actually injected (once, then held in context until the set
-	// changes), we only surface the MemoriesCard on assistant messages whose memory-id set
-	// *differs* from the previous assistant message's set. An empty/absent set resets the
-	// comparison — a later turn that retrieves memories again counts as a fresh injection.
-	let memoryCardVisibleMessageIds = $derived.by(() => {
-		const visible = new Set<string>();
-		let prevKey: string | null = null;
-		for (const msg of messages) {
-			if (msg.role !== "assistant") continue;
-			const mems = msg.memoriesUsed;
-			if (!mems || mems.length === 0) {
-				prevKey = null;
-				continue;
-			}
-			const key = mems.map(m => m.id).sort().join(",");
-			if (key !== prevKey) {
-				visible.add(msg.id);
-				prevKey = key;
-			}
-		}
-		return visible;
-	});
+	// `memoryCardVisibleMessageIds` was hoisted above `renderableMessages`
+	// because the empty-turn filter needs to know which assistant rows will
+	// actually surface the MemoriesCard. Both are $derived so Svelte handles
+	// the dependency graph regardless of textual position; the declaration
+	// just lives next to its consumer for readability. The dedup pass MUST
+	// run on `messages` (the unfiltered active path), NOT on
+	// `renderableMessages` — that would create a feedback loop because the
+	// filter's own answers depend on this set.
 
 	// Stream-resume orchestration (checkActiveRun, WS-reconnect resume effect,
 	// zombie/staleness watchdog) lives in

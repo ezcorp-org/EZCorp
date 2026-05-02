@@ -11,7 +11,12 @@ import { createMessageSchema } from "./schema";
 import { validationError } from "$lib/server/security/validation";
 import { checkTokenBudget } from "$lib/server/security/resource-quotas";
 import { requireScope } from "$lib/server/security/api-keys";
-import { getCapabilities, classifyMime } from "$server/providers/model-capabilities";
+import { getCapabilitiesWithExtensions, classifyMimeWithCaps } from "$server/providers/model-capabilities";
+import {
+  getConversationExtensionMimes,
+  getExtensionMimesByNames,
+} from "$server/db/queries/conversation-extensions";
+import { parseMentions } from "$lib/mention-logic";
 import { validateAttachment } from "$server/chat/attachments/validator";
 import { writeAttachment, deleteForMessage } from "$server/chat/attachments/storage";
 import type { StagedAttachment } from "$server/chat/attachments/content-builder";
@@ -153,7 +158,25 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
     if (!provider || !model) {
       return errorJson(400, "provider and model are required when attaching files");
     }
-    const caps = getCapabilities(provider, model);
+    // Two MIME sources: extensions ALREADY wired to the conversation, plus
+    // any `!ext:NAME` mentions in this message's draft text (which will be
+    // wired server-side later in the same request lifecycle but aren't yet
+    // in `conversation_extensions`). Without the second source, the very
+    // first message that wires an extension can't carry an attachment for
+    // it — even though the picker accepted the file.
+    const mimeSet = new Set<string>();
+    try {
+      for (const m of await getConversationExtensionMimes(conversationId)) mimeSet.add(m);
+    } catch { /* non-fatal: fall back to static caps */ }
+    const pendingExtNames = parseMentions(body.content)
+      .filter((m) => m.kind === "ext")
+      .map((m) => m.name);
+    if (pendingExtNames.length > 0) {
+      try {
+        for (const m of getExtensionMimesByNames(pendingExtNames)) mimeSet.add(m);
+      } catch { /* non-fatal */ }
+    }
+    const caps = getCapabilitiesWithExtensions(provider, model, [...mimeSet]);
     if (body.files.length > caps.maxFilesPerMessage) {
       return errorJson(400, `Too many files (max ${caps.maxFilesPerMessage})`, { code: "TOO_MANY_FILES" });
     }
@@ -188,7 +211,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 
     try {
       for (const v of validated) {
-        const kind = classifyMime(v.canonicalMime);
+        const kind = classifyMimeWithCaps(caps, v.canonicalMime);
         if (!kind) throw new Error(`Unclassifiable MIME ${v.canonicalMime} after validation`);
         const written = await writeAttachment({
           projectRoot: project.path,

@@ -433,6 +433,197 @@ describe("PATCH /api/projects/:id/features/:featureId — source-flip policy", (
   });
 });
 
+// ── D4: No-op PATCH must NOT silently flip source (audit fix d25c126a) ──
+describe("PATCH /api/projects/:id/features/:featureId — D4 no-op source-flip guard", () => {
+  test("HEADLINE: PATCH with description equal to current value on agent → source STAYS 'agent'", async () => {
+    // The legacy `refreshFeatureFiles` row-expand pattern PATCH'd the
+    // description back to its current value to trigger the response
+    // echo (which included files). Without the d25c126a fix this
+    // re-assertion silently flipped the bucket to user-owned, muting
+    // it from future rescans even though the user did nothing.
+    const f = await createFeature({
+      projectId,
+      name: "noop-desc",
+      description: "Files under src/noop-desc",
+      source: "agent",
+    });
+    const event = createMockEvent({
+      method: "PATCH",
+      params: { id: projectId, featureId: f.id },
+      body: { description: "Files under src/noop-desc" }, // ← same value
+      user: MEMBER_USER,
+    });
+    const res = await call(PATCH, event);
+    expect(res.status).toBe(200);
+    const body = await jsonFromResponse(res);
+    expect(body.source).toBe("agent");
+
+    // Defense in depth: re-read from DB to confirm the row truly stayed
+    // agent (not just the response shape).
+    const reloaded = await getFeature(projectId, "noop-desc");
+    expect(reloaded!.source).toBe("agent");
+  });
+
+  test("PATCH with name equal to current value on agent → source STAYS 'agent'", async () => {
+    const f = await createFeature({
+      projectId,
+      name: "noop-name",
+      description: "d",
+      source: "agent",
+    });
+    const event = createMockEvent({
+      method: "PATCH",
+      params: { id: projectId, featureId: f.id },
+      body: { name: "noop-name" }, // same value
+      user: MEMBER_USER,
+    });
+    const res = await call(PATCH, event);
+    expect(res.status).toBe(200);
+    const body = await jsonFromResponse(res);
+    expect(body.source).toBe("agent");
+  });
+
+  test("PATCH meaningful name on agent → still flips to 'user' (regression: D4 didn't break the meaningful-edit path)", async () => {
+    const f = await createFeature({
+      projectId,
+      name: "meaningful-name",
+      description: "d",
+      source: "agent",
+    });
+    const event = createMockEvent({
+      method: "PATCH",
+      params: { id: projectId, featureId: f.id },
+      body: { name: "actually-renamed" },
+      user: MEMBER_USER,
+    });
+    const res = await call(PATCH, event);
+    const body = await jsonFromResponse(res);
+    expect(body.source).toBe("user");
+    expect(body.name).toBe("actually-renamed");
+  });
+
+  test("PATCH meaningful description on agent → still flips to 'user'", async () => {
+    const f = await createFeature({
+      projectId,
+      name: "meaningful-desc",
+      description: "Files under src/meaningful-desc",
+      source: "agent",
+    });
+    const event = createMockEvent({
+      method: "PATCH",
+      params: { id: projectId, featureId: f.id },
+      body: { description: "Hand-rewritten" },
+      user: MEMBER_USER,
+    });
+    const res = await call(PATCH, event);
+    const body = await jsonFromResponse(res);
+    expect(body.source).toBe("user");
+    expect(body.description).toBe("Hand-rewritten");
+  });
+});
+
+// ── D4: GET /:featureId endpoint (audit fix d25c126a) ───────────────
+describe("GET /api/projects/:id/features/:featureId", () => {
+  // Local handler import — the GET export wasn't on the original list
+  // so we import it lazily here to keep the top-of-file import block
+  // stable across the refactor.
+  let GET: any;
+  // This is a top-level await import in an inner describe; rely on
+  // jest-style hoisting via beforeAll.
+  // eslint-disable-next-line
+  beforeEach(async () => {
+    if (!GET) {
+      const mod = await import(
+        "../../web/src/routes/api/projects/[id]/features/[featureId]/+server"
+      );
+      GET = (mod as any).GET;
+    }
+  });
+
+  test("returns 200 with {...feature, files, fileCount} for an existing feature", async () => {
+    const f = await createFeature({
+      projectId,
+      name: "get-target",
+      description: "test",
+      source: "agent",
+    });
+    await replaceAgentFiles(f.id, ["src/get-target/a.ts", "src/get-target/b.ts"]);
+    await addUserFile(f.id, "src/get-target/pinned.ts");
+
+    const event = createMockEvent({
+      method: "GET",
+      params: { id: projectId, featureId: f.id },
+      user: MEMBER_USER,
+    });
+    const res = await call(GET, event);
+    expect(res.status).toBe(200);
+    const body = await jsonFromResponse(res);
+    expect(body.id).toBe(f.id);
+    expect(body.name).toBe("get-target");
+    expect(body.description).toBe("test");
+    expect(body.source).toBe("agent"); // ← unchanged by GET
+    expect(body.fileCount).toBe(3);
+    expect(body.files.map((x: any) => x.relpath).sort()).toEqual([
+      "src/get-target/a.ts",
+      "src/get-target/b.ts",
+      "src/get-target/pinned.ts",
+    ]);
+  });
+
+  test("returns 404 when feature exists but belongs to a DIFFERENT project (cross-project isolation)", async () => {
+    const f = await createFeature({
+      projectId: otherProjectId,
+      name: "cross-proj",
+      source: "user",
+    });
+    const event = createMockEvent({
+      method: "GET",
+      params: { id: projectId, featureId: f.id },
+      user: MEMBER_USER,
+    });
+    const res = await call(GET, event);
+    expect(res.status).toBe(404);
+  });
+
+  test("returns 404 for unknown featureId", async () => {
+    const event = createMockEvent({
+      method: "GET",
+      params: { id: projectId, featureId: crypto.randomUUID() },
+      user: MEMBER_USER,
+    });
+    const res = await call(GET, event);
+    expect(res.status).toBe(404);
+  });
+
+  test("source is NOT mutated by GET (it's a read, not a write)", async () => {
+    const f = await createFeature({
+      projectId,
+      name: "read-only",
+      source: "agent",
+    });
+    const event = createMockEvent({
+      method: "GET",
+      params: { id: projectId, featureId: f.id },
+      user: MEMBER_USER,
+    });
+    await call(GET, event);
+    // Verify with a second GET that the source is still 'agent'.
+    const reloaded = await getFeature(projectId, "read-only");
+    expect(reloaded!.source).toBe("agent");
+  });
+
+  test("unauthenticated → 401", async () => {
+    const f = await createFeature({ projectId, name: "noauth-get", source: "user" });
+    const event = createMockEvent({
+      method: "GET",
+      params: { id: projectId, featureId: f.id },
+      // no user
+    });
+    const res = await call(GET, event);
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("PATCH /api/projects/:id/features/:featureId — file ops + invariants", () => {
   test("addFiles inserts source='user' rows (idempotent on re-add)", async () => {
     const f = await createFeature({ projectId, name: "addf", source: "user" });

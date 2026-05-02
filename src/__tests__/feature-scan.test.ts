@@ -276,6 +276,174 @@ describe("scanFeatures — symlink handling", () => {
   });
 });
 
+// ── D1: Symlink-cycle DoS regression (audit fix d25c126a) ───────────
+describe("scanFeatures — symlink-cycle resilience (D1)", () => {
+  test("mutual symlinks between two feature dirs terminate within 2s and return finite results", async () => {
+    // Without the d25c126a fix this hangs indefinitely (or stack-overflows)
+    // because each symlink resolves to a path that's still inside the
+    // project root. The fix tracks visited realpaths in a per-feature
+    // `seen` set and skips revisits.
+    await writeFiles({
+      "src/featA/a.ts": "a",
+      "src/featA/a2.ts": "a2",
+      "src/featB/b.ts": "b",
+      "src/featB/b2.ts": "b2",
+    });
+    // featA/link-to-b → src/featB; featB/link-to-a → src/featA
+    await symlink(
+      resolve(projectRoot, "src/featB"),
+      resolve(projectRoot, "src/featA/link-to-b"),
+    );
+    await symlink(
+      resolve(projectRoot, "src/featA"),
+      resolve(projectRoot, "src/featB/link-to-a"),
+    );
+
+    const start = Date.now();
+    const result = await scanFeatures(projectRoot);
+    const elapsed = Date.now() - start;
+
+    // Termination guard: 2s is generous for a sub-100-file fixture; the
+    // unbounded version would never terminate.
+    expect(elapsed).toBeLessThan(2000);
+    // Result is finite and includes both top-level features.
+    const names = result.map((f) => f.name).sort();
+    expect(names).toEqual(["featA", "featB"]);
+  });
+
+  test("self-symlink (`sym → .`) terminates and is skipped via realpath dedupe", async () => {
+    await writeFiles({
+      "src/featA/a.ts": "a",
+      "src/featA/b.ts": "b",
+    });
+    // sym points at the parent dir featA itself.
+    await symlink(
+      resolve(projectRoot, "src/featA"),
+      resolve(projectRoot, "src/featA/sym"),
+    );
+
+    const start = Date.now();
+    const result = await scanFeatures(projectRoot);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2000);
+
+    const featA = result.find((f) => f.name === "featA")!;
+    expect(featA).toBeDefined();
+    // The two real files are present; self-symlink content is not
+    // re-walked.
+    expect(featA.files).toContain("src/featA/a.ts");
+    expect(featA.files).toContain("src/featA/b.ts");
+  });
+
+  test("symlink-to-parent (`sub/up → ..`) terminates without revisiting featA", async () => {
+    await writeFiles({
+      "src/featA/a.ts": "a",
+      "src/featA/b.ts": "b",
+      "src/featA/sub/c.ts": "c",
+    });
+    // sub/up symlinks back up to featA → realpath same as featA → seen.
+    await symlink(
+      resolve(projectRoot, "src/featA"),
+      resolve(projectRoot, "src/featA/sub/up"),
+    );
+
+    const start = Date.now();
+    const result = await scanFeatures(projectRoot);
+    expect(Date.now() - start).toBeLessThan(2000);
+
+    const featA = result.find((f) => f.name === "featA")!;
+    expect(featA.files).toContain("src/featA/a.ts");
+    expect(featA.files).toContain("src/featA/b.ts");
+    expect(featA.files).toContain("src/featA/sub/c.ts");
+    // The `up` symlink resolves to featA (already seen) → no infinite
+    // recursion → no duplicate entries like "src/featA/sub/up/a.ts".
+    const dupePaths = featA.files.filter((p) => p.includes("/sub/up/"));
+    expect(dupePaths).toEqual([]);
+  });
+});
+
+// ── D2: Scan caps regression (audit fix d25c126a) ───────────────────
+describe("scanFeatures — depth + per-feature + total caps (D2)", () => {
+  test("MAX_DEPTH=16 truncates pathologically deep trees", async () => {
+    // Build src/deepFeat with 20 nested dirs each containing one file.
+    // The cap (MAX_DEPTH=16) bounds recursion so the deepest files are
+    // truncated rather than explored.
+    const spec: Record<string, string> = {
+      "src/deepFeat/seed.ts": "s", // anchor file at depth 1 so the feature isn't single-file
+    };
+    let pathPrefix = "src/deepFeat";
+    for (let i = 0; i < 20; i++) {
+      pathPrefix += `/d${i}`;
+      spec[`${pathPrefix}/leaf.ts`] = "x";
+    }
+    await writeFiles(spec);
+
+    const result = await scanFeatures(projectRoot);
+    const deep = result.find((f) => f.name === "deepFeat")!;
+    expect(deep).toBeDefined();
+    // The seed + ~16 leaf files should appear; not all 20.
+    expect(deep.files.length).toBeLessThan(20);
+    expect(deep.files.length).toBeGreaterThanOrEqual(15);
+    expect(deep.files).toContain("src/deepFeat/seed.ts");
+  });
+
+  test("MAX_FILES_PER_FEATURE=5000 caps a single feature's file count", async () => {
+    // Generate 5500 files in src/featBig/ via a single batch mkdir + writes.
+    // Use shallow placement to avoid the depth cap interacting.
+    await mkdir(resolve(projectRoot, "src/featBig"), { recursive: true });
+    const batchSize = 100;
+    for (let batch = 0; batch < 55; batch++) {
+      const writes: Array<Promise<void>> = [];
+      for (let i = 0; i < batchSize; i++) {
+        const idx = batch * batchSize + i;
+        writes.push(
+          writeFile(resolve(projectRoot, `src/featBig/f${idx}.ts`), `${idx}`),
+        );
+      }
+      await Promise.all(writes);
+    }
+
+    const result = await scanFeatures(projectRoot);
+    const big = result.find((f) => f.name === "featBig")!;
+    expect(big).toBeDefined();
+    // Cap is at 5000; we wrote 5500.
+    expect(big.files.length).toBe(5000);
+  }, 30000); // Extended timeout — file IO is the slow part.
+
+  test("MAX_TOTAL_FILES=50000 caps the whole-scan output across features", async () => {
+    // 25 features × 2500 files each = 62500 raw files. Each feature is
+    // BELOW the per-feature cap (5000), so the per-feature truncation
+    // doesn't dominate; the TOTAL cap (50000) is the binding limit
+    // and clips the scan output to 50k.
+    for (let f = 0; f < 25; f++) {
+      const dir = `src/featTotal${f}`;
+      await mkdir(resolve(projectRoot, dir), { recursive: true });
+      for (let batch = 0; batch < 25; batch++) {
+        const writes: Array<Promise<void>> = [];
+        for (let i = 0; i < 100; i++) {
+          const idx = batch * 100 + i;
+          writes.push(
+            writeFile(
+              resolve(projectRoot, `${dir}/f${idx}.ts`),
+              `${idx}`,
+            ),
+          );
+        }
+        await Promise.all(writes);
+      }
+    }
+
+    const result = await scanFeatures(projectRoot);
+    const totalFiles = result.reduce((sum, f) => sum + f.files.length, 0);
+    // Hard upper bound: cap is 50000.
+    expect(totalFiles).toBeLessThanOrEqual(50_000);
+    // Sanity: cap actually engaged (would be 62500 without it). The scan
+    // may stop slightly short of 50k as features are added wholesale per
+    // root iteration — accept anything ≥ 45k as evidence of the cap.
+    expect(totalFiles).toBeGreaterThan(45_000);
+  }, 60000);
+});
+
 // ── Determinism ──────────────────────────────────────────────────────
 describe("scanFeatures — determinism", () => {
   test("two runs against the same fixture produce identical output", async () => {

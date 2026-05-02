@@ -145,6 +145,80 @@ test.describe("Feature Index — settings UI scan flow", () => {
       .toBeVisible({ timeout: 5000 });
   });
 
+  test("D4: expand a row, click Scan again — source badge stays 'agent' (no silent flip from row expand)", async ({
+    page,
+    mockApi,
+  }) => {
+    // Audit defect D4 regression: before the d25c126a fix, expanding an
+    // agent-sourced row triggered a `refreshFeatureFiles` no-op PATCH
+    // that silently flipped features.source to 'user'. The fix moved
+    // row-expand to GET (side-effect-free) AND tightened PATCH to skip
+    // the flip when the description value is unchanged.
+    //
+    // E2E reproduces the user-visible symptom: expand a row (no other
+    // interaction), click Scan again, assert the source badge still
+    // shows 'agent' on that row.
+    await mockApi({
+      projects: [project],
+      features: [
+        {
+          id: "f-d4",
+          projectId: PROJECT_ID,
+          name: "auth",
+          description: "Files under src/auth",
+          source: "agent",
+          fileCount: 2,
+        },
+      ],
+      featureFiles: {
+        "f-d4": [
+          { relpath: "src/auth/a.ts", source: "scan" },
+          { relpath: "src/auth/b.ts", source: "scan" },
+        ],
+      },
+    });
+
+    await page.goto(`/project/${PROJECT_ID}/settings`);
+    const table = page.locator("table");
+    // Initial state: agent badge visible.
+    await expect(
+      table.locator("tr").filter({ hasText: "Files under src/auth" }).first()
+        .locator("span").filter({ hasText: /^agent$/ }),
+    ).toBeVisible({ timeout: 5000 });
+
+    // Click ▸ to expand (the bug surface — pre-fix this triggered the
+    // silent source flip via refreshFeatureFiles' no-op PATCH).
+    const dataRow = table
+      .locator("tr")
+      .filter({ has: page.locator('button[aria-label="Expand"]') })
+      .filter({ hasText: "Files under src/auth" })
+      .first();
+    await dataRow.locator('button[aria-label="Expand"]').click();
+    // File rows visible — confirms the expand fetch resolved.
+    await expect(page.getByText("src/auth/a.ts")).toBeVisible({ timeout: 5000 });
+
+    // Click Scan again — if the prior expand flipped source to 'user',
+    // the rescan would still find the bucket as user-owned and the badge
+    // would stay 'user'. With the fix the badge stays 'agent' AND the
+    // rescan continues to overwrite description / agent files normally.
+    await page.getByRole("button", { name: "Scan features" }).click();
+
+    // The auth row is back to its post-scan state (in our mock, scan
+    // returns the in-memory features unchanged because no scanResult was
+    // passed). Source badge MUST still be 'agent', not 'user'.
+    const row = table
+      .locator("tr")
+      .filter({ hasText: "Files under src/auth" })
+      .first();
+    await expect(
+      row.locator("span").filter({ hasText: /^agent$/ }),
+    ).toBeVisible({ timeout: 5000 });
+    // And NO 'user' badge appeared on this row.
+    await expect(
+      row.locator("span").filter({ hasText: /^user$/ }),
+    ).not.toBeVisible();
+  });
+
   test("add a user-pinned file via picker, then remove it", async ({
     page,
     mockApi,

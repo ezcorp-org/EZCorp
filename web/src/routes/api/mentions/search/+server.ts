@@ -17,7 +17,7 @@ import type { RequestHandler } from "./$types";
 
 const MAX_RESULTS = 10;
 
-type FileType = "ext" | "agent" | "team" | "path" | "cmd";
+type FileType = "ext" | "agent" | "team" | "path" | "cmd" | "feature";
 
 interface PathCandidate {
 	name: string;
@@ -142,9 +142,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const results: Array<{
 		name: string;
 		description: string;
-		kind: "agent" | "extension" | "team" | "file" | "dir" | "command";
+		kind: "agent" | "extension" | "team" | "file" | "dir" | "command" | "feature";
 		source?: string;
 		body?: string;
+		fileCount?: number;
 	}> = [];
 	const lowerQ = q.toLowerCase();
 	const pattern = `%${q}%`;
@@ -200,6 +201,47 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				kind: "command",
 				source: c.source,
 				body: c.body,
+			});
+		}
+		return json(results);
+	}
+
+	// Feature-Index searches are mutually exclusive with other kinds —
+	// the `$` sigil's popover shows only Feature Index entries scoped to
+	// the active project. If no active project (or unknown project),
+	// return an empty list instead of falling through to agent/ext/team
+	// results. Mirrors the `type === "path"` branch directly below.
+	if (type === "feature") {
+		if (!projectId) return json([]);
+		const project = await projectQueries.getProject(projectId);
+		if (!project) return json([]);
+		const { listFeatures } = await import("$server/db/queries/features");
+		const features = await listFeatures(projectId);
+
+		const matched = q
+			? features
+					.map((f) => {
+						const nameScore = fuzzyScore(q, f.name);
+						const descScore = fuzzyScore(q, f.description);
+						const best =
+							nameScore !== null && descScore !== null
+								? Math.max(nameScore, descScore)
+								: nameScore !== null
+								? nameScore
+								: descScore;
+						return { f, score: best };
+					})
+					.filter((x): x is { f: typeof features[number]; score: number } => x.score !== null)
+					.sort((a, b) => b.score - a.score)
+					.map((x) => x.f)
+			: features;
+
+		for (const f of matched.slice(0, MAX_RESULTS)) {
+			results.push({
+				name: f.name,
+				description: f.description,
+				kind: "feature",
+				fileCount: f.fileCount,
 			});
 		}
 		return json(results);

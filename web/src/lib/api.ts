@@ -360,7 +360,7 @@ export interface AttachmentSummary {
 	filename: string;
 	mimeType: string;
 	sizeBytes: number;
-	kind: "image" | "text" | "pdf" | "audio";
+	kind: "image" | "text" | "pdf" | "audio" | "extension-handle";
 }
 
 export interface Message {
@@ -953,9 +953,10 @@ export interface MentionResult {
 	/**
 	 * Concrete kind of the result. For `type=path` searches the server
 	 * returns a mix of `"file"` and `"dir"` entries based on the filesystem.
-	 * For `type=cmd` the result is always `"command"`.
+	 * For `type=cmd` the result is always `"command"`. For `type=feature`
+	 * the result is always `"feature"`.
 	 */
-	kind: "agent" | "extension" | "team" | "file" | "dir" | "command";
+	kind: "agent" | "extension" | "team" | "file" | "dir" | "command" | "feature";
 	/**
 	 * For `type=cmd` results: the source namespace the command was
 	 * discovered from — e.g. `"project:claude-commands"`,
@@ -968,6 +969,12 @@ export interface MentionResult {
 	 * chip's hover popover so readers can see what the LLM received.
 	 */
 	body?: string;
+	/**
+	 * For `type=feature` results: number of files in the feature's bucket.
+	 * Lets the popover show "(12 files)" alongside the feature name +
+	 * description so users can scan-pick at a glance.
+	 */
+	fileCount?: number;
 }
 
 // ── Command body cache (for /cmd chip hover popover) ────────────────
@@ -1022,7 +1029,7 @@ export function _resetCommandBodyCache(): void {
 
 export async function searchMentions(
 	query: string,
-	type?: "ext" | "agent" | "team" | "path" | "cmd",
+	type?: "ext" | "agent" | "team" | "path" | "cmd" | "feature",
 	projectId?: string,
 ): Promise<MentionResult[]> {
 	const params = new URLSearchParams({ q: query });

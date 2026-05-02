@@ -31,7 +31,7 @@ gitignored. See `docs/extensions/data-storage.md` for the full convention.
 
 ## Mention grammar
 
-The chat composer supports three mention sigils — all three share one
+The chat composer supports four mention sigils — all four share one
 pure-logic module at `web/src/lib/mention-logic.ts`, and the single
 `/api/mentions/search` endpoint routes on a `type=` query parameter.
 
@@ -40,6 +40,7 @@ pure-logic module at `web/src/lib/mention-logic.ts`, and the single
 | `!` | `agent`, `ext`, `team` | `![kind:name]` | DB (`agentConfigs`, `extensions`) + executor's in-memory map |
 | `@` | `file`, `dir` | `@[kind:relpath]` | Active project's filesystem (symlink-escape filtered) |
 | `/` | `cmd` | `/[cmd:name]` | `.claude/{commands,agents}`, `.codex/prompts`, `agents/` (project + home) + `user_commands` DB table |
+| `$` | `feature` | `$[feature:name]` | DB (`features` table, scoped to active project) |
 
 Slash-command discovery is gated by `EZCORP_SCAN_GLOBAL_COMMANDS` (default on).
 Commands are expanded server-side in `src/runtime/mention-wiring.ts`'s
@@ -47,6 +48,16 @@ Commands are expanded server-side in `src/runtime/mention-wiring.ts`'s
 the LLM sees the substituted body. Expansion is literal — never
 re-parse expanded text for other mention kinds. See
 [docs/slash-commands.md](docs/slash-commands.md) for the full spec.
+
+Feature mentions are expanded server-side in
+`src/runtime/mention-wiring.ts`'s `applyFeatureExpansion` — the raw
+`$[feature:name]` token is persisted; the LLM sees a system note
+listing the feature's description + plain-text file paths. Like
+slash-command expansion, this is literal — files are NOT emitted as
+`@[file:…]` tokens (no double-expansion). Unknown / deleted features
+are silent no-ops, mirroring `@[file:…]` for missing files. See
+[docs/plans/2026-05-01-feature-index-design.md](docs/plans/2026-05-01-feature-index-design.md)
+for the full spec.
 
 ## APIs
 

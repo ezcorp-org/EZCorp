@@ -9,10 +9,14 @@
  *     (agent should read-all-files / write-into-folder for dir mentions)
  *   /[cmd:Name]                                  — slash-command expansions
  *     (discovered from .claude/.codex/agents dirs + userCommands DB)
+ *   $[feature:Name]                              — Feature Index references
+ *     (per-project; resolved via DB. Server-side expansion lives in
+ *      src/runtime/mention-wiring.ts::applyFeatureExpansion.)
  */
 
-// Structured token regex: matches either `![kind:name]` (kind ∈ agent/ext/team),
-// `@[file|dir:name]`, or `/[cmd:name]`. The three sigils are mutually exclusive.
+// Structured token regex: matches `![kind:name]` (kind ∈ agent/ext/team),
+// `@[file|dir:name]`, `/[cmd:name]`, or `$[feature:name]`. The four sigils
+// are mutually exclusive at the trigger layer.
 // Capture groups:
 //   1 = kind  (agent|ext|team)   when the ! alternative matches
 //   2 = name  when the ! alternative matches
@@ -20,9 +24,11 @@
 //   4 = name  when the @ alternative matches
 //   5 = kind  (cmd)              when the / alternative matches
 //   6 = name  when the / alternative matches
-export const MENTION_REGEX = /!\[(agent|ext|team):([^\]]+)\]|@\[(file|dir):([^\]]+)\]|\/\[(cmd):([^\]]+)\]/g;
+//   7 = kind  (feature)          when the $ alternative matches
+//   8 = name  when the $ alternative matches
+export const MENTION_REGEX = /!\[(agent|ext|team):([^\]]+)\]|@\[(file|dir):([^\]]+)\]|\/\[(cmd):([^\]]+)\]|\$\[(feature):([^\]]+)\]/g;
 
-export type MentionKind = "agent" | "ext" | "team" | "file" | "dir" | "cmd";
+export type MentionKind = "agent" | "ext" | "team" | "file" | "dir" | "cmd" | "feature";
 
 export interface MentionTrigger {
 	active: boolean;
@@ -34,10 +40,12 @@ export interface MentionTrigger {
 	 * results. The search API uses this to route to the project-filesystem
 	 * branch (returning entries whose concrete `kind` is `"file"` or `"dir"`).
 	 * For the `/` sigil, always `"cmd"` — the popover shows slash commands.
+	 * For the `$` sigil, always `"feature"` — the popover shows Feature Index
+	 * entries scoped to the active project.
 	 */
-	type?: "ext" | "agent" | "team" | "path" | "cmd";
+	type?: "ext" | "agent" | "team" | "path" | "cmd" | "feature";
 	/** Which sigil activated the trigger. */
-	sigil: "!" | "@" | "/";
+	sigil: "!" | "@" | "/" | "$";
 }
 
 export interface MentionToken {
@@ -58,6 +66,8 @@ const BANG_TRIGGER_RE = /(?:^|\s)!((?:ext:|agent:|team:)?[^\s]*)$/;
 const AT_TRIGGER_RE = /(?:^|\s)@([^\s]*)$/;
 // `/` is dedicated to slash-command references; same tail semantics as `@`.
 const SLASH_TRIGGER_RE = /(?:^|\s)\/([^\s]*)$/;
+// `$` is dedicated to Feature Index references; same tail semantics as `@`.
+const DOLLAR_TRIGGER_RE = /(?:^|\s)\$([^\s]*)$/;
 
 /**
  * Detect if the user is actively typing a mention trigger.
@@ -105,6 +115,13 @@ export function detectMentionTrigger(
 		return { active: true, query: slash[1]!, type: "cmd", sigil: "/" };
 	}
 
+	const dollar = before.match(DOLLAR_TRIGGER_RE);
+	if (dollar) {
+		// `$` triggers the Feature Index popover. The search API routes this
+		// to the per-project `features` table.
+		return { active: true, query: dollar[1]!, type: "feature", sigil: "$" };
+	}
+
 	return null;
 }
 
@@ -140,6 +157,14 @@ export function parseMentions(text: string): MentionToken[] {
 				start: match.index,
 				end: match.index + match[0].length,
 			});
+		} else if (match[7] !== undefined) {
+			// Alternative 4 matched ($ sigil, feature)
+			mentions.push({
+				kind: match[7] as "feature",
+				name: match[8]!,
+				start: match.index,
+				end: match.index + match[0].length,
+			});
 		}
 	}
 	return mentions;
@@ -148,8 +173,9 @@ export function parseMentions(text: string): MentionToken[] {
 /**
  * Replace the active trigger span (sigil + query) with a structured mention
  * token. The sigil used is derived from the target kind:
- *   kind === "file" | "dir"          → `@[kind:name] ` (path references)
- *   kind === "cmd"                   → `/[kind:name] ` (slash commands)
+ *   kind === "file" | "dir"           → `@[kind:name] ` (path references)
+ *   kind === "cmd"                    → `/[kind:name] ` (slash commands)
+ *   kind === "feature"                → `$[kind:name] ` (Feature Index)
  *   kind === "agent" | "ext" | "team" → `![kind:name] ` (logical mentions)
  *
  * Returns new text and cursor position after the inserted token (including
@@ -163,6 +189,7 @@ export function insertMentionToken(
 	const before = value.slice(0, cursorPos);
 	const isAtSigil = mention.kind === "file" || mention.kind === "dir";
 	const isSlashSigil = mention.kind === "cmd";
+	const isDollarSigil = mention.kind === "feature";
 
 	// Match the trigger span that corresponds to the target sigil. We inspect
 	// the same underlying regex used for detection — the replacement only
@@ -171,6 +198,8 @@ export function insertMentionToken(
 		? /(?:^|\s)@[^\s]*$/
 		: isSlashSigil
 		? /(?:^|\s)\/[^\s]*$/
+		: isDollarSigil
+		? /(?:^|\s)\$[^\s]*$/
 		: /(?:^|\s)!(?:(?:ext:|agent:|team:)?[^\s]*)$/;
 	const spanMatch = before.match(triggerRe);
 	if (!spanMatch) return { text: value, cursor: cursorPos };
@@ -186,6 +215,8 @@ export function insertMentionToken(
 		? `@[${mention.kind}:${mention.name}] `
 		: isSlashSigil
 		? `/[${mention.kind}:${mention.name}] `
+		: isDollarSigil
+		? `$[${mention.kind}:${mention.name}] `
 		: `![${mention.kind}:${mention.name}] `;
 	const after = value.slice(cursorPos);
 	const newText = value.slice(0, atStart) + token + after;
@@ -265,7 +296,7 @@ export function getSegments(text: string): Segment[] {
 		if (match.index > lastIndex) {
 			segments.push({ type: "text", text: text.slice(lastIndex, match.index) });
 		}
-		// Three alternatives in MENTION_REGEX — pick the capture pair that matched.
+		// Four alternatives in MENTION_REGEX — pick the capture pair that matched.
 		let kind: string;
 		let name: string;
 		if (match[1] !== undefined) {
@@ -274,9 +305,12 @@ export function getSegments(text: string): Segment[] {
 		} else if (match[3] !== undefined) {
 			kind = match[3]!;
 			name = match[4]!;
-		} else {
+		} else if (match[5] !== undefined) {
 			kind = match[5]!;
 			name = match[6]!;
+		} else {
+			kind = match[7]!;
+			name = match[8]!;
 		}
 		segments.push({
 			type: "mention",

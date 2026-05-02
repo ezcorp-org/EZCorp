@@ -9,7 +9,7 @@
  */
 
 import type { AttachmentCapabilities } from "../../providers/model-capabilities";
-import { classifyMime, isMimeAccepted } from "../../providers/model-capabilities";
+import { classifyMimeWithCaps, isMimeAccepted } from "../../providers/model-capabilities";
 import { readAttachmentBytes } from "./storage";
 import { extractPdfText } from "./pdf-extract";
 
@@ -78,7 +78,7 @@ export async function buildUserContent(
     if (!isMimeAccepted(caps, att.mimeType)) {
       throw new UnsupportedAttachmentError(att.filename, att.mimeType);
     }
-    const kind = classifyMime(att.mimeType);
+    const kind = classifyMimeWithCaps(caps, att.mimeType);
     if (!kind) throw new UnsupportedAttachmentError(att.filename, att.mimeType);
     const strategy = caps.deliveryFor[kind];
     if (!strategy) throw new UnsupportedAttachmentError(att.filename, att.mimeType);
@@ -99,6 +99,12 @@ export async function buildUserContent(
       const bytes = await readAttachmentBytes(att.storagePath);
       const { text: extracted } = await extractPdfText(bytes);
       parts.push({ type: "text", text: fileWrapper(att.filename, att.mimeType, extracted) });
+    } else if (strategy === "extension-handle-only") {
+      // Bytes are NOT read here. The extension's tools accept the handle
+      // as a tool-call argument; the runtime handle-resolver substitutes
+      // it to a `data:<mime>;base64,...` URI just before dispatch.
+      const body = `Attachment available via extension tools.\nHandle: ${attachmentHandle(att.id)}\nMIME: ${att.mimeType}`;
+      parts.push({ type: "text", text: fileWrapper(att.filename, att.mimeType, body) });
     } else {
       // audio-native not wired yet; guard by capability table ensures we never
       // reach here in Phase 1.

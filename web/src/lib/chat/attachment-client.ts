@@ -7,7 +7,7 @@
  * accepted MIME list and the pre-upload gating UX.
  */
 
-export type AttachmentKind = "image" | "text" | "pdf" | "audio";
+export type AttachmentKind = "image" | "text" | "pdf" | "audio" | "extension-handle";
 
 export interface ClientCapabilities {
   provider: string;
@@ -28,12 +28,29 @@ export async function getClientCapabilities(
   provider: string,
   model: string,
   fetchImpl: typeof fetch = fetch,
+  conversationId?: string,
+  /**
+   * Names of extensions the user has *drafted* via `!ext:NAME` mentions
+   * in the composer but not yet sent. Picker uses these to accept files
+   * for not-yet-wired extensions — so dragging an .xlsx into a fresh
+   * chat that mentions `!ext:excel` works on the first message.
+   * Order-insensitive — sorted into the cache key for stability.
+   */
+  pendingExtensionNames?: readonly string[],
 ): Promise<ClientCapabilities> {
-  const key = cacheKey(provider, model);
+  const sortedExt = pendingExtensionNames && pendingExtensionNames.length > 0
+    ? [...new Set(pendingExtensionNames)].sort().join(",")
+    : "";
+  // Cache key includes conversationId AND the pending-extensions set so
+  // the picker re-fetches whenever the user types or removes an `!ext:`
+  // mention.
+  const key = `${cacheKey(provider, model)}::${conversationId ?? ""}::${sortedExt}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const p = (async () => {
     const qs = new URLSearchParams({ provider, model });
+    if (conversationId) qs.set("conversationId", conversationId);
+    if (sortedExt) qs.set("extensions", sortedExt);
     const res = await fetchImpl(`/api/models/capabilities?${qs}`);
     if (!res.ok) throw new Error(`Capability fetch failed: ${res.status}`);
     return (await res.json()) as ClientCapabilities;

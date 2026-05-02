@@ -497,7 +497,7 @@ export class AgentExecutor {
     try {
       this.bus.emit("run:status", { runId: run.id, status: "Generating response..." });
 
-      const { text: promptInput, images: attachmentImages } = await buildPromptInput(userMessage, options);
+      const { text: promptInput, images: attachmentImages } = await buildPromptInput(userMessage, { ...options, conversationId });
       if (attachmentImages.length > 0) {
         await piAgent.prompt(promptInput, attachmentImages);
       } else {

@@ -17,7 +17,7 @@ export type AttachmentSummary = {
   filename: string;
   mimeType: string;
   sizeBytes: number;
-  kind: "image" | "text" | "pdf" | "audio";
+  kind: "image" | "text" | "pdf" | "audio" | "extension-handle";
 };
 type Message = MessageRow & { memoriesUsed?: MemoryUsed[]; attachments?: AttachmentSummary[] };
 

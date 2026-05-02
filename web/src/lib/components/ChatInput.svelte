@@ -182,14 +182,25 @@
 	let isDragging = $state(false);
 	let fileInputEl: HTMLInputElement | undefined = $state();
 
-	// Fetch capabilities when the selected model changes. Non-fatal on error —
-	// if caps can't be loaded, the paperclip stays hidden and the user falls back
-	// to text-only messaging.
+	// Names of `!ext:NAME` mentions in the current draft. Re-runs the
+	// capabilities fetch so an extension that contributes new MIMEs (e.g.
+	// excel → xlsx) widens the accept list as soon as it's drafted, before
+	// the user sends. Without this, the picker rejects files for
+	// extensions the user is about to wire.
+	let pendingExtensionNames = $derived(
+		parseMentions(value).filter((m) => m.kind === 'ext').map((m) => m.name),
+	);
+
+	// Fetch capabilities when the selected model OR the pending-ext set
+	// changes. Non-fatal on error — if caps can't be loaded, the paperclip
+	// stays hidden and the user falls back to text-only messaging.
 	$effect(() => {
 		const sel = selectedModel;
 		if (!sel) { capabilities = null; return; }
+		// Re-read pendingExtensionNames inside the effect so Svelte tracks it.
+		const extNames = pendingExtensionNames;
 		let cancelled = false;
-		getClientCapabilities(sel.provider, sel.model)
+		getClientCapabilities(sel.provider, sel.model, fetch, conversationId || undefined, extNames)
 			.then((caps) => { if (!cancelled) capabilities = caps; })
 			.catch(() => { if (!cancelled) capabilities = null; });
 		return () => { cancelled = true; };

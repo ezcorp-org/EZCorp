@@ -359,9 +359,11 @@
 									<ThinkingCard content={block.content} streaming={isStreaming} />
 								</div>
 							{:else if block.type === 'text'}
-								<div class="excluded-prose">
-									<MarkdownRenderer content={block.content} streaming={isStreaming && i === contentBlocks.length - 1} />
-								</div>
+								{#if (block.content && block.content.trim().length > 0) || (isStreaming && i === contentBlocks.length - 1)}
+									<div class="excluded-prose">
+										<MarkdownRenderer content={block.content} streaming={isStreaming && i === contentBlocks.length - 1} />
+									</div>
+								{/if}
 							{:else if block.type === 'tool_ref' && toolCalls?.[block.toolIndex]}
 								<div
 									class="my-2 flex flex-col gap-1.5"
@@ -375,11 +377,18 @@
 						{/each}
 					</div>
 				{:else}
-					<!-- Fallback: flat text then tools (no block data available). -->
+					<!-- Fallback: flat text then tools (no block data available).
+					     The outer bound div stays mounted so the toolbar's
+					     `renderedHtml={mdContainer?.innerHTML}` always has a stable
+					     reference; only the inner markdown wrapper is suppressed
+					     when the message has nothing to render. Streaming bypasses
+					     the guard so the live token target is always present. -->
 					<div bind:this={mdContainer}>
-						<div class="excluded-prose">
-							<MarkdownRenderer content={displayContent} streaming={isStreaming} />
-						</div>
+						{#if (displayContent && displayContent.trim().length > 0) || isStreaming}
+							<div class="excluded-prose">
+								<MarkdownRenderer content={displayContent} streaming={isStreaming} />
+							</div>
+						{/if}
 					</div>
 					{#if toolCalls && toolCalls.length > 0}
 						<div class="my-2 flex flex-col gap-1.5">

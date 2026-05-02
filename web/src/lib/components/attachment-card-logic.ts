@@ -3,7 +3,7 @@
  * without a Svelte DOM harness. The component imports these helpers directly.
  */
 
-export type AttachmentKind = "image" | "text" | "pdf" | "audio";
+export type AttachmentKind = "image" | "text" | "pdf" | "audio" | "extension-handle";
 
 export function prettyBytes(n: number): string {
 	if (n < 1024) return `${n} B`;

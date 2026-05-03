@@ -206,6 +206,10 @@ describe("Sub-Conversation API Helpers", () => {
       status: 500,
       statusText: "Internal Server Error",
       headers: new Headers(),
+      // checkResponse reads the body for `data.error` on non-OK responses,
+      // so mocks must provide a json() method even when the test only
+      // pins on the status/statusText fallback.
+      json: async () => ({}),
     } as Response;
     (globalThis.fetch as unknown as ReturnType<typeof mock>).mockResolvedValue(mockResponse);
 

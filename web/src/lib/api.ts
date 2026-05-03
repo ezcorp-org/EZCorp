@@ -250,10 +250,7 @@ export async function initiateOAuth(
 ): Promise<{ url: string; state: string; codeVerifier: string; redirectUri: string }> {
 	const params = new URLSearchParams({ provider, app_origin: window.location.origin });
 	const res = await fetch(`${BASE}/api/auth/oauth?${params}`);
-	if (!res.ok) {
-		const data = await res.json().catch(() => ({}));
-		throw new Error(data.error ?? `${res.status} ${res.statusText}`);
-	}
+	await checkResponse(res);
 	return res.json();
 }
 
@@ -269,10 +266,7 @@ export async function completeOAuth(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ provider, code, codeVerifier, redirectUri, state }),
 	});
-	if (!res.ok) {
-		const data = await res.json().catch(() => ({}));
-		throw new Error(data.error ?? `${res.status} ${res.statusText}`);
-	}
+	await checkResponse(res);
 }
 
 export async function disconnectOAuth(provider: string): Promise<void> {
@@ -888,10 +882,7 @@ export async function publishToMarketplace(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ agentConfigId, ...opts }),
 	});
-	if (!res.ok) {
-		const data = await res.json().catch(() => ({}));
-		throw new Error(data.error ?? `${res.status} ${res.statusText}`);
-	}
+	await checkResponse(res);
 	return res.json();
 }
 
@@ -943,10 +934,7 @@ export async function importManifest(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ manifest }),
 	});
-	if (!res.ok) {
-		const data = await res.json().catch(() => ({}));
-		throw new Error(data.error ?? `${res.status} ${res.statusText}`);
-	}
+	await checkResponse(res);
 	return res.json();
 }
 

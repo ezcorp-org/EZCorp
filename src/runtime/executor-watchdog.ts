@@ -15,6 +15,32 @@ const WATCHDOG_IDLE_MS = 90_000;
 const HEARTBEAT_REFRESH_MS = 30_000;
 
 /**
+ * Default per-call timeout (ms) used when a tool's manifest doesn't declare
+ * `resources.callTimeoutMs`. Built-in tools and extensions that omit the
+ * field fall back to this value when the watchdog decides whether an
+ * in-flight call still has budget. Matches the spirit of the subprocess
+ * dispatcher's default — long enough for normal latency, short enough that
+ * a truly stuck call still gets caught by the next tick after expiring.
+ */
+export const DEFAULT_BUILTIN_CALL_TIMEOUT_MS = 60_000;
+
+/**
+ * Per-tool-call snapshot recorded when an extension/builtin tool starts.
+ * Carries everything needed to re-emit a `tool:error` event matching the
+ * `AgentEvents["tool:error"]` schema in src/types.ts when the watchdog
+ * decides to kill the run while this call is in flight.
+ */
+export interface InflightToolInfo {
+  toolName: string;
+  conversationId: string;
+  extensionId: string;
+  cardType?: string;
+  cardLayout?: string;
+  startedAt: number;
+  callTimeoutMs: number;
+}
+
+/**
  * Minimal read-only surface the watchdog needs from the executor it serves.
  * Passed by reference — the watchdog never owns the state it reads, only
  * the state it explicitly tracks (heartbeats, activity timestamps, orphan
@@ -48,6 +74,13 @@ export class WatchdogManager {
   // Last time we wrote active_runs.last_heartbeat for a run, so we can
   // throttle DB writes to HEARTBEAT_REFRESH_MS while still running the tick at WATCHDOG_TICK_MS.
   private lastHeartbeatWriteAt = new Map<string, number>();
+  // Per-run map of in-flight tool calls, keyed by the pi-agent toolCallId.
+  // pi-agent-core emits no events while awaiting a tool result, so without
+  // this state the run looks "idle" to the activity tracker and gets killed.
+  // While any entry exists for a run AND it's still within its declared
+  // callTimeoutMs, the watchdog defers the kill — the same shape as the
+  // existing pendingPermissions deferral.
+  private inflightTools = new Map<string, Map<string, InflightToolInfo>>();
   private orphanInterval: ReturnType<typeof setInterval> | undefined;
 
   constructor(private host: WatchdogHost) {}
@@ -105,6 +138,62 @@ export class WatchdogManager {
     this.lastActivityAt.set(runId, Date.now());
   }
 
+  /**
+   * Note that a tool call has started for a run. Held in memory only so the
+   * watchdog can (a) defer the idle kill until the manifest-declared
+   * `callTimeoutMs` is exceeded and (b) emit a properly-shaped `tool:error`
+   * event for any still-pending call when the run does get killed.
+   *
+   * The caller is responsible for resolving `callTimeoutMs` from the
+   * manifest (extensions) or `DEFAULT_BUILTIN_CALL_TIMEOUT_MS` (built-ins).
+   */
+  noteToolStart(runId: string, toolCallId: string, info: InflightToolInfo): void {
+    let runMap = this.inflightTools.get(runId);
+    if (!runMap) {
+      runMap = new Map();
+      this.inflightTools.set(runId, runMap);
+    }
+    runMap.set(toolCallId, info);
+  }
+
+  /** Drop the in-flight entry once the tool's complete/error event arrives.
+   *  Safe to call for unknown ids — the caller (subscribe-bridge) doesn't
+   *  always know whether a given event corresponds to a tracked tool. */
+  noteToolEnd(runId: string, toolCallId: string): void {
+    const runMap = this.inflightTools.get(runId);
+    if (!runMap) return;
+    runMap.delete(toolCallId);
+    if (runMap.size === 0) this.inflightTools.delete(runId);
+  }
+
+  /**
+   * Decide whether the watchdog should defer the idle kill for a run.
+   *
+   * Two reasons we defer:
+   *   1. A permission gate is open — the user just hasn't clicked yet.
+   *   2. A tool call is in flight and still within its declared
+   *      callTimeoutMs budget — pi-agent-core emits no events while awaiting
+   *      tool results, so the activity tracker can't see "still working".
+   *
+   * Returns a string reason for the log line when deferring, or null when
+   * the run should be subjected to the normal idle check.
+   */
+  private deferralReason(runId: string, conversationId: string, now: number): string | null {
+    const hasPendingPermission = [...this.host.pendingPermissions.values()].some(
+      (p) => p.conversationId === conversationId,
+    );
+    if (hasPendingPermission) return "pending permission";
+    const runMap = this.inflightTools.get(runId);
+    if (runMap && runMap.size > 0) {
+      for (const info of runMap.values()) {
+        if (now - info.startedAt < info.callTimeoutMs) {
+          return `tool ${info.toolName} in flight`;
+        }
+      }
+    }
+    return null;
+  }
+
   /** Start the activity-based watchdog for a run. Replaces the old setInterval-based heartbeat.
    *  Ticks every WATCHDOG_TICK_MS. If idle > WATCHDOG_IDLE_MS (with no pending permission),
    *  marks the run interrupted in the DB and emits run:error. Otherwise refreshes
@@ -121,29 +210,67 @@ export class WatchdogManager {
     const tick = async () => {
       const run = this.host.runs.get(runId);
       if (!run || run.status !== "running") return;
+      const now = Date.now();
       const last = this.lastActivityAt.get(runId) ?? run.startedAt;
-      const idleMs = Date.now() - last;
-      const hasPendingPermission = [...this.host.pendingPermissions.values()].some(
-        (p) => p.conversationId === conversationId,
-      );
-      if (hasPendingPermission) {
-        // Permission gates are legitimate idle — keep the run alive and don't count as stuck.
+      const idleMs = now - last;
+      const deferReason = this.deferralReason(runId, conversationId, now);
+      if (deferReason !== null) {
+        // Legitimate idle (permission gate or in-flight tool call still
+        // within its declared timeout) — keep the run alive and don't count
+        // as stuck. We bump the activity timestamp so the moment the
+        // deferral lifts (permission resolved or tool returns) the watchdog
+        // doesn't immediately trip on the staleness accumulated while
+        // waiting.
+        log.info("Watchdog deferred", { runId, conversationId, idleMs, reason: deferReason });
         this.bumpActivity(runId);
         await activeRunsDb.updateHeartbeat(runId).catch(() => {});
-        this.lastHeartbeatWriteAt.set(runId, Date.now());
+        this.lastHeartbeatWriteAt.set(runId, now);
         return;
       }
       if (idleMs >= WATCHDOG_IDLE_MS) {
-        const reason = `Watchdog: no activity for ${Math.round(idleMs / 1000)}s`;
-        log.error("Watchdog tripped, interrupting run", { runId, conversationId, idleMs });
+        // Pick the kill reason: a blown tool callTimeoutMs is more
+        // informative than the generic idle line. We grab the first
+        // expired tool — there's typically only one in flight at a time,
+        // and the run-level reason is a single string anyway.
+        const runMap = this.inflightTools.get(runId);
+        let reason = `Watchdog: no activity for ${Math.round(idleMs / 1000)}s`;
+        if (runMap) {
+          for (const info of runMap.values()) {
+            const elapsed = now - info.startedAt;
+            if (elapsed >= info.callTimeoutMs) {
+              reason = `Tool ${info.toolName} exceeded its ${info.callTimeoutMs}ms call timeout`;
+              break;
+            }
+          }
+        }
+        log.error("Watchdog tripped, interrupting run", { runId, conversationId, idleMs, reason });
         try {
           await activeRunsDb.markInterrupted(runId);
         } catch (err) {
           log.error("Watchdog markInterrupted failed", { error: String(err) });
         }
+        // Emit tool:error for each in-flight tool BEFORE run:error so the
+        // chat can render a per-tool failure card instead of the bare
+        // "Request was aborted" string the abort path would otherwise
+        // produce. Payload shape matches AgentEvents["tool:error"] in
+        // src/types.ts exactly.
+        if (runMap) {
+          for (const [toolCallId, info] of runMap) {
+            this.host.bus.emit("tool:error", {
+              conversationId: info.conversationId,
+              extensionId: info.extensionId,
+              toolName: info.toolName,
+              error: reason,
+              duration: now - info.startedAt,
+              invocationId: toolCallId,
+              ...(info.cardType ? { cardType: info.cardType } : {}),
+              ...(info.cardLayout ? { cardLayout: info.cardLayout } : {}),
+            });
+          }
+        }
         run.status = "error";
         run.result = { success: false, output: null, error: reason };
-        run.finishedAt = Date.now();
+        run.finishedAt = now;
         this.host.bus.emit("run:error", { run, error: reason, conversationId });
         // Abort the in-memory controller so any remaining awaits unblock.
         const controller = this.host.controllers.get(runId);
@@ -153,13 +280,13 @@ export class WatchdogManager {
       }
       // Still making progress — refresh heartbeat + partial response at the throttled cadence.
       const lastWrite = this.lastHeartbeatWriteAt.get(runId) ?? 0;
-      if (Date.now() - lastWrite >= HEARTBEAT_REFRESH_MS) {
+      if (now - lastWrite >= HEARTBEAT_REFRESH_MS) {
         await activeRunsDb.updateHeartbeat(runId).catch(() => {});
         const partial = getPartialResponse();
         if (partial) {
           await activeRunsDb.updatePartialResponse(runId, partial).catch(() => {});
         }
-        this.lastHeartbeatWriteAt.set(runId, Date.now());
+        this.lastHeartbeatWriteAt.set(runId, now);
       }
     };
     const timer = setInterval(() => {
@@ -180,6 +307,7 @@ export class WatchdogManager {
     }
     this.lastActivityAt.delete(runId);
     this.lastHeartbeatWriteAt.delete(runId);
+    this.inflightTools.delete(runId);
   }
 
   /**
@@ -197,5 +325,6 @@ export class WatchdogManager {
     this.heartbeats.clear();
     this.lastActivityAt.clear();
     this.lastHeartbeatWriteAt.clear();
+    this.inflightTools.clear();
   }
 }

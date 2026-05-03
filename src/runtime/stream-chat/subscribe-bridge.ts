@@ -6,6 +6,7 @@ import { getDb } from "../../db/connection";
 import { toolCalls, conversations } from "../../db/schema";
 import { persistToolCall } from "../../db/queries/tool-calls";
 import { ExtensionRegistry } from "../../extensions/registry";
+import { DEFAULT_BUILTIN_CALL_TIMEOUT_MS } from "../executor-watchdog";
 import type { StreamChatContext } from "./context";
 import type { StreamChatHost } from "./host";
 
@@ -126,10 +127,11 @@ export function subscribeBridge(
           toolDef?.cardLayout ?? startRegistered?.cardLayout,
           event.toolName,
         );
+        const startCardType = toolDef?.cardType ?? startRegistered?.cardType;
         host.bus.emit("tool:start", {
           conversationId, extensionId: "", toolName: event.toolName,
           input: event.args, timestamp: Date.now(),
-          cardType: toolDef?.cardType ?? startRegistered?.cardType,
+          cardType: startCardType,
           ...(startCardLayout ? { cardLayout: startCardLayout } : {}),
           category: toolDef?.category,
           // Propagate the pi-agent tool call id so the client can correlate
@@ -137,9 +139,39 @@ export function subscribeBridge(
           // persisted DB row — see the DB insert in tool_execution_end).
           invocationId: event.toolCallId,
         });
+        // Register the in-flight call with the watchdog so it (a) defers
+        // the idle kill until the manifest-declared callTimeoutMs is
+        // exceeded — pi-agent-core emits no events while awaiting the tool
+        // result, so otherwise the activity tracker would trip — and (b)
+        // can synthesize a `tool:error` event for this call if the
+        // watchdog ends up killing the run anyway. Built-ins fall back to
+        // DEFAULT_BUILTIN_CALL_TIMEOUT_MS; extensions read
+        // resources.callTimeoutMs from their manifest.
+        const startManifest = startRegistered
+          ? ExtensionRegistry.getInstance().getManifest(startRegistered.extensionId)
+          : undefined;
+        const manifestCallTimeout = startManifest?.resources?.callTimeoutMs;
+        const callTimeoutMs =
+          typeof manifestCallTimeout === "number" && manifestCallTimeout > 0
+            ? manifestCallTimeout
+            : DEFAULT_BUILTIN_CALL_TIMEOUT_MS;
+        host.watchdog.noteToolStart(run.id, event.toolCallId, {
+          toolName: event.toolName,
+          conversationId,
+          extensionId: startRegistered?.extensionId ?? "",
+          startedAt: Date.now(),
+          callTimeoutMs,
+          ...(startCardType ? { cardType: startCardType } : {}),
+          ...(startCardLayout ? { cardLayout: startCardLayout } : {}),
+        });
         break;
       }
       case "tool_execution_end": {
+        // Drop the watchdog inflight entry on both success and error
+        // paths — the run is no longer waiting on this call. Safe if the
+        // entry was never recorded (e.g. invoke_agent below skips
+        // noteToolStart, the matching noteToolEnd is then a no-op).
+        host.watchdog.noteToolEnd(run.id, event.toolCallId);
         // invoke_agent uses agent:spawn/agent:complete — skip tool:complete/error WS events
         // but still persist to DB below
         // cardType lookup: built-ins are in builtinToolDefsMap; extension

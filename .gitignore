@@ -71,6 +71,7 @@ test-results/
 # test project workspace
 TESTENV/
 web/e2e/.docker-auth.json
+web/e2e/.validate-auth.json
 
 # User-created projects (host-accessible bind mount from docker-compose)
 projects/

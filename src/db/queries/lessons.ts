@@ -174,6 +174,12 @@ export async function searchLessons(
     );
   }
 
+  // ORDER BY: visibility-priority FIRST, then recency, then popularity.
+  // Visibility must lead because the post-query slug-dedupe (below) keeps
+  // the FIRST occurrence per slug — if `lastFiredAt` led, a project-scoped
+  // row with a newer firing would be encountered before the user-scoped
+  // row at the same slug and the user-scoped row would be dedupped out,
+  // violating "most-specific scope wins."
   const rows = (await db
     .select()
     .from(lessons)

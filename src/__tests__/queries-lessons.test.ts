@@ -20,7 +20,9 @@
  * before queries are imported.
  */
 import { test, expect, describe, beforeEach, afterAll } from "bun:test";
-import { setupTestDb, closeTestDb, mockDbConnection } from "./helpers/test-pglite";
+import { eq } from "drizzle-orm";
+import { setupTestDb, closeTestDb, getTestDb, mockDbConnection } from "./helpers/test-pglite";
+import { users } from "../db/schema";
 
 mockDbConnection();
 
@@ -418,6 +420,16 @@ describe("lessons queries", () => {
       await make({ slug: "casc-2", visibility: "project" });
       expect((await listVisibleLessons(projectId, ownerId)).length).toBe(2);
       expect(await deleteProject(projectId)).toBe(true);
+      expect(await listVisibleLessons(projectId, ownerId)).toEqual([]);
+    });
+
+    test("deleting a user removes all lessons they own (incl. project-scoped)", async () => {
+      // Both visibility kinds attribute ownership to `ownerId`, so a user
+      // delete should cascade through regardless of scope.
+      await make({ slug: "user-casc-1" });
+      await make({ slug: "user-casc-2", visibility: "project" });
+      expect((await listVisibleLessons(projectId, ownerId)).length).toBe(2);
+      await getTestDb().delete(users).where(eq(users.id, ownerId));
       expect(await listVisibleLessons(projectId, ownerId)).toEqual([]);
     });
   });

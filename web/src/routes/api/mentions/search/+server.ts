@@ -17,7 +17,7 @@ import type { RequestHandler } from "./$types";
 
 const MAX_RESULTS = 10;
 
-type FileType = "ext" | "agent" | "team" | "path" | "cmd" | "feature";
+type FileType = "ext" | "agent" | "team" | "path" | "cmd" | "feature" | "lesson";
 
 interface PathCandidate {
 	name: string;
@@ -142,7 +142,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const results: Array<{
 		name: string;
 		description: string;
-		kind: "agent" | "extension" | "team" | "file" | "dir" | "command" | "feature";
+		kind: "agent" | "extension" | "team" | "file" | "dir" | "command" | "feature" | "lesson";
 		source?: string;
 		body?: string;
 		fileCount?: number;
@@ -228,6 +228,30 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				description: f.description,
 				kind: "feature",
 				fileCount: f.fileCount,
+			});
+		}
+		return json(results);
+	}
+
+	// Lesson searches are mutually exclusive with other kinds — the `%`
+	// sigil's popover shows only lesson entries, scoped to the active
+	// project AND the requesting user (visibility precedence is enforced
+	// inside `searchLessons`: user-scoped beats project-scoped beats
+	// global at the same slug). Mirrors the `type === "feature"` branch.
+	if (type === "lesson") {
+		if (!projectId) return json([]);
+		const project = await projectQueries.getProject(projectId);
+		if (!project) return json([]);
+		const { searchLessons } = await import("$server/db/queries/lessons");
+		const lessons = await searchLessons(projectId, user.id, q, MAX_RESULTS);
+		for (const lesson of lessons) {
+			results.push({
+				name: lesson.slug,
+				// Body excerpt drives the popover preview (Builder A's spec).
+				// 60-char cap keeps the chip compact; the full body is
+				// rendered server-side at expansion time, not here.
+				description: lesson.body.slice(0, 60),
+				kind: "lesson",
 			});
 		}
 		return json(results);

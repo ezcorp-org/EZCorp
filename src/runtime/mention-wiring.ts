@@ -248,6 +248,129 @@ export async function applyFeatureExpansion(
   return blocks.join("\n\n");
 }
 
+// ─── Lesson-mention expansion ──────────────────────────────────────
+
+/**
+ * Resolves a `%[lesson:slug]` token to the lesson's title + body and
+ * the underlying lesson row id (so callers can bump
+ * `firedCount` / `lastFiredAt` after a successful expansion).
+ *
+ * `null` for unknown / deleted slugs — caller MUST treat that as a
+ * silent no-op (mirroring how `$[feature:…]` and `@[file:…]` handle
+ * a missing target).
+ *
+ * The resolver pattern matches `FeatureResolver` so this module stays
+ * DB-free and unit-testable. The build-prompt path supplies a real
+ * DB-backed resolver via `getLessonBySlug(projectId, ownerId, slug)`.
+ */
+export type LessonResolver = (
+  slug: string,
+) => Promise<{ title: string; body: string; lessonId: string } | null>;
+
+/**
+ * Standalone token regex for `%[lesson:slug]`. Mirrors `FEATURE_TOKEN_RE`
+ * — sourced from the shared `STRUCTURED_NAME_CHAR_CLASS` constant in
+ * mention-logic.ts so this module's expansion never drifts from the
+ * front-end picker regex.
+ */
+export const LESSON_TOKEN_RE = new RegExp(
+  `\\%\\[lesson:(${STRUCTURED_NAME_CHAR_CLASS})\\]`,
+  "g",
+);
+
+/**
+ * Hard caps on lesson expansion within a single user turn.
+ *
+ * Per the scout review (tasks/lessons-keeper-v1.md, Q-decisions): a
+ * single message may contain at most {@link MAX_LESSON_EXPANSIONS_PER_TURN}
+ * `%[lesson:…]` tokens and the cumulative expanded text may not exceed
+ * {@link MAX_LESSON_EXPANDED_CHARS} characters. Excess tokens are
+ * dropped silently — fail closed so a paste-bomb cannot DoS the
+ * prompt by stuffing the context window with lesson bodies.
+ *
+ * Caps are applied AFTER dedupe so a duplicated slug only consumes one
+ * slot (matches the per-feature dedupe contract in
+ * `applyFeatureExpansion`).
+ */
+const MAX_LESSON_EXPANSIONS_PER_TURN = 5;
+const MAX_LESSON_EXPANDED_CHARS = 8 * 1024;
+
+/**
+ * Expand `%[lesson:<slug>]` tokens in `userMessage` into a system-note
+ * block per resolved lesson.
+ *
+ * Returns the JOINED system-note text (or `""` when no tokens / no
+ * resolvable lessons). The caller is responsible for prepending the
+ * result to the prompt — the user-visible message text is NEVER
+ * modified by this function, mirroring `applyFeatureExpansion`.
+ *
+ * Critical correctness rules:
+ *   - Tokens are walked in source order, deduped by slug — a slug
+ *     repeated three times produces ONE block and ONE `onFired` call.
+ *   - Unknown / deleted slugs → silent no-op (no system note, no
+ *     `onFired` call).
+ *   - Per-turn cap (`MAX_LESSON_EXPANSIONS_PER_TURN`): at most 5
+ *     blocks emitted; further unique slugs dropped silently.
+ *   - Total-byte cap (`MAX_LESSON_EXPANDED_CHARS`): once the joined
+ *     blocks would exceed 8 KB, further blocks are dropped silently.
+ *     The check is "would-exceed" — a partially-fitting block is
+ *     dropped whole (we never truncate a body mid-sentence).
+ *   - `onFired` invokes once per *successfully included* lesson with
+ *     the lesson's `lessonId`. Callers use it to bump
+ *     `firedCount` / `lastFiredAt`. Pass `undefined` from tests that
+ *     don't need the signal.
+ *   - No double-expansion: lesson bodies are emitted VERBATIM. Any
+ *     other mention sigil (`![ext:…]`, `@[file:…]`, `$[feature:…]`)
+ *     that appears inside a body stays literal.
+ */
+export async function applyLessonExpansion(
+  userMessage: string,
+  resolver: LessonResolver,
+  onFired?: (lessonId: string) => void,
+): Promise<string> {
+  // Walk tokens in source order, dedupe by slug. Fresh regex per call
+  // so `lastIndex` doesn't leak between invocations.
+  const re = new RegExp(LESSON_TOKEN_RE.source, "g");
+  const seen = new Set<string>();
+  const orderedSlugs: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(userMessage)) !== null) {
+    const slug = m[1]!.trim();
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    orderedSlugs.push(slug);
+  }
+  if (orderedSlugs.length === 0) return "";
+
+  const blocks: string[] = [];
+  let totalChars = 0;
+  for (const slug of orderedSlugs) {
+    // Per-turn count cap — applied AFTER dedupe (each unique slug
+    // consumes one slot, regardless of how many times it appeared).
+    if (blocks.length >= MAX_LESSON_EXPANSIONS_PER_TURN) break;
+
+    const lesson = await resolver(slug);
+    if (!lesson) continue; // unknown / deleted → silent no-op
+
+    const block = `**Lesson: ${lesson.title}**\n${lesson.body}`;
+    // Joined output cost = previous-blocks + "\n\n" separator (when
+    // there is a previous block) + this block. Use that exact size
+    // as the would-exceed check so the cap reflects what the LLM
+    // actually sees post-`join("\n\n")`.
+    const separatorCost = blocks.length > 0 ? 2 : 0;
+    if (totalChars + separatorCost + block.length > MAX_LESSON_EXPANDED_CHARS) {
+      // Drop this whole block — no partial-truncation. Subsequent
+      // blocks will also fail the check (they'd still need the
+      // separator), so break early to avoid pointless resolver work.
+      break;
+    }
+    blocks.push(block);
+    totalChars += separatorCost + block.length;
+    onFired?.(lesson.lessonId);
+  }
+  return blocks.join("\n\n");
+}
+
 /**
  * Parse structured `![agent:Name]` mentions from a message and resolve them
  * to agent config records.

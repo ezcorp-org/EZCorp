@@ -947,9 +947,10 @@ export interface MentionResult {
 	 * Concrete kind of the result. For `type=path` searches the server
 	 * returns a mix of `"file"` and `"dir"` entries based on the filesystem.
 	 * For `type=cmd` the result is always `"command"`. For `type=feature`
-	 * the result is always `"feature"`.
+	 * the result is always `"feature"`. For `type=lesson` the result is
+	 * always `"lesson"`.
 	 */
-	kind: "agent" | "extension" | "team" | "file" | "dir" | "command" | "feature";
+	kind: "agent" | "extension" | "team" | "file" | "dir" | "command" | "feature" | "lesson";
 	/**
 	 * For `type=cmd` results: the source namespace the command was
 	 * discovered from — e.g. `"project:claude-commands"`,
@@ -1094,7 +1095,7 @@ export function _resetFeatureDetailsCache(): void {
 
 export async function searchMentions(
 	query: string,
-	type?: "ext" | "agent" | "team" | "path" | "cmd" | "feature",
+	type?: "ext" | "agent" | "team" | "path" | "cmd" | "feature" | "lesson",
 	projectId?: string,
 ): Promise<MentionResult[]> {
 	const params = new URLSearchParams({ q: query });

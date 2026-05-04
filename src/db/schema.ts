@@ -656,3 +656,43 @@ export type Feature = typeof features.$inferSelect;
 export type NewFeature = typeof features.$inferInsert;
 export type FeatureFile = typeof featureFiles.$inferSelect;
 export type NewFeatureFile = typeof featureFiles.$inferInsert;
+
+// ── Surface Coverage Audit ─────────────────────────────────────────
+// Per-feature classification against the three "outward" surfaces:
+// SDK (packages/@ezcorp/sdk), EzButton (web/src/lib/components/ez/),
+// and MCP (packages/@ezcorp/ai-kit/src/mcp/server.ts).
+//
+// Keyed on (featureId, contentHash) so re-running the audit on an
+// unchanged feature is a pure cache hit. The hash is derived from the
+// feature's sorted relpaths + per-file head bytes — see
+// src/runtime/audit/cache.ts. Stale rows are pruned by
+// pruneStaleClassifications() when the hash changes.
+//
+// `via` distinguishes deterministic precheck verdicts from LLM
+// judgments — precheck wins on conflict (see src/runtime/audit/run.ts).
+
+export interface SurfaceVerdict {
+  exposed: boolean;
+  via: "precheck" | "llm";
+  evidence?: string;
+}
+
+export interface SurfaceVerdicts {
+  sdk: SurfaceVerdict;
+  ezbutton: SurfaceVerdict;
+  mcp: SurfaceVerdict;
+}
+
+export const featureClassifications = pgTable("feature_classifications", {
+  featureId: text("feature_id").notNull().references(() => features.id, { onDelete: "cascade" }),
+  contentHash: text("content_hash").notNull(),
+  surfaces: jsonb("surfaces").$type<SurfaceVerdicts>().notNull(),
+  rationale: text("rationale").notNull().default(""),
+  classifiedAt: timestamp("classified_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.featureId, table.contentHash] }),
+  index("idx_feature_classifications_feature").on(table.featureId),
+]);
+
+export type FeatureClassification = typeof featureClassifications.$inferSelect;
+export type NewFeatureClassification = typeof featureClassifications.$inferInsert;

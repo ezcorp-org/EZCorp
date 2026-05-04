@@ -497,7 +497,15 @@ export class AgentExecutor {
     try {
       this.bus.emit("run:status", { runId: run.id, status: "Generating response..." });
 
-      const { text: promptInput, images: attachmentImages } = await buildPromptInput(userMessage, { ...options, conversationId });
+      const { text: promptInput, images: attachmentImages } = await buildPromptInput(userMessage, {
+        ...options,
+        conversationId,
+        // ownerId drives `%[lesson:…]` visibility scoping inside
+        // buildPromptInput. Falls back to undefined when convRecord is
+        // missing or the row has no userId — the lesson block silently
+        // no-ops in that case (mirrors the projectId-missing path).
+        ownerId: convRecord?.userId ?? undefined,
+      });
       if (attachmentImages.length > 0) {
         await piAgent.prompt(promptInput, attachmentImages);
       } else {

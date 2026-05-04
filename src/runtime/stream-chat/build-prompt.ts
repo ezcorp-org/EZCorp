@@ -1,3 +1,4 @@
+import { logger } from "../../logger";
 import { getProject } from "../../db/queries/projects";
 
 /** Subset of streamChat's options the prompt-building phase reads. */
@@ -9,6 +10,12 @@ export interface BuildPromptOptions {
    *  capabilities, which is correct for replays / preview paths that don't
    *  have a persisted conversation. */
   conversationId?: string;
+  /** Owning user of the active conversation. Required (alongside
+   *  `projectId`) for `%[lesson:…]` expansion — `getLessonBySlug` enforces
+   *  visibility precedence (user > project > global) keyed by both ids.
+   *  Replays / preview paths that don't have a user context omit this and
+   *  the lesson-expansion block silently no-ops. */
+  ownerId?: string;
   provider?: string;
   model?: string;
   attachments?: import("../../chat/attachments/content-builder").StagedAttachment[];
@@ -87,6 +94,41 @@ export async function buildPromptInput(
       });
       if (note) text = `${note}\n\n${text}`;
     } catch { /* Feature mention resolution failure is non-fatal */ }
+  }
+
+  // Resolve %[lesson:…] mentions against the lessons table. The resolver
+  // delegates visibility precedence (user > project > global) to
+  // `getLessonBySlug`; per-turn caps (5 expansions / 8 KB joined text) are
+  // enforced inside `applyLessonExpansion`. `onFired` bumps fired_count +
+  // last_fired_at on every successfully included lesson — fire-and-forget
+  // so a slow UPDATE never blocks prompt build, and a thrown error is
+  // logged but non-fatal (the lesson STILL surfaces in the prompt). This
+  // block runs AFTER feature expansion so lesson notes end up at the TOP
+  // of the final prompt — they're persistent guidance, while file/feature
+  // notes are turn-specific context. Like every other expansion in this
+  // function, exceptions are swallowed: a DB hiccup must not 500 chat.
+  if (options.projectId && options.ownerId) {
+    try {
+      const { applyLessonExpansion } = await import("../mention-wiring");
+      const { getLessonBySlug, incrementFiredCount } = await import("../../db/queries/lessons");
+      const projectId = options.projectId;
+      const ownerId = options.ownerId;
+      const note = await applyLessonExpansion(
+        userMessage,
+        async (slug) => {
+          const lesson = await getLessonBySlug(projectId, ownerId, slug);
+          if (!lesson) return null;
+          return { title: lesson.title, body: lesson.body, lessonId: lesson.id };
+        },
+        (lessonId) => {
+          // Fire-and-forget — never await, never block the prompt build.
+          incrementFiredCount(lessonId).catch((err) => {
+            logger.warn("incrementFiredCount failed", { lessonId, error: String(err) });
+          });
+        },
+      );
+      if (note) text = `${note}\n\n${text}`;
+    } catch { /* Lesson mention resolution failure is non-fatal */ }
   }
 
   // Multi-modal attachments for the current turn: convert to pi-ai parts.

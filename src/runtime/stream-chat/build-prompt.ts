@@ -123,7 +123,11 @@ export async function buildPromptInput(
         (lessonId) => {
           // Fire-and-forget — never await, never block the prompt build.
           incrementFiredCount(lessonId).catch((err) => {
-            logger.warn("incrementFiredCount failed", { lessonId, error: String(err) });
+            // debug, not warn — a missed counter bump is operational
+            // telemetry (drives v3 ranking signals) but does not affect
+            // prompt correctness, so it shouldn't surface as a warning
+            // in normal log streams.
+            logger.debug("incrementFiredCount failed", { lessonId, error: String(err) });
           });
         },
       );

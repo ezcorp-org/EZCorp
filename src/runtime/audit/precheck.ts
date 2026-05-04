@@ -53,13 +53,24 @@ export async function runPrecheck(
 
   // ── Path-only rules (cheap, no IO) ─────────────────────────────────
 
-  // SDK: any ezcorp.config.{ts,js,mjs} or anything under packages/@ezcorp/sdk
+  // SDK: any ezcorp.config.{ts,js,mjs} or anything under packages/@ezcorp/sdk.
+  // An ezcorp.config.{ts,js,mjs} file identifies the feature as a published
+  // extension, which is also reachable through the MCP `extension_search`
+  // meta-tool — so stamp MCP=true via precheck too. The
+  // `packages/@ezcorp/sdk/` branch is the SDK source itself (not an
+  // extension), so it only implies SDK exposure.
   for (const rp of relpaths) {
-    if (
-      /(^|\/)ezcorp\.config\.(ts|js|mjs)$/.test(rp) ||
-      pathMatches(rp, "packages/@ezcorp/sdk/")
-    ) {
+    const isExtensionManifest = /(^|\/)ezcorp\.config\.(ts|js|mjs)$/.test(rp);
+    const isSdkSource = pathMatches(rp, "packages/@ezcorp/sdk/");
+    if (isExtensionManifest || isSdkSource) {
       verdict.sdk = { exposed: true, via: "precheck", evidence: rp };
+      if (isExtensionManifest) {
+        verdict.mcp = {
+          exposed: true,
+          via: "precheck",
+          evidence: `${rp}: covered by extension_search MCP meta-tool`,
+        };
+      }
       break;
     }
   }

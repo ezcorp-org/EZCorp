@@ -41,7 +41,7 @@ function feat(name: string, relpaths: string[]): FeatureWithFiles {
 }
 
 describe("runPrecheck — path rules", () => {
-  test("ezcorp.config.ts file flips SDK to true via precheck", async () => {
+  test("ezcorp.config.ts file flips both SDK and MCP to true via precheck (extension → meta-tool)", async () => {
     writeFixture("docs/extensions/examples/auto-note/ezcorp.config.ts", "// stub");
     const v = await runPrecheck(
       feat("auto-note", ["docs/extensions/examples/auto-note/ezcorp.config.ts"]),
@@ -49,15 +49,22 @@ describe("runPrecheck — path rules", () => {
     );
     expect(v.sdk?.exposed).toBe(true);
     expect(v.sdk?.via).toBe("precheck");
+    // Extensions are reachable via the `extension_search` MCP meta-tool, so
+    // precheck stamps MCP=true with evidence pointing at the meta-tool.
+    expect(v.mcp?.exposed).toBe(true);
+    expect(v.mcp?.via).toBe("precheck");
+    expect(v.mcp?.evidence).toContain("extension_search");
   });
 
-  test("file under packages/@ezcorp/sdk flips SDK", async () => {
+  test("file under packages/@ezcorp/sdk flips SDK only (SDK source is not an extension)", async () => {
     writeFixture("packages/@ezcorp/sdk/src/runtime/storage.ts", "// stub");
     const v = await runPrecheck(
       feat("sdk-storage", ["packages/@ezcorp/sdk/src/runtime/storage.ts"]),
       projectRoot,
     );
     expect(v.sdk?.exposed).toBe(true);
+    // SDK-source files are NOT extensions, so MCP stays undecided here.
+    expect(v.mcp).toBeUndefined();
   });
 
   test(".svelte file under web/src/lib/components/ez/ flips EzButton", async () => {

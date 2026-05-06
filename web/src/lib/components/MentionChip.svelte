@@ -13,7 +13,7 @@
 		tooltip,
 	}: {
 		name: string;
-		kind: 'agent' | 'extension' | 'team' | 'file' | 'dir' | 'command' | 'feature';
+		kind: 'agent' | 'extension' | 'team' | 'file' | 'dir' | 'command' | 'feature' | 'lesson';
 		status?: 'pending' | 'running' | 'complete' | 'error';
 		onclick?: () => void;
 		stretch?: boolean;
@@ -87,6 +87,7 @@
 	let isPath = $derived(kind === 'file' || kind === 'dir');
 	let isCommand = $derived(kind === 'command');
 	let isFeature = $derived(kind === 'feature');
+	let isLesson = $derived(kind === 'lesson');
 
 	// File / dir chips show the basename in the pill; full path goes into the
 	// tooltip. Dir chips append a trailing `/` so folders are visually distinct
@@ -98,8 +99,9 @@
 	});
 
 	// Sigil prefix matches the stored token syntax: `!` for agent/ext/team,
-	// `@` for file/dir (path kinds), `/` for commands, `$` for feature.
-	let sigil = $derived(isPath ? '@' : isCommand ? '/' : isFeature ? '$' : '!');
+	// `@` for file/dir (path kinds), `/` for commands, `$` for feature,
+	// `%` for lesson.
+	let sigil = $derived(isPath ? '@' : isCommand ? '/' : isFeature ? '$' : isLesson ? '%' : '!');
 
 	// For path chips (file/dir), always surface the full relative path on
 	// hover even without an explicit tooltip prop.
@@ -252,7 +254,9 @@
 						? 'border-amber-500/30 bg-amber-500/20 text-amber-300'
 						: kind === 'command'
 							? 'border-pink-500/30 bg-pink-500/20 text-pink-300'
-							: 'border-purple-500/30 bg-purple-500/20 text-purple-300'} {onclick ? 'cursor-pointer hover:brightness-125' : 'cursor-default'} {stretch ? 'w-full justify-center' : ''}"
+							: kind === 'lesson'
+								? 'border-sky-500/30 bg-sky-500/20 text-sky-300'
+								: 'border-purple-500/30 bg-purple-500/20 text-purple-300'} {onclick ? 'cursor-pointer hover:brightness-125' : 'cursor-default'} {stretch ? 'w-full justify-center' : ''}"
 		onclick={onclick}
 		onkeydown={onclick ? (e) => { if (e.key === 'Enter' || e.key === ' ') onclick?.(); } : undefined}
 		onmouseenter={() => {

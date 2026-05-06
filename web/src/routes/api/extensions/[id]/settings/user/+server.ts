@@ -11,9 +11,9 @@ import { errorJson } from "$lib/server/http-errors";
 import type { ExtensionManifestV2 } from "$server/extensions/types";
 import type { RequestHandler } from "./$types";
 
-const userPutSchema = z.object({
+const userPutSchema = z.looseObject({
   values: z.unknown(),
-}).passthrough();
+});
 
 export const PUT: RequestHandler = async ({ request, params, locals }) => {
   const user = requireAuth(locals);

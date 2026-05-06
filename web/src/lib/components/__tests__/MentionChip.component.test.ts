@@ -8,6 +8,12 @@
  * dropped 'feature' before it ever reached the chip. Fix landed in
  * commit 5d3b219e; this test locks the sigil per kind so a future
  * kind addition can't silently regress to '!' again.
+ *
+ * The `lesson` kind reproduced the same bug shape (caught only by
+ * live smoke test on 2026-05-06 — chip rendered `!use-bun-not-node`
+ * despite the canonical token being `%[lesson:use-bun-not-node]`).
+ * The bug existed because Phase 2A updated the parser + popover but
+ * not this chip. The test cases below now lock all eight kinds.
  */
 
 import { render } from "@testing-library/svelte";
@@ -32,7 +38,8 @@ describe("MentionChip — sigil per kind", () => {
 			| "file"
 			| "dir"
 			| "command"
-			| "feature";
+			| "feature"
+			| "lesson";
 		name: string;
 		expectedText: string;
 	}> = [
@@ -45,6 +52,7 @@ describe("MentionChip — sigil per kind", () => {
 		{ kind: "dir", name: "src/foo", expectedText: "@foo/" },
 		{ kind: "command", name: "review", expectedText: "/review" },
 		{ kind: "feature", name: "chat-attachments", expectedText: "$chat-attachments" },
+		{ kind: "lesson", name: "use-bun-not-node", expectedText: "%use-bun-not-node" },
 	];
 
 	for (const c of cases) {
@@ -74,7 +82,8 @@ describe("MentionChip — sigil per kind", () => {
 			"dir",
 			"command",
 			"feature",
+			"lesson",
 		] as const;
-		expect(known).toHaveLength(7);
+		expect(known).toHaveLength(8);
 	});
 });

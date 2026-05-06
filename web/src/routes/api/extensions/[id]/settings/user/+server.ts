@@ -45,6 +45,13 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
   const ext = await getExtension(params.id);
   if (!ext) return errorJson(404, "Not found");
 
+  // Symmetric with PUT: an extension with no `settings` block has no
+  // user-values surface — refuse the reset rather than silently no-op.
+  const manifest = ext.manifest as ExtensionManifestV2 | null;
+  if (!manifest?.settings) {
+    return errorJson(409, "Extension has no settings schema");
+  }
+
   await clearUserSettings(user.id, params.id);
   return json({ ok: true });
 };

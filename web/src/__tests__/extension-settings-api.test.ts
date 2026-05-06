@@ -266,5 +266,12 @@ describe("extension settings API", () => {
       expect(res.status).toBe(404);
       expect(mockClearUser).not.toHaveBeenCalled();
     });
+
+    test("409 when extension has no settings schema (PUT parity)", async () => {
+      mockExt = { id: "ext-1", manifest: { settings: undefined } };
+      const res = await call(userRoute.DELETE, makeEvent("DELETE", undefined));
+      expect(res.status).toBe(409);
+      expect(mockClearUser).not.toHaveBeenCalled();
+    });
   });
 });

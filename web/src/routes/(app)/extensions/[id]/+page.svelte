@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { page } from "$app/stores";
 	import { onMount } from "svelte";
+	import type { SettingsSchema } from "$server/extensions/types";
+	import SettingsPanel from "./SettingsPanel.svelte";
+	import { invalidateExtensionSettings } from "$lib/stores/extensionSettings";
 
 	interface ExtensionDetail {
 		id: string;
@@ -23,6 +26,7 @@
 				shell?: boolean;
 				env?: string[];
 			};
+			settings?: SettingsSchema;
 		};
 		grantedPermissions: {
 			network?: string[];
@@ -64,6 +68,75 @@
 
 	const extId = $derived($page.params.id);
 	const hasViolations = $derived(violations.length > 0);
+
+	// ── Per-extension settings (Slice 4) ─────────────────────────────
+	let settingsSchema = $state<SettingsSchema>({});
+	let globalValues = $state<Record<string, unknown>>({});
+	let userValues = $state<Record<string, unknown>>({});
+	let settingsLoaded = $state(false);
+	let settingsError = $state("");
+
+	const hasSchema = $derived(Object.keys(settingsSchema).length > 0);
+
+	async function loadSettings() {
+		try {
+			const res = await fetch(`/api/extensions/${extId}/settings`);
+			if (!res.ok) {
+				if (res.status === 409) {
+					// 409 = manifest declares no settings block. Surface the empty
+					// placeholder in the UI rather than treating it as an error.
+					settingsSchema = {};
+					settingsLoaded = true;
+				} else {
+					settingsError = `Failed to load settings (HTTP ${res.status})`;
+					settingsLoaded = true;
+				}
+				return;
+			}
+			const data = await res.json();
+			settingsSchema = (data.schema ?? {}) as SettingsSchema;
+			globalValues = (data.globalValues ?? {}) as Record<string, unknown>;
+			userValues = (data.userValues ?? {}) as Record<string, unknown>;
+			settingsLoaded = true;
+		} catch (e) {
+			settingsError = e instanceof Error ? e.message : "Failed to load settings";
+			settingsLoaded = true;
+		}
+	}
+
+	async function saveUserSettings(next: Record<string, unknown>) {
+		const res = await fetch(`/api/extensions/${extId}/settings/user`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ values: next }),
+		});
+		if (!res.ok) throw new Error(`Save failed: HTTP ${res.status}`);
+		if (ext) invalidateExtensionSettings(ext.name);
+		showTemporarySuccess("Settings saved");
+		await loadSettings();
+	}
+
+	async function resetUserSettings() {
+		const res = await fetch(`/api/extensions/${extId}/settings/user`, {
+			method: "DELETE",
+		});
+		if (!res.ok) throw new Error(`Reset failed: HTTP ${res.status}`);
+		if (ext) invalidateExtensionSettings(ext.name);
+		showTemporarySuccess("Settings reset to default");
+		await loadSettings();
+	}
+
+	async function saveGlobalSettings(next: Record<string, unknown>) {
+		const res = await fetch(`/api/extensions/${extId}/settings/global`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ values: next }),
+		});
+		if (!res.ok) throw new Error(`Save failed: HTTP ${res.status}`);
+		if (ext) invalidateExtensionSettings(ext.name);
+		showTemporarySuccess("Global defaults saved");
+		await loadSettings();
+	}
 
 	async function checkAdmin() {
 		try {
@@ -190,7 +263,7 @@
 
 	onMount(async () => {
 		await checkAdmin();
-		await Promise.all([loadExtension(), loadViolations(), loadAuditTrail()]);
+		await Promise.all([loadExtension(), loadViolations(), loadAuditTrail(), loadSettings()]);
 	});
 
 	function showTemporarySuccess(msg: string) {
@@ -344,6 +417,47 @@
 				</div>
 			{/if}
 		</div>
+
+		<!-- Settings (Slice 4) -->
+		<section
+			class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-4"
+			data-testid="extension-settings-section"
+		>
+			<h3 class="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">Settings</h3>
+
+			{#if settingsError}
+				<p class="mb-3 text-xs text-red-400">{settingsError}</p>
+			{/if}
+
+			{#if !settingsLoaded}
+				<p class="text-xs text-[var(--color-text-muted)]">Loading settings…</p>
+			{:else if !hasSchema}
+				<p class="text-xs text-[var(--color-text-muted)]" data-testid="extension-settings-empty">
+					This extension declares no settings.
+				</p>
+			{:else}
+				<div class="space-y-4">
+					<SettingsPanel
+						title="Your settings"
+						schema={settingsSchema}
+						values={userValues}
+						canReset={true}
+						onsave={saveUserSettings}
+						onreset={resetUserSettings}
+						testid="settings-panel-user"
+					/>
+					{#if isAdmin}
+						<SettingsPanel
+							title="Global defaults"
+							schema={settingsSchema}
+							values={globalValues}
+							onsave={saveGlobalSettings}
+							testid="settings-panel-global"
+						/>
+					{/if}
+				</div>
+			{/if}
+		</section>
 
 		<!-- Permissions -->
 		<div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-4">

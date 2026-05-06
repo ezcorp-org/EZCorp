@@ -139,7 +139,7 @@ describe("hooks.server.ts — setup redirect branch", () => {
 
     const res = (await handle({ event, resolve } as any)) as Response;
     expect(resolve).toHaveBeenCalledTimes(1);
-    expect(resolve).toHaveBeenCalledWith(event);
+    expect(resolve).toHaveBeenCalledWith(event, expect.anything());
     expect(res.status).toBe(200);
     // getUserCount should NOT be consulted on a public path.
     expect(vi.mocked(getUserCount)).not.toHaveBeenCalled();
@@ -153,7 +153,7 @@ describe("hooks.server.ts — setup redirect branch", () => {
 
     const res = (await handle({ event, resolve } as any)) as Response;
     expect(resolve).toHaveBeenCalledTimes(1);
-    expect(resolve).toHaveBeenCalledWith(event);
+    expect(resolve).toHaveBeenCalledWith(event, expect.anything());
     expect(res.status).toBe(200);
     expect(vi.mocked(getUserCount)).not.toHaveBeenCalled();
   });

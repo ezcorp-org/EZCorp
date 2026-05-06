@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { makeProject, makeAgent, type makeRun, makeConversation, makeMessage, type makePipeline, makeAgentConfig, makeMemory, type makeKBFile, type makeProviderStatus, makeMode, type ModeData } from "./data.js";
+import { makeProject, makeAgent, type makeRun, makeConversation, makeMessage, type makePipeline, makeAgentConfig, makeMemory, type makeKBFile, type makeProviderStatus, makeMode, type ModeData, type makeLesson } from "./data.js";
 import { fuzzyScore } from "../../src/lib/fuzzy-match.js";
 
 export interface SubConversationMock {
@@ -21,6 +21,15 @@ export interface MockOverrides {
 	agentConfigs?: ReturnType<typeof makeAgentConfig>[];
 	memories?: ReturnType<typeof makeMemory>[];
 	kbFiles?: ReturnType<typeof makeKBFile>[];
+	/**
+	 * Lessons surfaced on the v1.5 `/memories → Lessons` curation tab
+	 * AND filtered by the `%`-popover (`/api/mentions/search?type=lesson`).
+	 * Mutable in-memory: DELETE drops the row, PATCH updates `visibility`
+	 * — and those mutations are reflected through subsequent GETs and
+	 * mention-search calls so e2e specs can assert post-curation popover
+	 * behavior without a real DB.
+	 */
+	lessons?: ReturnType<typeof makeLesson>[];
 	providers?: ReturnType<typeof makeProviderStatus>[];
 	modes?: ModeData[];
 	extensions?: any[];
@@ -144,6 +153,13 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 	const agentConfigs = overrides.agentConfigs ?? [];
 	const mems = overrides.memories ?? [];
 	const kbFiles = overrides.kbFiles ?? [];
+	// Lessons — mutable copy so DELETE/PATCH reflect through later GETs
+	// and mention-search calls. Each row gets a default projectId of
+	// "proj-1" if the spec didn't override.
+	const lessons = (overrides.lessons ?? []).map((l) => ({
+		...l,
+		projectId: (l as any).projectId ?? "proj-1",
+	}));
 	const providers = overrides.providers ?? [];
 	const extensions = overrides.extensions ?? [];
 	const files = overrides.files ?? [];
@@ -695,6 +711,52 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 			return route.fulfill({ status: 204, body: "" });
 		}
 
+		// Lessons (v1.5 curation tab + post-mutation popover behavior)
+		if (path === "/api/lessons" && method === "GET") {
+			const pid = url.searchParams.get("projectId");
+			if (!pid) return route.fulfill({ status: 400, json: { error: "projectId required" } });
+			const filtered = lessons
+				.filter((l) => (l as any).projectId === pid)
+				.map(({ /* projectId stripped */ ...rest }) => rest);
+			return route.fulfill({ json: filtered });
+		}
+		const lessonIdMatch = path.match(/^\/api\/lessons\/([^/]+)$/);
+		if (lessonIdMatch) {
+			const id = lessonIdMatch[1]!;
+			const idx = lessons.findIndex((l) => l.id === id);
+			if (method === "DELETE") {
+				if (idx < 0) return route.fulfill({ status: 404, json: { error: "Lesson not found" } });
+				const target = lessons[idx]!;
+				if (!target.ownedByMe) {
+					// Server collapses not-found + not-owned to 404 — match.
+					return route.fulfill({ status: 404, json: { error: "Lesson not found" } });
+				}
+				lessons.splice(idx, 1);
+				return route.fulfill({ status: 204, body: "" });
+			}
+			if (method === "PATCH") {
+				if (idx < 0) return route.fulfill({ status: 404, json: { error: "Lesson not found" } });
+				const target = lessons[idx]!;
+				if (!target.ownedByMe) {
+					return route.fulfill({ status: 404, json: { error: "Lesson not found" } });
+				}
+				const body = route.request().postDataJSON() as { visibility?: string };
+				const next = body?.visibility;
+				if (next !== "user" && next !== "project" && next !== "global") {
+					return route.fulfill({ status: 400, json: { error: "visibility invalid" } });
+				}
+				const order: Record<string, number> = { user: 0, project: 1, global: 2 };
+				if (order[next] < order[target.visibility]) {
+					return route.fulfill({
+						status: 409,
+						json: { error: "Visibility ladder is monotonic — cannot demote" },
+					});
+				}
+				target.visibility = next;
+				return route.fulfill({ json: { ...target } });
+			}
+		}
+
 		// Knowledge Base
 		if (path === "/api/knowledge-base" && method === "GET") {
 			const pid = url.searchParams.get("projectId");
@@ -1010,6 +1072,31 @@ export async function setupApiMocks(page: Page, overrides: MockOverrides = {}) {
 						description: f.description,
 						kind: "feature" as const,
 						fileCount: f.fileCount,
+					})),
+				});
+			}
+
+			// Lesson search — mirror the real route's `type=lesson` branch.
+			// Project-scoped, returns `{name: slug, description, kind: "lesson"}`.
+			// Reads from the same mutable `lessons` array as /api/lessons,
+			// so deletes + visibility changes propagate to the popover
+			// without an extra mock invalidation step.
+			if (type === "lesson") {
+				if (!projectId) return route.fulfill({ json: [] });
+				const matched = lessons.filter((l) => (l as any).projectId === projectId);
+				const filtered = q
+					? matched.filter(
+							(l) =>
+								l.title.toLowerCase().includes(q.toLowerCase()) ||
+								l.slug.toLowerCase().includes(q.toLowerCase()),
+						)
+					: matched;
+				return route.fulfill({
+					json: filtered.slice(0, 10).map((l) => ({
+						name: l.slug,
+						description:
+							l.body.length > 60 ? l.body.slice(0, 59) + "…" : l.body,
+						kind: "lesson" as const,
 					})),
 				});
 			}

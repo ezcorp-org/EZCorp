@@ -269,6 +269,42 @@ export function makeLocalModelCheckResult(overrides: Partial<LocalModelCheckResu
 	};
 }
 
+export interface LessonData {
+	id: string;
+	slug: string;
+	title: string;
+	body: string;
+	visibility: "user" | "project" | "global";
+	ownedByMe: boolean;
+	source: "user" | "distiller";
+	firedCount: number;
+	lastFiredAt: string | null;
+	dismissedCount: number;
+	createdAt: string;
+	updatedAt: string;
+	frontmatter: Record<string, unknown> | null;
+}
+
+export function makeLesson(overrides: Partial<LessonData> = {}): LessonData {
+	const id = overrides.id ?? nextId();
+	return {
+		id,
+		slug: "use-bun-not-node",
+		title: "Use Bun, not Node",
+		body: "Always invoke `bun <file>` instead of `node <file>`.",
+		visibility: "user",
+		ownedByMe: true,
+		source: "distiller",
+		firedCount: 0,
+		lastFiredAt: null,
+		dismissedCount: 0,
+		createdAt: "2026-04-01T00:00:00.000Z",
+		updatedAt: "2026-04-01T00:00:00.000Z",
+		frontmatter: null,
+		...overrides,
+	};
+}
+
 export function resetIdCounter() {
 	idCounter = 0;
 }

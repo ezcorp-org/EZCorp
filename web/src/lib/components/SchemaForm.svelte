@@ -3,7 +3,9 @@
 
   Used by:
     - Per-extension settings panels on /extensions/[id]
-    - AgentInputForm for the four overlapping primitive types
+
+  AgentInputForm intentionally does NOT delegate here — see that component's
+  header comment for the schema-incompatibility rationale.
 
   Contract:
     - `values` is fully controlled by the parent (bind from a $state).

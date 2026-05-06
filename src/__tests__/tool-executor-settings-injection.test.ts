@@ -18,15 +18,36 @@
  * `src/db/queries/__tests__/extension-settings-*`).
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
-const mockResolve = mock(async (_extensionId: string, _userId: string | null) =>
-  ({} as Record<string, unknown>),
+const mockResolve = mock(
+  async (
+    _extensionId: string,
+    _userId: string | null,
+    _schema?: unknown,
+  ) => ({} as Record<string, unknown>),
 );
 mock.module("../db/queries/extension-settings", () => ({
-  resolveExtensionSettings: (extensionId: string, userId: string | null) =>
-    mockResolve(extensionId, userId),
+  resolveExtensionSettings: (
+    extensionId: string,
+    userId: string | null,
+    schema?: unknown,
+  ) => mockResolve(extensionId, userId, schema),
 }));
+
+// Bun's `mock.module` leaks across files — without this, the CRUD test
+// in `src/db/queries/__tests__/extension-settings-crud.test.ts` would
+// pick up the mocked resolver and start returning {} for every call.
+afterAll(() => restoreModuleMocks());
 
 const { ToolExecutor } = await import("../extensions/tool-executor");
 import type { ExtensionRegistry } from "../extensions/registry";
@@ -128,7 +149,12 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
     await execu.executeToolCall("speak", { text: "hello" }, "conv-1", "msg-1");
 
     expect(mockResolve).toHaveBeenCalledTimes(1);
-    expect(mockResolve.mock.calls[0]).toEqual(["ext-1", "user-1"]);
+    // Schema is now passed in-band so the resolver skips its DB lookup.
+    expect(mockResolve.mock.calls[0]).toEqual([
+      "ext-1",
+      "user-1",
+      settingsManifest.settings,
+    ]);
 
     const meta = captured[0]!.meta!;
     expect(meta.invocationMetadata).toEqual({
@@ -225,6 +251,10 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
 
     await execu.executeToolCall("speak", { text: "hello" }, "conv-1", "msg-1");
 
-    expect(mockResolve.mock.calls[0]).toEqual(["ext-1", null]);
+    expect(mockResolve.mock.calls[0]).toEqual([
+      "ext-1",
+      null,
+      settingsManifest.settings,
+    ]);
   });
 });

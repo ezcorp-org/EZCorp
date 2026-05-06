@@ -281,7 +281,13 @@ export class ToolExecutor {
         // overrides at wire time); resolved values fill the gaps.
         let mergedInvocationMetadata = invocationMetadata;
         if (manifest?.settings) {
-          const resolved = await resolveExtensionSettings(extensionId, this.currentUserId ?? null);
+          // Pass the in-memory schema so the resolver skips the
+          // per-call `extensions.manifest` DB query — N+1 fix.
+          const resolved = await resolveExtensionSettings(
+            extensionId,
+            this.currentUserId ?? null,
+            manifest.settings,
+          );
           const callerSettings = (invocationMetadata?.settings ?? undefined) as
             | Record<string, unknown>
             | undefined;

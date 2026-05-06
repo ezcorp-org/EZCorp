@@ -109,17 +109,26 @@ export async function clearUserSettings(
  *  Merge order: declared defaults < user override. Unknown keys are
  *  clamped against the manifest schema. When the manifest has no
  *  `settings` block, returns `{}`. A `null` userId returns just the
- *  declared defaults (used by tool-call paths that have no user). */
+ *  declared defaults (used by tool-call paths that have no user).
+ *
+ *  `schema`, when supplied, skips the per-call manifest DB lookup. The
+ *  tool-executor already holds the manifest in-memory via the registry,
+ *  so passing it here turns the per-tool-call path into a single
+ *  `extension_settings_user` query (down from two). HTTP API callers
+ *  that don't already have the schema in hand omit the arg and pay the
+ *  extra DB round-trip — option A in the perf brief, chosen because it
+ *  keeps the single-function surface. */
 export async function resolveExtensionSettings(
   extensionId: string,
   userId: string | null,
+  schema?: SettingsSchema,
 ): Promise<Record<string, unknown>> {
-  const schema = await getManifestSettings(extensionId);
-  if (!schema) return {};
-  const declared = getDeclaredDefaults(schema);
+  const effectiveSchema = schema ?? await getManifestSettings(extensionId);
+  if (!effectiveSchema) return {};
+  const declared = getDeclaredDefaults(effectiveSchema);
   if (userId === null) return declared;
   const user = clampSettings(
-    schema,
+    effectiveSchema,
     await getUserSettings(userId, extensionId),
   );
   return { ...declared, ...user };

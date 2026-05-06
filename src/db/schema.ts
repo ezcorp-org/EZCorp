@@ -305,6 +305,31 @@ export const extensionStorage = pgTable("extension_storage", {
 export type ExtensionStorageRow = typeof extensionStorage.$inferSelect;
 export type NewExtensionStorageRow = typeof extensionStorage.$inferInsert;
 
+// ── Extension Settings (per-user with global default) ─────────────
+// Two-layer persistence for the manifest's `settings` schema. Values are
+// merged at read time as `declared defaults < global < user` by
+// `resolveExtensionSettings()` in src/db/queries/extension-settings.ts.
+
+export const extensionSettingsGlobal = pgTable("extension_settings_global", {
+  extensionId: text("extension_id").primaryKey()
+    .references(() => extensions.id, { onDelete: "cascade" }),
+  values: jsonb("values").notNull().$type<Record<string, unknown>>().default({}),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
+});
+
+export const extensionSettingsUser = pgTable("extension_settings_user", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  extensionId: text("extension_id").notNull().references(() => extensions.id, { onDelete: "cascade" }),
+  values: jsonb("values").notNull().$type<Record<string, unknown>>().default({}),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.extensionId] }),
+]);
+
+export type ExtensionSettingsGlobalRow = typeof extensionSettingsGlobal.$inferSelect;
+export type ExtensionSettingsUserRow = typeof extensionSettingsUser.$inferSelect;
+
 export type Extension = typeof extensions.$inferSelect;
 export type NewExtension = typeof extensions.$inferInsert;
 export type ToolCall = typeof toolCalls.$inferSelect;

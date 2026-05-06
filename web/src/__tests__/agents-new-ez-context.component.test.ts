@@ -12,7 +12,7 @@
  */
 import "@testing-library/jest-dom/vitest";
 import { render, waitFor, fireEvent } from "@testing-library/svelte";
-import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, vi, beforeEach } from "vitest";
 
 // `$app/state` page mock — the page reads `page.url.searchParams` to
 // get the `?prefill=<id>` query. We swap the URL per-test by mutating

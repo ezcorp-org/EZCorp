@@ -265,16 +265,16 @@ The accepted MIMEs are only honored when the extension is wired to the conversat
 
 ### `settings` -- `Record<string, SettingsField>`
 
-User-facing configuration the host exposes via the extension detail page. Admins set the global default, each user can override, and the runtime resolves `declared default < global default < user override` before injecting the merged blob into every tool call (see [Settings](settings.md) for the full provider guide).
+User-facing configuration the host exposes via the extension detail page. Each user has their own values, and the runtime resolves `declared default < user override` before injecting the merged blob into every tool call (see [Settings](settings.md) for the full provider guide).
 
-The section is hidden in the UI when this field is omitted. Mutations to the four settings HTTP routes return `409 Conflict` for an extension that doesn't declare a settings block.
+The section is hidden in the UI when this field is omitted. Mutations to the settings HTTP routes return `409 Conflict` for an extension that doesn't declare a settings block.
 
 | Field-shared property | Type | Required | Description |
 |-----------------------|------|----------|-------------|
 | `type` | `"select" \| "text" \| "number" \| "boolean"` | Yes | Discriminator. |
 | `label` | `string` | Yes | Display label rendered above the input. |
 | `description` | `string` | No | Hint text rendered under the label. |
-| `default` | matches `type` | No | Falls through when no global / user override exists. |
+| `default` | matches `type` | No | Falls through when no user override exists. |
 
 **`type: "select"`**
 

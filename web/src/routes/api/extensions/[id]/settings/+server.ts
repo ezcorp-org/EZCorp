@@ -3,7 +3,6 @@ import { getExtension } from "$server/db/queries/extensions";
 import { requireAuth } from "$server/auth/middleware";
 import {
   getDeclaredDefaults,
-  getGlobalSettings,
   getUserSettings,
   resolveExtensionSettings,
 } from "$server/db/queries/extension-settings";
@@ -22,23 +21,19 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     return json({
       schema: null,
       declaredDefaults: {},
-      globalValues: {},
       userValues: {},
       resolved: {},
     });
   }
 
-  const [declaredDefaults, globalValues, userValues, resolved] = await Promise.all([
-    Promise.resolve(getDeclaredDefaults(schema)),
-    getGlobalSettings(params.id),
+  const [userValues, resolved] = await Promise.all([
     getUserSettings(user.id, params.id),
     resolveExtensionSettings(params.id, user.id),
   ]);
 
   return json({
     schema,
-    declaredDefaults,
-    globalValues,
+    declaredDefaults: getDeclaredDefaults(schema),
     userValues,
     resolved,
   });

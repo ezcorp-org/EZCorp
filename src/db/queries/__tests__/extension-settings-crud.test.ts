@@ -9,8 +9,6 @@ import {
 mockDbConnection();
 
 const {
-  getGlobalSettings,
-  setGlobalSettings,
   getUserSettings,
   setUserSettings,
   clearUserSettings,
@@ -113,65 +111,10 @@ describe("extension-settings CRUD", () => {
   });
   afterAll(async () => await closeTestDb());
 
-  test("getGlobalSettings returns {} when no row exists", async () => {
-    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
-    expect(await getGlobalSettings("ext-1")).toEqual({});
-  });
-
   test("getUserSettings returns {} when no row exists", async () => {
     await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
     await seedUser("user-1", "u1@test");
     expect(await getUserSettings("user-1", "ext-1")).toEqual({});
-  });
-
-  test("round-trip global: set then get returns the clamped shape", async () => {
-    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
-    await seedUser("admin-1", "a@test");
-    await setGlobalSettings(
-      "ext-1",
-      { voice: "am_adam", speed: 1.5 },
-      "admin-1",
-    );
-    expect(await getGlobalSettings("ext-1")).toEqual({
-      voice: "am_adam",
-      speed: 1.5,
-    });
-  });
-
-  test("setGlobalSettings is idempotent on the primary key", async () => {
-    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
-    await seedUser("admin-1", "a@test");
-    await setGlobalSettings("ext-1", { voice: "af_bella" }, "admin-1");
-    await setGlobalSettings("ext-1", { voice: "am_adam" }, "admin-1");
-    expect(await getGlobalSettings("ext-1")).toEqual({ voice: "am_adam" });
-  });
-
-  test("setGlobalSettings clamps unknown keys before persisting", async () => {
-    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
-    await seedUser("admin-1", "a@test");
-    await setGlobalSettings(
-      "ext-1",
-      { voice: "af_bella", mystery: "drop me", evil: 999 },
-      "admin-1",
-    );
-    expect(await getGlobalSettings("ext-1")).toEqual({ voice: "af_bella" });
-  });
-
-  test("setGlobalSettings drops invalid values", async () => {
-    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
-    await seedUser("admin-1", "a@test");
-    await setGlobalSettings(
-      "ext-1",
-      { voice: "not-a-voice", speed: 999 },
-      "admin-1",
-    );
-    expect(await getGlobalSettings("ext-1")).toEqual({});
-  });
-
-  test("setGlobalSettings accepts null actorUserId", async () => {
-    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
-    await setGlobalSettings("ext-1", { voice: "af_bella" }, null);
-    expect(await getGlobalSettings("ext-1")).toEqual({ voice: "af_bella" });
   });
 
   test("round-trip user: set then get returns the clamped shape", async () => {
@@ -207,6 +150,16 @@ describe("extension-settings CRUD", () => {
     });
   });
 
+  test("setUserSettings drops invalid values", async () => {
+    await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
+    await seedUser("user-1", "u1@test");
+    await setUserSettings("user-1", "ext-1", {
+      voice: "not-a-voice",
+      speed: 999,
+    });
+    expect(await getUserSettings("user-1", "ext-1")).toEqual({});
+  });
+
   test("clearUserSettings removes the row", async () => {
     await seedExtension("ext-1", "kokoro", VOICE_SCHEMA);
     await seedUser("user-1", "u1@test");
@@ -230,31 +183,25 @@ describe("extension-settings CRUD", () => {
     expect(await getUserSettings("user-2", "ext-1")).toEqual({});
   });
 
-  // ── resolveExtensionSettings ──────────────────────────────────────
-
-  test("resolves declared < global < user", async () => {
+  test("resolves declared < user override", async () => {
     await seedExtension("ext-2", "two", TWO_FIELD_SCHEMA);
-    await seedUser("admin-1", "a@test");
     await seedUser("user-1", "u@test");
-    await setGlobalSettings("ext-2", { x: 2 }, "admin-1");
     await setUserSettings("user-1", "ext-2", { y: "u" });
     expect(await resolveExtensionSettings("ext-2", "user-1")).toEqual({
-      x: 2,
+      x: 1,
       y: "u",
     });
-    await setUserSettings("user-1", "ext-2", { x: 3 });
+    await setUserSettings("user-1", "ext-2", { x: 3, y: "u" });
     expect(await resolveExtensionSettings("ext-2", "user-1")).toEqual({
       x: 3,
-      y: "z",
+      y: "u",
     });
   });
 
-  test("with null userId, falls back to declared < global only", async () => {
+  test("with null userId, returns just declared defaults", async () => {
     await seedExtension("ext-2", "two", TWO_FIELD_SCHEMA);
-    await seedUser("admin-1", "a@test");
-    await setGlobalSettings("ext-2", { x: 2 }, "admin-1");
     expect(await resolveExtensionSettings("ext-2", null)).toEqual({
-      x: 2,
+      x: 1,
       y: "z",
     });
   });
@@ -270,7 +217,7 @@ describe("extension-settings CRUD", () => {
     expect(await resolveExtensionSettings("nope", null)).toEqual({});
   });
 
-  test("returns just declared defaults when no rows persisted", async () => {
+  test("returns just declared defaults when no user row exists", async () => {
     await seedExtension("ext-2", "two", TWO_FIELD_SCHEMA);
     await seedUser("user-1", "u@test");
     expect(await resolveExtensionSettings("ext-2", "user-1")).toEqual({
@@ -281,11 +228,8 @@ describe("extension-settings CRUD", () => {
 
   test("drops keys removed from the schema after the row was written", async () => {
     await seedExtension("ext-2", "two", TWO_FIELD_SCHEMA);
-    await seedUser("admin-1", "a@test");
     await seedUser("user-1", "u@test");
-    await setGlobalSettings("ext-2", { x: 50, y: "global" }, "admin-1");
     await setUserSettings("user-1", "ext-2", { x: 75, y: "user" });
-    // Simulate a manifest update that demotes `y` out of the schema.
     const SHRUNK: SettingsSchema = {
       x: { type: "number", label: "X", default: 1, min: 0, max: 100 },
     };

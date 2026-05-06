@@ -970,20 +970,11 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
   await db.execute(sql`ALTER TABLE features ADD COLUMN IF NOT EXISTS origin_path TEXT`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_features_origin_path ON features(project_id, origin_path)`);
 
-  // ── Extension Settings (per-user with global default) ────────────
-  // Backs the manifest `settings` schema. Two layers: a global row keyed
-  // on extension_id (admin-set default) and a per-user row keyed on
-  // (user_id, extension_id). resolveExtensionSettings() merges
-  // declared-defaults < global < user at read time. Values are clamped
+  // ── Extension Settings (per-user) ────────────────────────────────
+  // Backs the manifest `settings` schema. resolveExtensionSettings()
+  // merges declared-defaults < user at read time. Values are clamped
   // against the manifest schema before persist (see queries/extension-settings.ts).
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS extension_settings_global (
-      extension_id TEXT PRIMARY KEY REFERENCES extensions(id) ON DELETE CASCADE,
-      values JSONB NOT NULL DEFAULT '{}',
-      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
-    )
-  `);
+  await db.execute(sql`DROP TABLE IF EXISTS extension_settings_global`);
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS extension_settings_user (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

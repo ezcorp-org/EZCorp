@@ -933,22 +933,21 @@ If `attachmentIds` is non-empty, every id is re-keyed to the new message row by 
 
 ## Per-extension Settings API
 
-Four HTTP routes manage the user-facing configuration declared via [`manifest.settings`](manifest-schema.md#settings----recordstring-settingsfield). See [Settings](settings.md) for the full provider guide.
+Three HTTP routes manage the user-facing configuration declared via [`manifest.settings`](manifest-schema.md#settings----recordstring-settingsfield). See [Settings](settings.md) for the full provider guide.
 
-All routes require an authenticated session. `PUT /global` additionally requires the `admin` role.
+All routes require an authenticated session. Settings are per-user only.
 
 ### `GET /api/extensions/[id]/settings`
 
-Returns the schema and every layer of the resolution chain.
+Returns the schema and the user's resolution chain.
 
 ```typescript
 // Response (200)
 {
-  schema: SettingsSchema | null,            // null when manifest has no settings block
+  schema: SettingsSchema | null,             // null when manifest has no settings block
   declaredDefaults: Record<string, unknown>, // empty when schema is null
-  globalValues:     Record<string, unknown>, // admin-set defaults
-  userValues:       Record<string, unknown>, // current user's overrides
-  resolved:         Record<string, unknown>, // declared < global < user, clamped to schema
+  userValues:       Record<string, unknown>, // calling user's overrides
+  resolved:         Record<string, unknown>, // declared < user, clamped to schema
 }
 ```
 
@@ -956,28 +955,6 @@ Returns the schema and every layer of the resolution chain.
 |--------|---------|
 | `200` | Success — `schema: null` when the extension declares no settings (the value blobs are all `{}`). |
 | `404` | Extension not found. |
-
-### `PUT /api/extensions/[id]/settings/global`
-
-Admin-only. Replaces the global default blob.
-
-```typescript
-// Body
-{ values: Record<string, unknown> }
-
-// Response (200)
-{ ok: true, globalValues: Record<string, unknown> }
-```
-
-Audits as `ext:settings.global.update` with `{ before, after, submitted }` metadata.
-
-| Status | Meaning |
-|--------|---------|
-| `200` | Saved. |
-| `400` | Body lacks `values` or `values` is not an object. |
-| `403` | Caller is not an admin. |
-| `404` | Extension not found. |
-| `409` | Extension's manifest declares no settings block. |
 
 ### `PUT /api/extensions/[id]/settings/user`
 
@@ -1000,7 +977,7 @@ Replaces the calling user's override blob. No audit (per-user preferences are no
 
 ### `DELETE /api/extensions/[id]/settings/user`
 
-Clears the calling user's overrides. The next `resolved` blob falls back to global / declared defaults.
+Clears the calling user's overrides. The next `resolved` blob falls back to declared defaults.
 
 ```typescript
 // Response (200)

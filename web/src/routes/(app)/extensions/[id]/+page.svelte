@@ -69,9 +69,7 @@
 	const extId = $derived($page.params.id);
 	const hasViolations = $derived(violations.length > 0);
 
-	// ── Per-extension settings (Slice 4) ─────────────────────────────
 	let settingsSchema = $state<SettingsSchema>({});
-	let globalValues = $state<Record<string, unknown>>({});
 	let userValues = $state<Record<string, unknown>>({});
 	let settingsLoaded = $state(false);
 	let settingsError = $state("");
@@ -83,8 +81,6 @@
 			const res = await fetch(`/api/extensions/${extId}/settings`);
 			if (!res.ok) {
 				if (res.status === 409) {
-					// 409 = manifest declares no settings block. Surface the empty
-					// placeholder in the UI rather than treating it as an error.
 					settingsSchema = {};
 					settingsLoaded = true;
 				} else {
@@ -95,7 +91,6 @@
 			}
 			const data = await res.json();
 			settingsSchema = (data.schema ?? {}) as SettingsSchema;
-			globalValues = (data.globalValues ?? {}) as Record<string, unknown>;
 			userValues = (data.userValues ?? {}) as Record<string, unknown>;
 			settingsLoaded = true;
 		} catch (e) {
@@ -123,18 +118,6 @@
 		if (!res.ok) throw new Error(`Reset failed: HTTP ${res.status}`);
 		if (ext) invalidateExtensionSettings(ext.name);
 		showTemporarySuccess("Settings reset to default");
-		await loadSettings();
-	}
-
-	async function saveGlobalSettings(next: Record<string, unknown>) {
-		const res = await fetch(`/api/extensions/${extId}/settings/global`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ values: next }),
-		});
-		if (!res.ok) throw new Error(`Save failed: HTTP ${res.status}`);
-		if (ext) invalidateExtensionSettings(ext.name);
-		showTemporarySuccess("Global defaults saved");
 		await loadSettings();
 	}
 
@@ -436,26 +419,15 @@
 					This extension declares no settings.
 				</p>
 			{:else}
-				<div class="space-y-4">
-					<SettingsPanel
-						title="Your settings"
-						schema={settingsSchema}
-						values={userValues}
-						canReset={true}
-						onsave={saveUserSettings}
-						onreset={resetUserSettings}
-						testid="settings-panel-user"
-					/>
-					{#if isAdmin}
-						<SettingsPanel
-							title="Global defaults"
-							schema={settingsSchema}
-							values={globalValues}
-							onsave={saveGlobalSettings}
-							testid="settings-panel-global"
-						/>
-					{/if}
-				</div>
+				<SettingsPanel
+					title="Your settings"
+					schema={settingsSchema}
+					values={userValues}
+					canReset={true}
+					onsave={saveUserSettings}
+					onreset={resetUserSettings}
+					testid="settings-panel-user"
+				/>
 			{/if}
 		</section>
 

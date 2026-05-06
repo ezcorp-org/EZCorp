@@ -1,10 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { getDb } from "../connection";
-import {
-  extensionSettingsGlobal,
-  extensionSettingsUser,
-  extensions,
-} from "../schema";
+import { extensionSettingsUser, extensions } from "../schema";
 import type {
   SettingsField,
   SettingsSchema,
@@ -93,40 +89,6 @@ async function getManifestSettings(
   return manifest?.settings;
 }
 
-export async function getGlobalSettings(
-  extensionId: string,
-): Promise<Record<string, unknown>> {
-  const db = getDb();
-  const rows = await db
-    .select({ values: extensionSettingsGlobal.values })
-    .from(extensionSettingsGlobal)
-    .where(eq(extensionSettingsGlobal.extensionId, extensionId));
-  return rows[0]?.values ?? {};
-}
-
-export async function setGlobalSettings(
-  extensionId: string,
-  values: Record<string, unknown>,
-  actorUserId: string | null,
-): Promise<void> {
-  const schema = await getManifestSettings(extensionId);
-  const clean = clampSettings(schema, values);
-  const db = getDb();
-  const now = new Date();
-  await db
-    .insert(extensionSettingsGlobal)
-    .values({
-      extensionId,
-      values: clean,
-      updatedAt: now,
-      updatedBy: actorUserId,
-    })
-    .onConflictDoUpdate({
-      target: extensionSettingsGlobal.extensionId,
-      set: { values: clean, updatedAt: now, updatedBy: actorUserId },
-    });
-}
-
 export async function getUserSettings(
   userId: string,
   extensionId: string,
@@ -183,9 +145,10 @@ export async function clearUserSettings(
 }
 
 /** Resolves the effective settings for a (user, extension) pair.
- *  Merge order: declared defaults < global < user. Unknown keys are
+ *  Merge order: declared defaults < user override. Unknown keys are
  *  clamped against the manifest schema. When the manifest has no
- *  `settings` block, returns `{}`. */
+ *  `settings` block, returns `{}`. A `null` userId returns just the
+ *  declared defaults (used by tool-call paths that have no user). */
 export async function resolveExtensionSettings(
   extensionId: string,
   userId: string | null,
@@ -193,10 +156,10 @@ export async function resolveExtensionSettings(
   const schema = await getManifestSettings(extensionId);
   if (!schema) return {};
   const declared = getDeclaredDefaults(schema);
-  const global = clampSettings(schema, await getGlobalSettings(extensionId));
-  const user =
-    userId === null
-      ? {}
-      : clampSettings(schema, await getUserSettings(userId, extensionId));
-  return { ...declared, ...global, ...user };
+  if (userId === null) return declared;
+  const user = clampSettings(
+    schema,
+    await getUserSettings(userId, extensionId),
+  );
+  return { ...declared, ...user };
 }

@@ -4,7 +4,6 @@
  * Pins:
  *   - "No settings" placeholder when the manifest declares no schema
  *   - User panel renders + Save triggers PUT /user
- *   - Admin panel rendered only when the auth/me endpoint reports admin
  *   - Reset triggers DELETE /user and refetches
  */
 
@@ -13,8 +12,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import ExtensionDetailPage from "./+page.svelte";
 
-// Stub `$app/stores` (vitest config maps this to a local stub) so
-// `$page.params.id` resolves under the test renderer.
 vi.mock("$app/stores", async () => {
   const { readable } = await import("svelte/store");
   return {
@@ -33,7 +30,6 @@ interface MockResponses {
   violations: { ok: boolean; body: unknown };
   audit: { ok: boolean; body: unknown };
   putUser?: { ok: boolean; body?: unknown };
-  putGlobal?: { ok: boolean; body?: unknown };
   deleteUser?: { ok: boolean; body?: unknown };
 }
 
@@ -65,10 +61,6 @@ function buildFetch(): typeof fetch {
         const r = mockResponses.deleteUser ?? { ok: true };
         return r.ok ? jsonResponse({}) : jsonResponse({}, 500);
       }
-    }
-    if (url.match(/\/api\/extensions\/[^/]+\/settings\/global$/)) {
-      const r = mockResponses.putGlobal ?? { ok: true };
-      return r.ok ? jsonResponse({}) : jsonResponse({}, 500);
     }
     if (url.match(/\/api\/extensions\/[^/]+\/settings$/)) {
       return mockResponses.settings.ok
@@ -123,7 +115,6 @@ beforeEach(() => {
       body: {
         schema: {},
         declaredDefaults: {},
-        globalValues: {},
         userValues: {},
         resolved: {},
       },
@@ -167,11 +158,10 @@ describe("Extension detail — Settings section", () => {
     expect(await findByTestId("extension-settings-empty")).toBeInTheDocument();
   });
 
-  test("user panel renders when schema is non-empty; admin panel does not (non-admin)", async () => {
+  test("user panel renders when schema is non-empty; no global panel exists", async () => {
     mockResponses.settings.body = {
       schema: settingsSchema,
       declaredDefaults: { voice: "af_bella", speed: 1.0 },
-      globalValues: {},
       userValues: {},
       resolved: { voice: "af_bella", speed: 1.0 },
     };
@@ -180,25 +170,23 @@ describe("Extension detail — Settings section", () => {
     expect(queryByTestId("settings-panel-global")).toBeNull();
   });
 
-  test("admin panel renders when /api/auth/me reports admin role", async () => {
+  test("admin sees the same single user panel — no global panel for anyone", async () => {
     mockResponses.authMe.body = { user: { role: "admin" } };
     mockResponses.settings.body = {
       schema: settingsSchema,
       declaredDefaults: {},
-      globalValues: {},
       userValues: {},
       resolved: {},
     };
-    const { findByTestId } = render(ExtensionDetailPage);
+    const { findByTestId, queryByTestId } = render(ExtensionDetailPage);
     expect(await findByTestId("settings-panel-user")).toBeInTheDocument();
-    expect(await findByTestId("settings-panel-global")).toBeInTheDocument();
+    expect(queryByTestId("settings-panel-global")).toBeNull();
   });
 
   test("Save on user panel issues PUT /settings/user", async () => {
     mockResponses.settings.body = {
       schema: settingsSchema,
       declaredDefaults: {},
-      globalValues: {},
       userValues: { voice: "af_bella", speed: 1.0 },
       resolved: { voice: "af_bella", speed: 1.0 },
     };
@@ -217,7 +205,6 @@ describe("Extension detail — Settings section", () => {
     mockResponses.settings.body = {
       schema: settingsSchema,
       declaredDefaults: {},
-      globalValues: {},
       userValues: { voice: "bf_emma", speed: 1.0 },
       resolved: { voice: "bf_emma", speed: 1.0 },
     };
@@ -228,26 +215,6 @@ describe("Extension detail — Settings section", () => {
       const calls = fetchMock.mock.calls.map((c) => ({ url: String(c[0]), method: (c[1] as RequestInit | undefined)?.method ?? "GET" }));
       expect(
         calls.some((c) => c.url.endsWith("/api/extensions/ext-1/settings/user") && c.method === "DELETE"),
-      ).toBe(true);
-    });
-  });
-
-  test("admin save on global panel issues PUT /settings/global", async () => {
-    mockResponses.authMe.body = { user: { role: "admin" } };
-    mockResponses.settings.body = {
-      schema: settingsSchema,
-      declaredDefaults: {},
-      globalValues: { voice: "am_adam", speed: 1.0 },
-      userValues: {},
-      resolved: { voice: "am_adam", speed: 1.0 },
-    };
-    const { findByTestId } = render(ExtensionDetailPage);
-    const saveBtn = await findByTestId("settings-panel-global-save");
-    await fireEvent.click(saveBtn);
-    await waitFor(() => {
-      const calls = fetchMock.mock.calls.map((c) => ({ url: String(c[0]), method: (c[1] as RequestInit | undefined)?.method ?? "GET" }));
-      expect(
-        calls.some((c) => c.url.endsWith("/api/extensions/ext-1/settings/global") && c.method === "PUT"),
       ).toBe(true);
     });
   });

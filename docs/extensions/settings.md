@@ -1,8 +1,8 @@
 # Settings
 
-Declare a typed configuration schema in your manifest, and the host renders a settings panel on `/extensions/<id>` for free. Admins set global defaults, each user can override, and the runtime injects the resolved blob into every tool call. No bespoke UI code. No manual persistence.
+Declare a typed configuration schema in your manifest, and the host renders a settings panel on `/extensions/<id>` for free. Each user has their own values, and the runtime injects the resolved blob into every tool call. No bespoke UI code. No manual persistence.
 
-This is the SDK surface for any extension whose behaviour the user (or admin) should be able to tune without touching code — voice / speed pickers, model choice, refresh intervals, feature flags, etc.
+This is the SDK surface for any extension whose behaviour the user should be able to tune without touching code — voice / speed pickers, model choice, refresh intervals, feature flags, etc.
 
 ## What is this for?
 
@@ -10,7 +10,7 @@ This is the SDK surface for any extension whose behaviour the user (or admin) sh
 |---|---|
 | The values are user-visible knobs (voice, model, threshold) | The data is opaque internal state (caches, intermediate results) |
 | The shape is fixed up-front and small | The shape is dynamic or grows over time |
-| Admins need a global default + per-user overrides | Per-user / per-conversation isolation is enough |
+| Each user should pick their own | Per-conversation isolation is enough |
 | Validation should be declarative (regex, min/max, enum) | Validation lives inside the extension's own logic |
 
 If you need both — e.g. a configurable refresh interval **plus** a cached result blob — declare the interval in `settings` and store the cache via `ezcorp/storage`. They are complementary, not alternatives.
@@ -47,15 +47,15 @@ That's it for the manifest side. The host picks up the new block on the next ins
 
 ## How values are resolved
 
-Three layers, lowest to highest:
+Two layers, lowest to highest:
 
 ```
-declared default  <  global default (admin-set)  <  user override
+declared default  <  user override
 ```
 
 The resolver merges left-to-right, then **clamps** the result against the manifest schema — unknown keys are dropped, type-mismatched values are coerced, and select options outside the declared `options[]` revert to the declared default. The clamp runs at write time AND at read time, so dropping a field from your schema in v1.1 cannot leak the v1.0 value into a tool call.
 
-Resolved values land in `_meta.invocationMetadata.settings` on every JSON-RPC envelope your subprocess receives. Cross-extension `ezcorp/invoke` callers may also pass `invocationMetadata.settings` to override the resolved blob — useful when an orchestrator needs to invoke your tool with a non-default voice without touching the user's own override.
+Resolved values land in `_meta.invocationMetadata.settings` on every JSON-RPC envelope your subprocess receives. Cross-extension `ezcorp/invoke` callers may also pass `invocationMetadata.settings` to override the resolved blob — useful when an orchestrator needs to invoke your tool with non-default values without touching the user's own override.
 
 ## Reading values from a tool handler
 
@@ -95,10 +95,7 @@ Tool cards run in the browser bundle. The chat layout pre-loads the resolved blo
 
 ## Editing values
 
-Users land on `/extensions/<id>` and see two panels under the **Settings** section (between the header and the **Permissions** section):
-
-- **Your settings** — every user sees this. Save persists to the user override layer; **Reset to default** clears the row so the resolver falls back to the global / declared default.
-- **Global defaults** — admin-only. Every save lands as an `ext:settings.global.update` audit-log entry (visible in the page's audit-trail panel). Non-admins do not see the global panel and a direct `PUT /api/extensions/<id>/settings/global` returns `403`.
+Users land on `/extensions/<id>` and see a single **Your settings** panel under the **Settings** section (between the header and the **Permissions** section). Save persists to the user's row; **Reset to default** clears the row so the resolver falls back to the declared defaults on the next read.
 
 The form is rendered by a single generic `<SchemaForm/>` component driven by your manifest schema — no extension-specific UI code is needed. See [API Reference § Per-extension Settings API](api-reference.md#per-extension-settings-api) for the wire shapes.
 
@@ -108,10 +105,10 @@ When you change the schema between versions, the resolver's clamp protects the r
 
 | Change | Effect on persisted values |
 |---|---|
-| **Add a new field** | Existing global / user blobs don't have it → resolves to the field's `default` (or `undefined`). |
+| **Add a new field** | Existing user blobs don't have it → resolves to the field's `default` (or `undefined`). |
 | **Drop a field** | Stale values are silently dropped on read; no error, no warning. |
 | **Narrow a type** (e.g. select with fewer options) | Out-of-range values revert to the declared default on read. |
-| **Change `default`** | Only affects users who never set a global / user override. Persisted values remain. |
+| **Change `default`** | Only affects users who never set an override. Persisted values remain. |
 | **Tighten `min` / `max` / `pattern`** | Invalid persisted values revert to default on read. |
 
 There is no schema-version field on settings rows — the resolver always validates against the **current** manifest. If a breaking change matters to your users (e.g. a renamed select option), surface it in your README or in a new banner before shipping; the host won't.
@@ -120,7 +117,7 @@ There is no schema-version field on settings rows — the resolver always valida
 
 **Can settings hold secrets?**
 
-No. The `GET /api/extensions/<id>/settings` response is returned to any authenticated session user, and the `resolved` blob ships into the chat browser bundle as part of the per-conversation hydration. Both `globalValues` and `userValues` are visible to every user who can see the extension's detail page.
+No. The `GET /api/extensions/<id>/settings` response is returned to any authenticated session user, and the `resolved` blob ships into the chat browser bundle as part of the per-conversation hydration. `userValues` is visible to that user; the schema and any defaults are visible to every user who can see the extension's detail page.
 
 For secrets (API keys, OAuth tokens, signed credentials), use the [Storage API](api-reference.md#storage-api) with `encrypted: true` — the value is encrypted at rest with AES-256-GCM and never leaves the subprocess in plaintext.
 
@@ -130,7 +127,7 @@ Settings are per-user, not per-chat. If you need conversation-scoped state, use 
 
 **What happens when an extension is uninstalled?**
 
-The DB foreign keys on `extension_settings_global` and `extension_settings_user` cascade-delete. Re-installing the extension starts fresh — there is no resurrection of old values.
+The DB foreign key on `extension_settings_user` cascade-deletes. Re-installing the extension starts fresh — there is no resurrection of old values.
 
 **Can a tool override a setting per-call?**
 

@@ -1,41 +1,27 @@
 /**
  * GET    /api/extensions/[id]/settings
- * PUT    /api/extensions/[id]/settings/global   (admin)
  * PUT    /api/extensions/[id]/settings/user     (session)
  * DELETE /api/extensions/[id]/settings/user     (session)
  *
- * Boundary tests for the lazy-foraging-hammock per-extension settings
- * surface. Mocks the auth middleware, the extension lookup, the
- * settings query module, and the audit log so the route's own logic
- * is the only thing under test.
- *
- * Mirrors the pattern in extensions-events-route.test.ts.
+ * Boundary tests for the per-extension settings surface. Mocks the
+ * auth middleware, the extension lookup, the settings query module,
+ * and the audit log so the route's own logic is the only thing under
+ * test.
  */
 
 import { test, expect, describe, beforeEach, mock } from "bun:test";
-
-// ── Mocks ──────────────────────────────────────────────────────────
 
 let mockUser: { id: string; role: string } | null = {
   id: "user-1",
   email: "u@u.com",
   name: "U",
-  role: "admin",
+  role: "member",
 } as never;
 
 mock.module("$server/auth/middleware", () => ({
   requireAuth: () => {
     if (!mockUser) {
       throw new Response(JSON.stringify({ error: "auth" }), { status: 401 });
-    }
-    return mockUser;
-  },
-  requireRole: (_locals: unknown, role: "admin") => {
-    if (!mockUser) {
-      throw new Response(JSON.stringify({ error: "auth" }), { status: 401 });
-    }
-    if (mockUser.role !== role) {
-      throw new Response(JSON.stringify({ error: "forbidden" }), { status: 403 });
     }
     return mockUser;
   },
@@ -76,15 +62,9 @@ mock.module("$server/db/queries/extensions", () => ({
   getExtension: mockGetExtension,
 }));
 
-let mockGlobalValues: Record<string, unknown> = {};
 let mockUserValues: Record<string, unknown> = {};
 let mockResolved: Record<string, unknown> = {};
 
-const mockSetGlobal = mock(
-  async (_extensionId: string, values: Record<string, unknown>, _actor: string | null) => {
-    mockGlobalValues = { ...values };
-  },
-);
 const mockSetUser = mock(
   async (_userId: string, _extensionId: string, values: Record<string, unknown>) => {
     mockUserValues = { ...values };
@@ -103,8 +83,6 @@ mock.module("$server/db/queries/extension-settings", () => ({
     }
     return out;
   },
-  getGlobalSettings: async (_extensionId: string) => mockGlobalValues,
-  setGlobalSettings: mockSetGlobal,
   getUserSettings: async (_userId: string, _extensionId: string) => mockUserValues,
   setUserSettings: mockSetUser,
   clearUserSettings: mockClearUser,
@@ -117,19 +95,12 @@ mock.module("$server/db/queries/audit-log", () => ({
   insertAuditEntry: mockAudit,
 }));
 
-// ── Imports AFTER mocks ────────────────────────────────────────────
-
 const settingsRoute = await import(
   "../routes/api/extensions/[id]/settings/+server"
-);
-const globalRoute = await import(
-  "../routes/api/extensions/[id]/settings/global/+server"
 );
 const userRoute = await import(
   "../routes/api/extensions/[id]/settings/user/+server"
 );
-
-// ── Helpers ────────────────────────────────────────────────────────
 
 interface RequestEventLike {
   request: Request;
@@ -137,8 +108,6 @@ interface RequestEventLike {
   params: { id: string };
 }
 
-/** Invoke a route handler and unwrap thrown `Response`s (requireAuth /
- *  requireRole throw, SvelteKit catches them in production). */
 async function call(
   handler: (e: never) => unknown,
   event: RequestEventLike,
@@ -172,31 +141,25 @@ function makeEvent(
   };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 describe("extension settings API", () => {
   beforeEach(() => {
     mockUser = {
       id: "user-1",
       email: "u@u.com",
       name: "U",
-      role: "admin",
+      role: "member",
     } as never;
     mockExt = {
       id: "ext-1",
       manifest: { settings: SETTINGS_SCHEMA },
     };
-    mockGlobalValues = {};
     mockUserValues = {};
     mockResolved = { voice: "af_bella", speed: 1.0 };
     mockGetExtension.mockClear();
-    mockSetGlobal.mockClear();
     mockSetUser.mockClear();
     mockClearUser.mockClear();
     mockAudit.mockClear();
   });
-
-  // ── GET ────────────────────────────────────────────────────────
 
   describe("GET /settings", () => {
     test("404 when extension not found", async () => {
@@ -213,25 +176,22 @@ describe("extension settings API", () => {
       expect(body).toEqual({
         schema: null,
         declaredDefaults: {},
-        globalValues: {},
         userValues: {},
         resolved: {},
       });
     });
 
     test("returns full payload when settings declared", async () => {
-      mockGlobalValues = { voice: "am_adam" };
       mockUserValues = { speed: 1.5 };
-      mockResolved = { voice: "am_adam", speed: 1.5 };
+      mockResolved = { voice: "af_bella", speed: 1.5 };
 
       const res = await call(settingsRoute.GET, makeEvent("GET", undefined));
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.schema).toEqual(SETTINGS_SCHEMA);
       expect(body.declaredDefaults).toEqual({ voice: "af_bella", speed: 1.0 });
-      expect(body.globalValues).toEqual({ voice: "am_adam" });
       expect(body.userValues).toEqual({ speed: 1.5 });
-      expect(body.resolved).toEqual({ voice: "am_adam", speed: 1.5 });
+      expect(body.resolved).toEqual({ voice: "af_bella", speed: 1.5 });
     });
 
     test("manifest === null is treated as no settings", async () => {
@@ -243,80 +203,8 @@ describe("extension settings API", () => {
     });
   });
 
-  // ── PUT /global ───────────────────────────────────────────────
-
-  describe("PUT /settings/global", () => {
-    test("non-admin → 403", async () => {
-      mockUser = { id: "user-1", role: "member" } as never;
-      const res = await call(globalRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
-      expect(res.status).toBe(403);
-      expect(mockSetGlobal).not.toHaveBeenCalled();
-    });
-
-    test("404 when extension not found", async () => {
-      mockExt = null;
-      const res = await call(globalRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
-      expect(res.status).toBe(404);
-    });
-
-    test("409 when extension has no settings schema", async () => {
-      mockExt = { id: "ext-1", manifest: { settings: undefined } };
-      const res = await call(globalRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
-      expect(res.status).toBe(409);
-      expect(mockSetGlobal).not.toHaveBeenCalled();
-    });
-
-    test("400 when body has no values key", async () => {
-      const res = await call(globalRoute.PUT, makeEvent("PUT", { other: "x" }));
-      expect(res.status).toBe(400);
-    });
-
-    test("400 when values is an array", async () => {
-      const res = await call(globalRoute.PUT, makeEvent("PUT", { values: [1, 2, 3] }));
-      expect(res.status).toBe(400);
-    });
-
-    test("400 when body is malformed JSON", async () => {
-      const res = await call(globalRoute.PUT, makeEvent("PUT", "not-json"));
-      expect(res.status).toBe(400);
-    });
-
-    test("admin happy path → persists, audits, returns 200 with globalValues", async () => {
-      const res = await call(globalRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.ok).toBe(true);
-      expect(body.globalValues).toEqual({ voice: "am_adam" });
-
-      expect(mockSetGlobal).toHaveBeenCalledTimes(1);
-      const args = mockSetGlobal.mock.calls[0]!;
-      expect(args[0]).toBe("ext-1");
-      expect(args[1]).toEqual({ voice: "am_adam" });
-      expect(args[2]).toBe("user-1");
-
-      // Audit row
-      expect(mockAudit).toHaveBeenCalledTimes(1);
-      const auditArgs = mockAudit.mock.calls[0] as [
-        string,
-        string,
-        string,
-        Record<string, unknown>,
-      ];
-      expect(auditArgs[0]).toBe("user-1");
-      expect(auditArgs[1]).toBe("ext:settings.global.update");
-      expect(auditArgs[2]).toBe("ext-1");
-      expect(auditArgs[3].actor).toBe("user-1");
-      expect(auditArgs[3].before).toEqual({}); // initial empty
-      expect(auditArgs[3].after).toEqual({ voice: "am_adam" });
-      expect(auditArgs[3].submitted).toEqual({ voice: "am_adam" });
-    });
-  });
-
-  // ── PUT /user ──────────────────────────────────────────────────
-
   describe("PUT /settings/user", () => {
-    test("session user with no admin role can persist their own settings", async () => {
-      mockUser = { id: "user-1", role: "member" } as never;
+    test("session user persists their own settings", async () => {
       const res = await call(userRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -343,7 +231,7 @@ describe("extension settings API", () => {
       expect(mockSetUser).not.toHaveBeenCalled();
     });
 
-    test("no user audit row written (per-user own-data is silent)", async () => {
+    test("no audit row written (per-user own-data is silent)", async () => {
       await call(userRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
       expect(mockAudit).not.toHaveBeenCalled();
     });
@@ -360,8 +248,6 @@ describe("extension settings API", () => {
       expect(c.status).toBe(400);
     });
   });
-
-  // ── DELETE /user ───────────────────────────────────────────────
 
   describe("DELETE /settings/user", () => {
     test("clears the row, returns ok", async () => {

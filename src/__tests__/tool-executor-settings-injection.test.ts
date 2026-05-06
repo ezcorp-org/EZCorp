@@ -257,4 +257,104 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
       settingsManifest.settings,
     ]);
   });
+
+  test("caller-supplied invocationMetadata.settings preserves keys not in the manifest schema", async () => {
+    // The caller-wins merge does NOT re-clamp caller settings — keys
+    // outside the manifest schema (orchestrator trace ids, etc.) ride
+    // through to the subprocess metadata untouched.
+    mockResolve.mockImplementationOnce(async () => ({
+      voice: "af_bella",
+      speed: 1.0,
+    }));
+
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    execu.setCurrentUserId("user-1");
+
+    await execu.executeToolCall(
+      "speak",
+      { text: "hello" },
+      "conv-1",
+      "msg-1",
+      undefined,
+      { settings: { voice: "af_sarah", _orchestrator_trace: "abc-123" } },
+    );
+
+    const meta = captured[0]!.meta!;
+    const inv = meta.invocationMetadata as Record<string, unknown>;
+    const settings = inv.settings as Record<string, unknown>;
+    expect(settings.voice).toBe("af_sarah");
+    expect(settings._orchestrator_trace).toBe("abc-123");
+    // Resolved key fills the gap.
+    expect(settings.speed).toBe(1.0);
+  });
+
+  describe("falsy primitive injection round-trip", () => {
+    const FALSY_MANIFEST: ExtensionManifestV2 = {
+      ...baseManifest,
+      settings: {
+        enabled: { type: "boolean", label: "Enabled", default: true },
+        retries: {
+          type: "number",
+          label: "Retries",
+          min: 0,
+          max: 10,
+          integer: true,
+          default: 3,
+        },
+        prefix: { type: "text", label: "Prefix", default: "x" },
+      },
+    } as ExtensionManifestV2;
+
+    test("resolved falsy values (false, 0, '') reach metadata when caller is empty", async () => {
+      mockResolve.mockImplementationOnce(async () => ({
+        enabled: false,
+        retries: 0,
+        prefix: "",
+      }));
+
+      const execu = new ToolExecutor(makeFakeRegistry(captured, FALSY_MANIFEST));
+      execu.setCurrentUserId("user-1");
+
+      await execu.executeToolCall(
+        "speak",
+        { text: "hi" },
+        "conv-1",
+        "msg-1",
+        undefined,
+        { settings: {} },
+      );
+
+      const inv = captured[0]!.meta!.invocationMetadata as Record<string, unknown>;
+      const s = inv.settings as Record<string, unknown>;
+      expect(s.enabled).toBe(false);
+      expect(s.retries).toBe(0);
+      expect(s.prefix).toBe("");
+    });
+
+    test("caller falsy values WIN over resolved truthy values (?? not ||)", async () => {
+      mockResolve.mockImplementationOnce(async () => ({
+        prefix: "af_bella",
+        retries: 5,
+      }));
+
+      const execu = new ToolExecutor(makeFakeRegistry(captured, FALSY_MANIFEST));
+      execu.setCurrentUserId("user-1");
+
+      await execu.executeToolCall(
+        "speak",
+        { text: "hi" },
+        "conv-1",
+        "msg-1",
+        undefined,
+        { settings: { prefix: "", retries: 0 } },
+      );
+
+      const inv = captured[0]!.meta!.invocationMetadata as Record<string, unknown>;
+      const s = inv.settings as Record<string, unknown>;
+      // Spread merge with caller last — caller falsies overwrite the
+      // resolved truthies. A `||` instead of spread would regress here.
+      expect(s.prefix).toBe("");
+      expect(s.retries).toBe(0);
+    });
+  });
 });

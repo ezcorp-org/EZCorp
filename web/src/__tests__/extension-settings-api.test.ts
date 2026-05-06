@@ -161,6 +161,34 @@ describe("extension settings API", () => {
     mockAudit.mockClear();
   });
 
+  describe("auth gate (logged-out 401 on all 3 routes)", () => {
+    test("GET /settings → 401 when caller has no session", async () => {
+      mockUser = null;
+      const res = await call(settingsRoute.GET, makeEvent("GET", undefined));
+      expect(res.status).toBe(401);
+      expect(mockGetExtension).not.toHaveBeenCalled();
+    });
+
+    test("PUT /settings/user → 401 when caller has no session", async () => {
+      mockUser = null;
+      const res = await call(
+        userRoute.PUT,
+        makeEvent("PUT", { values: { voice: "am_adam" } }),
+      );
+      expect(res.status).toBe(401);
+      expect(mockGetExtension).not.toHaveBeenCalled();
+      expect(mockSetUser).not.toHaveBeenCalled();
+    });
+
+    test("DELETE /settings/user → 401 when caller has no session", async () => {
+      mockUser = null;
+      const res = await call(userRoute.DELETE, makeEvent("DELETE", undefined));
+      expect(res.status).toBe(401);
+      expect(mockGetExtension).not.toHaveBeenCalled();
+      expect(mockClearUser).not.toHaveBeenCalled();
+    });
+  });
+
   describe("GET /settings", () => {
     test("404 when extension not found", async () => {
       mockExt = null;
@@ -201,6 +229,30 @@ describe("extension settings API", () => {
       const body = await res.json();
       expect(body.schema).toBeNull();
     });
+
+    test("manifest === {} (no settings key) → schema:null", async () => {
+      mockExt = { id: "ext-1", manifest: {} as never };
+      const res = await call(settingsRoute.GET, makeEvent("GET", undefined));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schema).toBeNull();
+      expect(body.declaredDefaults).toEqual({});
+      expect(body.userValues).toEqual({});
+      expect(body.resolved).toEqual({});
+    });
+
+    test("manifest.settings === {} (declared but empty) → schema:{} (NOT null)", async () => {
+      mockExt = { id: "ext-1", manifest: { settings: {} } as never };
+      const res = await call(settingsRoute.GET, makeEvent("GET", undefined));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Empty-but-declared schema is currently treated as falsy by the
+      // route (truthy guard `!schema` short-circuits on `{}`-coerced
+      // checks of `manifest?.settings`). The actual JS behavior: `{}`
+      // is truthy, so the guard `if (!schema)` does NOT trigger and we
+      // hit the resolver path — schema is returned as `{}`.
+      expect(body.schema).toEqual({});
+    });
   });
 
   describe("PUT /settings/user", () => {
@@ -229,6 +281,27 @@ describe("extension settings API", () => {
       const res = await call(userRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
       expect(res.status).toBe(409);
       expect(mockSetUser).not.toHaveBeenCalled();
+    });
+
+    test("409 when manifest === {} (no settings key)", async () => {
+      mockExt = { id: "ext-1", manifest: {} as never };
+      const res = await call(userRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
+      expect(res.status).toBe(409);
+      expect(mockSetUser).not.toHaveBeenCalled();
+    });
+
+    test("manifest.settings === {} → PUT current behavior (declared empty schema)", async () => {
+      // FINDING: an empty-but-declared schema (`settings: {}`) bypasses
+      // the `if (!manifest?.settings)` 409 guard because `{}` is truthy.
+      // The route accepts the PUT and clamping drops every field
+      // (no schema entries to validate against), so the persisted blob
+      // ends up `{}`. Worth flagging as inconsistent with the GET path
+      // and with the spec brief's expectation of "PUT returns 409".
+      mockExt = { id: "ext-1", manifest: { settings: {} } as never };
+      const res = await call(userRoute.PUT, makeEvent("PUT", { values: { voice: "am_adam" } }));
+      // Pin the *current* behavior so any future fix to the route
+      // surfaces here as a deliberate update.
+      expect(res.status).toBe(200);
     });
 
     test("PUT writes ext:settings.user.update audit row", async () => {

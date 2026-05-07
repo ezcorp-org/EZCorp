@@ -485,7 +485,7 @@
 				</div>
 			{/if}
 			<MessageAttachments attachments={message.attachments} />
-			{#if isStreaming && !displayContent && !(contentBlocks && contentBlocks.length > 0)}
+			{#if isStreaming && !displayContent && !(contentBlocks && contentBlocks.length > 0) && !(toolCalls && toolCalls.length > 0)}
 				<SkeletonLoader statusText={`${streamingStatus ?? 'Thinking...'}${streamingStartedAt ? ` (${elapsedText})` : ''}`} />
 			{:else if isError && !isStreaming}
 				<div class="rounded-md border border-red-800 bg-red-900/30 p-3">

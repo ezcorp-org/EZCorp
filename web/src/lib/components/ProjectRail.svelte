@@ -2,6 +2,7 @@
 	import { goto } from "$app/navigation";
 	import { store, setActiveProjectId } from "$lib/stores.svelte.js";
 	import { unreadStore } from "$lib/unread.js";
+	import EzButton from "$lib/components/ez/EzButton.svelte";
 
 	// Reactive unread tracking — bump revision on store changes so per-project
 	// counts re-evaluate without us having to mirror the whole map into state.
@@ -158,6 +159,11 @@
 
 			</button>
 		{/each}
+	</div>
+
+	<!-- Ez assistant button (sits just above Add Project) -->
+	<div class="mt-2">
+		<EzButton />
 	</div>
 
 	<!-- Add project button -->

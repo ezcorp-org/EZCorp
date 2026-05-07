@@ -99,6 +99,22 @@
 	let pendingPrefill = $state<string>("");
 	let error = $state<string | null>(null);
 	let scrollEl = $state<HTMLDivElement | null>(null);
+
+	// Quick-start suggestions surfaced when the conversation is empty —
+	// gives new users a concrete sense of what Ez can do for them. Each
+	// click pre-fills the composer (does not auto-send) so users can
+	// tweak before submitting. Clicks are no-ops once the user has typed
+	// their own text — see ChatInput's `initialValue` effect.
+	const EMPTY_STATE_SUGGESTIONS: { label: string; prompt: string }[] = [
+		{ label: "Create a new project", prompt: "Help me create a new project." },
+		{ label: "Build a new agent", prompt: "Help me build a new agent." },
+		{ label: "Install an extension", prompt: "Help me find and install an extension." },
+		{ label: "Summarize my recent activity", prompt: "Summarize my recent conversations and activity." },
+	];
+
+	function applySuggestion(prompt: string) {
+		pendingPrefill = prompt;
+	}
 	// "Clear conversation" in-flight flag. Disables the button and
 	// short-circuits a double-click while the DELETE round-trips.
 	let clearing = $state<boolean>(false);
@@ -638,10 +654,28 @@
 			{#if !conversationId}
 				<div class="ez-panel__empty">Loading Ez conversation…</div>
 			{:else if messages.length === 0}
-				<div class="ez-panel__empty">
-					Hi! I'm Ez. I can help you create projects, build agents, install
-					extensions, summarize your conversations, fill forms, and navigate
-					around. What do you need?
+				<div class="ez-panel__empty" data-testid="ez-panel-empty">
+					<p class="ez-panel__empty-lead">
+						Hi! I'm Ez — your in-app concierge. Here are a few things I can do:
+					</p>
+					<ul class="ez-panel__suggestions">
+						{#each EMPTY_STATE_SUGGESTIONS as s}
+							<li>
+								<button
+									type="button"
+									class="ez-panel__suggestion"
+									data-testid="ez-panel-suggestion"
+									onclick={() => applySuggestion(s.prompt)}
+								>
+									{s.label}
+								</button>
+							</li>
+						{/each}
+					</ul>
+					<p class="ez-panel__empty-hint">
+						Tap one to pre-fill the composer, or just type what you need —
+						I can also fill forms and navigate you around the app.
+					</p>
 				</div>
 			{:else}
 				{#each renderableMessages as msg (msg.id)}
@@ -780,6 +814,42 @@
 		color: var(--color-text-muted);
 		font-size: 0.875rem;
 		padding: 0.75rem 1rem;
+	}
+	.ez-panel__empty-lead {
+		margin: 0 0 0.5rem 0;
+		color: var(--color-text-secondary, var(--color-text-primary));
+	}
+	.ez-panel__empty-hint {
+		margin: 0.75rem 0 0 0;
+		font-size: 0.8125rem;
+	}
+	.ez-panel__suggestions {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+	.ez-panel__suggestion {
+		width: 100%;
+		text-align: left;
+		background: var(--color-surface-secondary);
+		border: 1px solid var(--color-border);
+		color: var(--color-text-primary);
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.4rem;
+		font-size: 0.875rem;
+		cursor: pointer;
+		transition: background-color 120ms ease, border-color 120ms ease;
+	}
+	.ez-panel__suggestion:hover {
+		background: var(--color-surface-tertiary);
+		border-color: var(--color-text-muted);
+	}
+	.ez-panel__suggestion:focus-visible {
+		outline: 2px solid var(--color-accent, #4c8cff);
+		outline-offset: 2px;
 	}
 	.ez-panel__error {
 		color: #d44a4a;

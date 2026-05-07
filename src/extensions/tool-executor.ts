@@ -21,6 +21,8 @@ import type { SpawnQuota } from "./spawn-quota";
 import { getConversation, getConversationSpawnDepth } from "../db/queries/conversations";
 import { persistToolCall } from "../db/queries/tool-calls";
 import { resolveExtensionSettings } from "../db/queries/extension-settings";
+import type { PermissionEngine } from "./permission-engine";
+import { capabilityDeclarationToSet, type CapabilitySet } from "./capability-types";
 
 export const MAX_TOOL_CALLS_PER_TURN = 10;
 
@@ -78,6 +80,12 @@ export function extensionToAgentTool(
   };
 }
 
+/**
+ * @deprecated Phase 6 removal. Pre-PDP per-call hook replaced by the
+ * `PermissionEngine` injected at `ToolExecutor` construction. The type
+ * is retained briefly for any out-of-tree caller that referenced it;
+ * production wires the engine directly.
+ */
 export type PermissionChecker = (
   extensionId: string,
   toolName: string,
@@ -88,22 +96,29 @@ export class PermissionDeniedError extends Error {
   constructor(
     public readonly extensionId: string,
     public readonly toolName: string,
+    public readonly reason?: string,
   ) {
-    super(`Permission denied for tool "${toolName}" from extension "${extensionId}"`);
+    const detail = reason ? ` — ${reason}` : "";
+    super(`Permission denied for tool "${toolName}" from extension "${extensionId}"${detail}`);
     this.name = "PermissionDeniedError";
   }
 }
 
 /**
  * Orchestrates tool calls between LLM and extension subprocesses.
- * Permission checking is injectable (not hard-imported from permissions.ts).
+ * Every call routes through the `PermissionEngine` (Phase 1 PDP)
+ * supplied at construction time. The engine is required — fail-closed
+ * by design (closes finding C6).
  */
 export type ArgsResolver = (
   input: Record<string, unknown>,
 ) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
+export interface ToolExecutorOptions {
+  bus?: EventBus<AgentEvents>;
+}
+
 export class ToolExecutor {
-  private permissionChecker?: PermissionChecker;
   private bus?: EventBus<AgentEvents>;
   private stateMediator?: ExtensionStateMediator;
   private wiredExtensions = new Set<string>();
@@ -118,15 +133,15 @@ export class ToolExecutor {
 
   constructor(
     private registry: ExtensionRegistry,
-    options?: { permissionChecker?: PermissionChecker; bus?: EventBus<AgentEvents> },
+    private engine: PermissionEngine,
+    options?: ToolExecutorOptions,
   ) {
-    this.permissionChecker = options?.permissionChecker;
+    if (!engine) {
+      throw new Error(
+        "ToolExecutor requires a PermissionEngine (Phase 1 fail-closed contract)",
+      );
+    }
     this.bus = options?.bus;
-  }
-
-  /** Set or update the permission checker (for deferred wiring). */
-  setPermissionChecker(checker: PermissionChecker): void {
-    this.permissionChecker = checker;
   }
 
   /** Set the state mediator for routing extension notifications. */
@@ -191,7 +206,15 @@ export class ToolExecutor {
     input: Record<string, unknown>,
     conversationId: string,
     messageId: string | null,
-    _opts?: { callerExtensionId?: string; _callDepth?: number; metadata?: { invocationId?: string; source?: 'inline' | 'agent-run' } },
+    _opts?: {
+      callerExtensionId?: string;
+      _callDepth?: number;
+      metadata?: { invocationId?: string; source?: "inline" | "agent-run" };
+      /** Phase 4: caller∩callee intersected cap set for cross-ext invokes. */
+      capContext?: CapabilitySet;
+      /** Phase 1: parent audit row for the chain — set by `handlePiInvoke` etc. */
+      parentAuditId?: string;
+    },
     invocationMetadata?: Record<string, unknown>,
   ): Promise<ToolCallResult> {
     const registered = this.registry.getRegisteredTool(toolName);
@@ -206,19 +229,45 @@ export class ToolExecutor {
     const originalName = registered.originalName;
 
     // Resolve symbolic arg references (e.g. attachment handles → data URIs)
-    // before permission checks + subprocess dispatch. A resolver failure
-    // should not silently drop args, so any error propagates.
+    // BEFORE the PDP check. The post-resolved args are what the
+    // subprocess actually receives, so the PDP sees the same shape it
+    // is enforcing on. (Closes finding C5: pre-resolver schemes like
+    // `ez-attachment://` cannot launder into `file://` because the PDP
+    // gate runs after the resolver.)
     if (this.argsResolver) {
       input = await this.argsResolver(input);
     }
 
-    // Permission check (if checker is set)
-    if (this.permissionChecker) {
-      const allowed = await this.permissionChecker(extensionId, toolName, input);
-      if (!allowed) {
-        throw new PermissionDeniedError(extensionId, toolName);
-      }
+    // Compute the tool's required capability set from its manifest
+    // declaration. v2 manifests run through `migrateManifestV2ToV3` at
+    // load time — every tool now has a `capabilities` declaration.
+    const manifest = this.registry.getManifest(extensionId);
+    const tool = manifest?.tools?.find((t) => t.name === originalName);
+    const needed = capabilityDeclarationToSet(tool?.capabilities, input);
+
+    // Phase 1 PDP gate. Fail-closed if the engine isn't wired —
+    // constructor already enforces that, but the typecheck here is
+    // additional belt-and-braces.
+    const decision = await this.engine.authorize(
+      {
+        extensionId,
+        userId: this.currentUserId ?? "unknown",
+        conversationId,
+        toolName: originalName,
+        callerExtensionId: _opts?.callerExtensionId,
+        capContext: _opts?.capContext,
+        parentAuditId: _opts?.parentAuditId,
+      },
+      needed,
+    );
+
+    if (decision.decision === "deny") {
+      throw new PermissionDeniedError(extensionId, toolName, decision.reason);
     }
+    // TODO(phase-6): wire UI prompt. Phase 1 treats `prompt` the same
+    // as `allow` so behavior is unchanged from pre-PDP. The audit row
+    // already records `PERM_PROMPTED` so an operator can see what
+    // would have been gated.
 
     // Track current call context for reverse RPC handlers (e.g. ezcorp/storage)
     this.currentConversationId = conversationId;
@@ -427,6 +476,10 @@ export class ToolExecutor {
     }
 
     try {
+      // Phase 4 will populate `capContext` here with
+      // `intersect(callerCaps, calleeCaps)`. Phase 1 only plumbs the
+      // option through; the PDP defaults to the registry-derived
+      // grant set when `capContext` is absent.
       const result = await this.executeToolCall(
         resolved.name,
         args,

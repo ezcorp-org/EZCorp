@@ -3,6 +3,7 @@ import type { EventBus } from "../events";
 import type { Agent } from "@mariozechner/pi-agent-core";
 import type { ExtensionStateMediator } from "../../extensions/state-mediator";
 import type { SpawnQuota } from "../../extensions/spawn-quota";
+import type { PermissionEngine } from "../../extensions/permission-engine";
 import type { WatchdogManager } from "../executor-watchdog";
 import type { AgentExecutor } from "../executor";
 
@@ -50,4 +51,11 @@ export interface StreamChatHost {
   readonly stateMediator: ExtensionStateMediator | undefined;
   readonly spawnQuota: SpawnQuota;
   readonly executor: AgentExecutor;
+  /**
+   * Phase 1 PDP — required at every `new ToolExecutor(...)` site. Wired
+   * once at executor boot via `getPermissionEngine({registry, bus})`
+   * and threaded through here so the per-turn ToolExecutor instances
+   * spawned by `setup-tools.ts` share one cache.
+   */
+  readonly permissionEngine: PermissionEngine;
 }

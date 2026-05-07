@@ -27,6 +27,7 @@ import { buildPromptInput } from "./stream-chat/build-prompt";
 import { ToolExecutor } from "../extensions/tool-executor";
 import type { ExtensionStateMediator } from "../extensions/state-mediator";
 import { createSpawnQuota, type SpawnQuota } from "../extensions/spawn-quota";
+import { getPermissionEngine } from "../extensions/permission-engine";
 import { createShellProvider } from "../providers/shell";
 import { createFileProvider } from "../providers/file";
 import { getProject } from "../db/queries/projects";
@@ -179,7 +180,12 @@ export class AgentExecutor {
         const registry = ExtensionRegistry.getInstance();
         const extTools = await registry.getToolsForAgent(agentConfigId);
         if (extTools.length > 0) {
-          const toolExec = new ToolExecutor(registry, { bus: this.bus });
+          const engine = getPermissionEngine({
+            registry,
+            bus: this.bus,
+            db: { _token: "executor" },
+          });
+          const toolExec = new ToolExecutor(registry, engine, { bus: this.bus });
           if (this._stateMediator) toolExec.setStateMediator(this._stateMediator);
           ctx.tools = toolExec.createToolsContext(run.id, run.id);
         }
@@ -367,6 +373,15 @@ export class AgentExecutor {
       stateMediator: this._stateMediator,
       spawnQuota: this._spawnQuota,
       executor: this,
+      // Phase 1 PDP. Singleton — initialized on first call with the
+      // shared registry + bus. Every per-turn ToolExecutor in the
+      // setup-tools phase consumes this same instance so the
+      // always-allow cache is shared.
+      permissionEngine: getPermissionEngine({
+        registry: ExtensionRegistry.getInstance(),
+        bus: this.bus,
+        db: { _token: "executor" },
+      }),
     };
 
     if (this.persist) {

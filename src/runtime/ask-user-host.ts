@@ -24,6 +24,7 @@ import { conversationExtensions } from "../db/schema";
 import { getExtensionByName } from "../db/queries/extensions";
 import type { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor, extensionToAgentTool } from "../extensions/tool-executor";
+import { getPermissionEngine } from "../extensions/permission-engine";
 import type { EventBus } from "./events";
 import type { AgentEvents } from "../types";
 import { logger } from "../logger";
@@ -153,7 +154,20 @@ export async function wireAskUserToolForTurn(
     return;
   }
 
-  const toolExec = new ToolExecutor(registry, bus ? { bus } : undefined);
+  // Phase 1: PDP is required at every ToolExecutor site. Resolves the
+  // singleton (initialized at executor boot) — the registry/bus are
+  // re-supplied for first-call safety in test contexts that build a
+  // fresh ask-user wire without a streamChat host.
+  const engine = getPermissionEngine({
+    registry,
+    bus: bus ?? ({} as EventBus<AgentEvents>),
+    db: { _token: "ask-user-host" },
+  });
+  const toolExec = new ToolExecutor(
+    registry,
+    engine,
+    bus ? { bus } : undefined,
+  );
   if (userId) toolExec.setCurrentUserId(userId);
 
   // Per-turn invocationMetadata. `toolCallId` is added by

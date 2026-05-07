@@ -240,7 +240,7 @@ export async function setupTools(
           const registry = ExtensionRegistry.getInstance();
           const extTools = await registry.getToolsForAgent(options.agentConfigId);
           if (extTools.length > 0) {
-            const toolExec = new ToolExecutor(registry, { bus: host.bus });
+            const toolExec = new ToolExecutor(registry, host.permissionEngine, { bus: host.bus });
             if (host.stateMediator) toolExec.setStateMediator(host.stateMediator);
             toolExec.setExecutor(host.executor);
             toolExec.setSpawnQuota(host.spawnQuota);
@@ -259,14 +259,12 @@ export async function setupTools(
             toolExec.setCurrentModel(options.model ?? convRecord?.model);
             toolExec.setCurrentProvider(options.provider ?? convRecord?.provider);
             toolExec.setCurrentAgentConfigId(options.agentConfigId ?? convRecord?.agentConfigId);
-            try {
-              const { checkSensitiveConfirmation } = await import("../../extensions/permissions");
-              toolExec.setPermissionChecker(async (extensionId, _toolName, _input) => {
-                const shellCheck = await checkSensitiveConfirmation(extensionId, "shell");
-                const fsCheck = await checkSensitiveConfirmation(extensionId, "filesystem");
-                return shellCheck === "allowed" && fsCheck === "allowed";
-              });
-            } catch { /* permissions.ts not available yet */ }
+            // Phase 1: the dead `setPermissionChecker` always-allow
+            // dance was removed here. The PDP at
+            // `host.permissionEngine` now performs the same gate
+            // automatically inside `executeToolCall`, with proper
+            // per-(user, scope, scopeId, capability) keying. See
+            // `permission-engine.ts` for the canonical contract.
             ctx.agentTools = extTools.map((t) => extensionToAgentTool(
               { name: t.name, description: t.description, inputSchema: t.inputSchema },
               toolExec, conversationId, run.id,
@@ -373,7 +371,7 @@ export async function setupTools(
         const convExtIds = await getConversationExtensionIds(conversationId);
         if (convExtIds.length > 0) {
           const registry = ExtensionRegistry.getInstance();
-          const toolExec = new ToolExecutor(registry, { bus: host.bus });
+          const toolExec = new ToolExecutor(registry, host.permissionEngine, { bus: host.bus });
           if (host.stateMediator) toolExec.setStateMediator(host.stateMediator);
           toolExec.setExecutor(host.executor);
           toolExec.setSpawnQuota(host.spawnQuota);
@@ -425,7 +423,7 @@ export async function setupTools(
           });
           if (modeExtIds.length > 0) {
             const registry = ExtensionRegistry.getInstance();
-            const toolExec = new ToolExecutor(registry, { bus: host.bus });
+            const toolExec = new ToolExecutor(registry, host.permissionEngine, { bus: host.bus });
             if (host.stateMediator) toolExec.setStateMediator(host.stateMediator);
             toolExec.setExecutor(host.executor);
             toolExec.setSpawnQuota(host.spawnQuota);
@@ -642,7 +640,7 @@ export async function setupTools(
                 const { addConversationExtensions } = await import("../../db/queries/conversation-extensions");
                 await addConversationExtensions(conversationId, [{ extensionId: scratchpadExt.id }]);
                 const registry = ExtensionRegistry.getInstance();
-                const toolExec = new ToolExecutor(registry, { bus: host.bus });
+                const toolExec = new ToolExecutor(registry, host.permissionEngine, { bus: host.bus });
                 if (host.stateMediator) toolExec.setStateMediator(host.stateMediator);
                 toolExec.setExecutor(host.executor);
                 toolExec.setSpawnQuota(host.spawnQuota);

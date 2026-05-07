@@ -29,9 +29,12 @@ import { conversationExtensions } from "../db/schema";
 import { getExtensionByName } from "../db/queries/extensions";
 import type { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor, extensionToAgentTool } from "../extensions/tool-executor";
+import { getPermissionEngine } from "../extensions/permission-engine";
 import type { ExtensionStateMediator } from "../extensions/state-mediator";
 import type { SpawnQuota } from "../extensions/spawn-quota";
 import type { AgentExecutor } from "./executor";
+import type { EventBus } from "./events";
+import type { AgentEvents } from "../types";
 import { logger } from "../logger";
 const log = logger.child("orchestration-host");
 
@@ -252,8 +255,15 @@ export async function wireOrchestrationToolsForTurn(
   // 3. ToolExecutor wiring — same set of wires the scratchpad auto-wire
   //    block builds at executor.ts:828-835 so the extension's reverse-
   //    RPC handlers (storage / agent-configs / spawn-assignment /
-  //    cancel-run) are all routable.
-  const toolExec = new ToolExecutor(registry);
+  //    cancel-run) are all routable. Phase 1: every ToolExecutor site
+  //    requires the PDP — `getPermissionEngine()` returns the singleton
+  //    initialized at executor boot.
+  const engine = getPermissionEngine({
+    registry,
+    bus: {} as EventBus<AgentEvents>,
+    db: { _token: "orchestration-host" },
+  });
+  const toolExec = new ToolExecutor(registry, engine);
   if (stateMediator) toolExec.setStateMediator(stateMediator);
   toolExec.setExecutor(executor);
   if (spawnQuota) toolExec.setSpawnQuota(spawnQuota);

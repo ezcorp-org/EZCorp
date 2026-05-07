@@ -797,7 +797,14 @@ export type NewLesson = typeof lessons.$inferInsert;
 export const sdkCapabilityCalls = pgTable("sdk_capability_calls", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   extensionId: text("extension_id").notNull().references(() => extensions.id, { onDelete: "cascade" }),
-  onBehalfOf: text("on_behalf_of").notNull().references(() => users.id, { onDelete: "set null" }),
+  // FK semantics: ON DELETE RESTRICT (NOT SET NULL).
+  // The column is NOT NULL — pairing it with SET NULL was internally
+  // inconsistent; user-delete would FK-violate. RESTRICT is the
+  // defensible audit-trail semantic: a user with capability-call rows
+  // cannot be hard-deleted; an admin must scrub PII separately
+  // (Phase 52 admin tools) before the user row goes. Per validator
+  // CR-2 in Phase 50.
+  onBehalfOf: text("on_behalf_of").notNull().references(() => users.id, { onDelete: "restrict" }),
   conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
   /** Self-FK to chain scheduled-fire → its child LLM call etc.
    *  Declared as plain text to avoid Drizzle's same-table-reference

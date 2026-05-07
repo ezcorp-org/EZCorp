@@ -34,20 +34,15 @@
  *     test runners (Vitest in `web/`).
  */
 
-const log = (() => {
-  // Lazy logger import to keep this module side-effect free at top level.
-  // Some callers (tests) import it without a configured logger. A no-op
-  // shim keeps it honest on both paths.
-  try {
-    const { logger } = require("../logger") as typeof import("../logger");
-    return logger.child("audit-redaction");
-  } catch {
-    return {
-      warn: (..._args: unknown[]) => {},
-      error: (..._args: unknown[]) => {},
-    };
-  }
-})();
+// CR-5: ESM import (project standard for src/extensions/). The logger
+// module is side-effect-free at top level and exports a lazily-
+// initialized child binding, so the previous require()-with-fallback
+// dance was unnecessary defensive code. The node:crypto require()s
+// further down stay — they're documented Bun fallbacks for a different
+// purpose (Bun.CryptoHasher fast path).
+import { logger } from "../logger";
+
+const log = logger.child("audit-redaction");
 
 export interface RedactionResult {
   /** The redacted payload — same shape as input, with secrets replaced

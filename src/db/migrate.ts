@@ -1048,11 +1048,16 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
   // NOT EXISTS, ADD COLUMN IF NOT EXISTS).
 
   // sdk_capability_calls — see schema.ts `sdkCapabilityCalls`
+  //
+  // FK note: `on_behalf_of` is NOT NULL with ON DELETE RESTRICT.
+  // The defensive ALTER below upgrades any dev databases created with
+  // the previous (inconsistent) ON DELETE SET NULL spec; fresh installs
+  // land with RESTRICT directly.
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS sdk_capability_calls (
       id TEXT PRIMARY KEY,
       extension_id TEXT NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
-      on_behalf_of TEXT NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+      on_behalf_of TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
       conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
       parent_call_id TEXT,
       capability TEXT NOT NULL,
@@ -1076,6 +1081,26 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_conv_created ON sdk_capability_calls(conversation_id, created_at DESC) WHERE conversation_id IS NOT NULL`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_user_capability_created ON sdk_capability_calls(on_behalf_of, capability, created_at DESC)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_created ON sdk_capability_calls(created_at DESC)`);
+
+  // Defensive FK upgrade for sdk_capability_calls.on_behalf_of
+  // (validator CR-2): the previous spec declared ON DELETE SET NULL,
+  // which is internally inconsistent with the NOT NULL column
+  // constraint — user-delete would FK-violate. Move to ON DELETE
+  // RESTRICT (audit-trail semantic — admin must scrub PII separately).
+  // Idempotent: drops the constraint by its Postgres-default name then
+  // re-adds. Fresh installs already created the constraint with
+  // RESTRICT via the CREATE TABLE above; this ALTER is then a no-op
+  // ADD on top of a DROP (the CREATE TABLE constraint will already be
+  // dropped here, so we re-add it under the same name).
+  await db.execute(sql`
+    ALTER TABLE sdk_capability_calls
+      DROP CONSTRAINT IF EXISTS sdk_capability_calls_on_behalf_of_fkey
+  `);
+  await db.execute(sql`
+    ALTER TABLE sdk_capability_calls
+      ADD CONSTRAINT sdk_capability_calls_on_behalf_of_fkey
+      FOREIGN KEY (on_behalf_of) REFERENCES users(id) ON DELETE RESTRICT
+  `);
 
   // lessons_audit_log — mirrors memory_audit_log shape
   await db.execute(sql`

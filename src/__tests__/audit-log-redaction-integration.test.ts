@@ -44,6 +44,7 @@ mockDbConnection();
 
 import { insertAuditEntry, listAuditLog } from "../db/queries/audit-log";
 import { createUser } from "../db/queries/users";
+import { listErrors } from "../db/queries/error-logs";
 
 let userId: string;
 
@@ -120,5 +121,50 @@ describe("insertAuditEntry — redaction at the wrap boundary", () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     const ser = JSON.stringify(rows[0]!.metadata);
     expect(ser.includes(secret)).toBe(false);
+  });
+});
+
+// CR-4: Pitfall #2 invariant — an audit-write failure MUST NEVER abort
+// the caller. Trigger a real FK violation by passing a non-existent
+// userId; the wrapper must swallow the error, route it to error_logs,
+// and resolve normally.
+describe("insertAuditEntry — DB failure does NOT abort caller (Pitfall #2)", () => {
+  test("FK violation in insert is swallowed; error_logs receives the failure", async () => {
+    const errorsBefore = await listErrors();
+    const fakeUserId = "00000000-0000-0000-0000-000000000000";
+
+    // The audit_log.user_id FK references users(id). Passing a
+    // non-existent uuid here triggers a FK-violation throw inside
+    // the insert — exactly the shape the 18+ existing call sites
+    // would otherwise propagate up (e.g. into a permission-grant
+    // endpoint that would then fail-closed even though the grant
+    // itself succeeded). The wrapper now catches and routes to
+    // persistError. No re-throw.
+    await insertAuditEntry(fakeUserId, "audit.failure.path", "fk-target", {
+      note: "trigger fk violation",
+    });
+
+    // Caller resolved normally (we'd be in the catch block of an
+    // outer try if it threw, which we're not).
+    const errorsAfter = await listErrors();
+    expect(errorsAfter.length).toBeGreaterThan(errorsBefore.length);
+
+    // The new error_logs row carries the audit-write-failed signature
+    // and the original action name in metadata.
+    const newest = errorsAfter[0]!;
+    expect(newest.message).toContain("audit-write-failed");
+    expect(newest.message).toContain("audit_log");
+    const meta = newest.metadata as Record<string, unknown> | null;
+    expect(meta).not.toBeNull();
+    expect((meta as Record<string, unknown>).action).toBe("audit.failure.path");
+  });
+
+  test("subsequent insertAuditEntry calls still work after a failure", async () => {
+    // Defensive: the wrapper's try/catch is per-call. A previous
+    // failure must not leave any sticky state behind.
+    await insertAuditEntry(userId, "audit.after.failure", "ok-target", { ok: true });
+    const rows = await listAuditLog({ action: "audit.after.failure" });
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0]!.target).toBe("ok-target");
   });
 });

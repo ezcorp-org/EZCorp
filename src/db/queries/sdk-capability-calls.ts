@@ -33,8 +33,20 @@ const CLEANUP_BATCH_LIMIT = 10000;
 /** Retention validation: clamp to [1, 3650] days at read time per spec
  *  recommendation. Setting writes already require admin scope, but we
  *  defense-in-depth here so a stray setting can't disable retention or
- *  trigger a 100-year purge sweep. */
-function clampDays(value: number): number {
+ *  trigger a 100-year purge sweep.
+ *
+ *  Exported so the production caller (`background-timers.ts`) can clamp
+ *  at the setting-read layer too — the validator's CR-3 finding was
+ *  that the timer was passing raw setting values into the
+ *  zero-detection branch below, bypassing this clamp. The timer now
+ *  clamps before calling, so zero never reaches this layer in
+ *  production.
+ *
+ *  Test/admin-purge callers that genuinely want "delete everything in
+ *  a bucket" must opt in via the explicit `force: true` flag on
+ *  `cleanupOldSdkCapabilityCalls` — the implicit-on-zero behavior is
+ *  no longer reachable from the production read path. */
+export function clampDays(value: number): number {
   if (!Number.isFinite(value)) return 30;
   return Math.max(1, Math.min(3650, Math.floor(value)));
 }
@@ -130,6 +142,15 @@ export interface RetentionConfig {
    *  by default if not supplied — call volume is low enough that they
    *  don't need their own knob. */
   eventsDays?: number;
+  /** Test/admin-purge escape hatch. When `true`, a `*Days = 0` for any
+   *  bucket means "delete every row in that bucket" regardless of
+   *  age. Production callers (the hourly retention sweep) MUST NOT
+   *  pass this flag — they instead clamp the setting value to
+   *  [1, 3650] at the read site. Without `force`, zero (or negative)
+   *  values are clamped via `clampDays` like any other input. Per
+   *  validator CR-3 — closes the implicit-on-zero foot-gun where a
+   *  stray admin setting of 0 would purge an entire bucket. */
+  force?: boolean;
 }
 
 /**
@@ -141,27 +162,34 @@ export interface RetentionConfig {
  * loop ceiling is reached (defense against pathological infinite
  * recursion). Returns total rows deleted across all batches.
  *
- * `retention.{x}Days` of 0 means "delete everything in that bucket"
- * — used in tests and as a manual purge tool.
+ * `retention.{x}Days` of 0 (or negative) ONLY means "delete everything
+ * in that bucket" when `retention.force === true` — the test suite
+ * uses this for "purge all" semantics, and the admin Phase 52 manual-
+ * purge tool will too. Without `force`, all values run through
+ * `clampDays` (which floors at 1), so a stray admin setting of 0
+ * cannot bypass retention. Per validator CR-3.
  */
 export async function cleanupOldSdkCapabilityCalls(
   retention: RetentionConfig,
 ): Promise<number> {
+  const force = retention.force === true;
   const llm = clampDays(retention.llmDays);
   const memory = clampDays(retention.memoryDays);
   const lessons = clampDays(retention.lessonsDays);
   const schedule = clampDays(retention.scheduleDays);
   const events = clampDays(retention.eventsDays ?? retention.llmDays);
 
-  // The retention.*Days = 0 case is special-cased: clampDays floors at
-  // 1, but the test suite needs "delete everything" semantics. We
-  // detect that here and switch the predicate accordingly.
+  // The retention.*Days = 0 case is special-cased ONLY when `force` is
+  // explicitly set. clampDays floors at 1, but the test suite + admin
+  // manual-purge need "delete everything" semantics under controlled
+  // conditions. Without `force`, zero is clamped to 1 like any other
+  // out-of-range value (validator CR-3).
   const isZero = (n: number) => n <= 0;
-  const useZeroLLM = isZero(retention.llmDays);
-  const useZeroMemory = isZero(retention.memoryDays);
-  const useZeroLessons = isZero(retention.lessonsDays);
-  const useZeroSchedule = isZero(retention.scheduleDays);
-  const useZeroEvents = isZero(retention.eventsDays ?? retention.llmDays);
+  const useZeroLLM = force && isZero(retention.llmDays);
+  const useZeroMemory = force && isZero(retention.memoryDays);
+  const useZeroLessons = force && isZero(retention.lessonsDays);
+  const useZeroSchedule = force && isZero(retention.scheduleDays);
+  const useZeroEvents = force && isZero(retention.eventsDays ?? retention.llmDays);
 
   let totalDeleted = 0;
   // Hard ceiling so a buggy retention setting can't loop forever.

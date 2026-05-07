@@ -3,6 +3,7 @@ import { getDb } from "../connection";
 import { auditLog } from "../schema";
 import type { AuditEntry } from "../schema";
 import { redactForAudit } from "../../extensions/audit-redaction";
+import { persistError } from "./error-logs";
 
 export type { AuditEntry };
 
@@ -17,6 +18,13 @@ export type { AuditEntry };
  * (i.e. there must be exactly one `getDb().insert(auditLog).values(...)`
  * invocation in the codebase, here).
  *
+ * Pitfall #2 invariant (validator CR-4): an audit-write failure MUST
+ * NEVER abort the caller. The DB insert is wrapped in try/catch and
+ * routed to `persistError` (fire-and-forget) so the audit hiccup is
+ * observable to admins without propagating up to the 18+ existing
+ * call sites that currently `await insertAuditEntry(...)` mid-business
+ * flow.
+ *
  * Ref: tasks/v1.3-phase-50-audit-foundation.md § Phase 50.2.
  */
 export async function insertAuditEntry(
@@ -28,12 +36,31 @@ export async function insertAuditEntry(
   const safeMetadata = metadata
     ? (redactForAudit(metadata).redacted as Record<string, unknown> | null)
     : null;
-  await getDb().insert(auditLog).values({
-    userId,
-    action,
-    target: target ?? null,
-    metadata: safeMetadata,
-  });
+  try {
+    await getDb().insert(auditLog).values({
+      userId,
+      action,
+      target: target ?? null,
+      metadata: safeMetadata,
+    });
+  } catch (err) {
+    // Pitfall #2: audit-write failure must not propagate to the
+    // caller. Route to `persistError` so the failure is still
+    // observable in the error_logs table (and `persistError` itself
+    // is fire-and-forget, so a cascading DB outage cannot re-throw
+    // here either). No re-throw.
+    await persistError({
+      level: "warn",
+      message: "audit-write-failed: audit_log",
+      stack: err instanceof Error ? err.stack ?? null : null,
+      metadata: {
+        userId,
+        action,
+        target: target ?? null,
+        error: String(err),
+      },
+    });
+  }
 }
 
 export async function listAuditLog(opts?: {

@@ -41,11 +41,16 @@ import { sql } from "drizzle-orm";
 
 export async function up(db: any): Promise<void> {
   // sdk_capability_calls
+  //
+  // FK note: `on_behalf_of` is NOT NULL with ON DELETE RESTRICT.
+  // The ALTER block further down upgrades any existing dev databases
+  // that were created with the previous (inconsistent) ON DELETE
+  // SET NULL spec. Fresh installs land with RESTRICT directly.
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS sdk_capability_calls (
       id TEXT PRIMARY KEY,
       extension_id TEXT NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
-      on_behalf_of TEXT NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+      on_behalf_of TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
       conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
       parent_call_id TEXT,
       capability TEXT NOT NULL,
@@ -93,5 +98,25 @@ export async function up(db: any): Promise<void> {
   await db.execute(sql`
     ALTER TABLE lessons
       ADD COLUMN IF NOT EXISTS author_extension_id TEXT REFERENCES extensions(id) ON DELETE SET NULL
+  `);
+
+  // Defensive FK upgrade for sdk_capability_calls.on_behalf_of
+  // (validator CR-2): the previous spec declared ON DELETE SET NULL,
+  // which is inconsistent with the NOT NULL column constraint —
+  // user-delete would FK-violate. We move to ON DELETE RESTRICT.
+  //
+  // This block is idempotent: drops the constraint if it exists under
+  // its Postgres-default name, then re-adds with the new semantics.
+  // Fresh installs hit the new shape directly via the CREATE TABLE
+  // above; this ALTER is a no-op if the constraint name doesn't
+  // exist (e.g. the table was just freshly created).
+  await db.execute(sql`
+    ALTER TABLE sdk_capability_calls
+      DROP CONSTRAINT IF EXISTS sdk_capability_calls_on_behalf_of_fkey
+  `);
+  await db.execute(sql`
+    ALTER TABLE sdk_capability_calls
+      ADD CONSTRAINT sdk_capability_calls_on_behalf_of_fkey
+      FOREIGN KEY (on_behalf_of) REFERENCES users(id) ON DELETE RESTRICT
   `);
 }

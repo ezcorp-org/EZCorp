@@ -2,7 +2,7 @@ import { startDecayTimer } from "../memory/lifecycle";
 import { runCompaction } from "../memory/compaction";
 import { deleteExpiredSessions } from "../db/queries/sessions";
 import { cleanupOldErrors } from "../db/queries/error-logs";
-import { cleanupOldSdkCapabilityCalls } from "../db/queries/sdk-capability-calls";
+import { cleanupOldSdkCapabilityCalls, clampDays } from "../db/queries/sdk-capability-calls";
 import { getSetting } from "../db/queries/settings";
 import { logger } from "../logger";
 
@@ -44,15 +44,24 @@ export async function startBackgroundTimers(): Promise<void> {
   // Per-capability retention thresholds are read on every tick so
   // admin changes to `global:sdk{Llm,Memory,Lessons,Schedule}RetentionDays`
   // apply without restart. Defaults: 90/30/30/90 days.
+  //
+  // CR-3: clamp every setting value to [1, 3650] BEFORE handing to
+  // `cleanupOldSdkCapabilityCalls`. The query module also clamps, but
+  // the `force: true` escape hatch there is reachable when the caller
+  // passes 0; clamping at the read layer means production paths can
+  // NEVER pass 0, regardless of what's in the settings table. The
+  // explicit `force` flag is intentionally NOT set — production must
+  // not opt into the implicit-purge branch.
+  //
   // Style mirrors `cleanupOldErrors` above. Failures swallowed —
   // retention is an opportunistic background sweep; an audit row that
   // outlives its window for one tick isn't a correctness problem.
   setInterval(() => {
     (async () => {
-      const llmDays = Number((await getSetting("global:sdkLlmRetentionDays")) ?? 90);
-      const memoryDays = Number((await getSetting("global:sdkMemoryRetentionDays")) ?? 30);
-      const lessonsDays = Number((await getSetting("global:sdkLessonsRetentionDays")) ?? 30);
-      const scheduleDays = Number((await getSetting("global:sdkScheduleRetentionDays")) ?? 90);
+      const llmDays = clampDays(Number((await getSetting("global:sdkLlmRetentionDays")) ?? 90));
+      const memoryDays = clampDays(Number((await getSetting("global:sdkMemoryRetentionDays")) ?? 30));
+      const lessonsDays = clampDays(Number((await getSetting("global:sdkLessonsRetentionDays")) ?? 30));
+      const scheduleDays = clampDays(Number((await getSetting("global:sdkScheduleRetentionDays")) ?? 90));
       await cleanupOldSdkCapabilityCalls({ llmDays, memoryDays, lessonsDays, scheduleDays });
     })().catch((e: unknown) => {
       log.warn("sdk-capability-calls cleanup failed", { error: String(e) });

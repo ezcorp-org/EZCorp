@@ -31,10 +31,11 @@ import {
   listSdkCapabilityCallsForConversation,
   listSdkCapabilityCallsForUser,
   cleanupOldSdkCapabilityCalls,
+  clampDays,
 } from "../db/queries/sdk-capability-calls";
 import { createUser } from "../db/queries/users";
-import { extensions, conversations, sdkCapabilityCalls, projects } from "../db/schema";
-import { sql } from "drizzle-orm";
+import { extensions, conversations, sdkCapabilityCalls, projects, users } from "../db/schema";
+import { eq, sql } from "drizzle-orm";
 
 let userId: string;
 let userId2: string;
@@ -231,7 +232,8 @@ describe("cleanupOldSdkCapabilityCalls — per-capability retention", () => {
       success: true,
       durationMs: 1,
     });
-    await cleanupOldSdkCapabilityCalls({ llmDays: 0, memoryDays: 0, lessonsDays: 0, scheduleDays: 0 });
+    // CR-3: zero-as-purge requires explicit `force: true` opt-in.
+    await cleanupOldSdkCapabilityCalls({ llmDays: 0, memoryDays: 0, lessonsDays: 0, scheduleDays: 0, force: true });
     const remaining = await listSdkCapabilityCallsForExtension(extensionId, { limit: 100 });
     expect(remaining.length).toBe(0);
   });
@@ -254,7 +256,9 @@ describe("cleanupOldSdkCapabilityCalls — per-capability retention", () => {
       success: true,
       durationMs: 1,
     });
-    await cleanupOldSdkCapabilityCalls({ llmDays: 90, memoryDays: 0, lessonsDays: 30, scheduleDays: 90 });
+    // CR-3: memory bucket purges only because `force: true`. LLM/lessons/
+    // schedule values are above zero so `force` doesn't affect them.
+    await cleanupOldSdkCapabilityCalls({ llmDays: 90, memoryDays: 0, lessonsDays: 30, scheduleDays: 90, force: true });
     const remaining = await listSdkCapabilityCallsForExtension(extensionId, { limit: 100 });
     // Only the LLM row should survive.
     expect(remaining.length).toBe(1);
@@ -273,6 +277,150 @@ describe("cleanupOldSdkCapabilityCalls — per-capability retention", () => {
     await cleanupOldSdkCapabilityCalls({ llmDays: 90, memoryDays: 30, lessonsDays: 30, scheduleDays: 90 });
     const remaining = await listSdkCapabilityCallsForExtension(extensionId);
     expect(remaining.length).toBe(1);
+  });
+});
+
+// CA-2: clampDays boundary coverage (validator finding).
+describe("clampDays — boundary behavior", () => {
+  test("negative -> floors at 1", () => {
+    expect(clampDays(-5)).toBe(1);
+  });
+  test("zero -> floors at 1 (no implicit-purge bypass)", () => {
+    expect(clampDays(0)).toBe(1);
+  });
+  test("oversize -> ceilings at 3650", () => {
+    expect(clampDays(99999)).toBe(3650);
+  });
+  test("NaN -> sensible default of 30", () => {
+    expect(clampDays(Number.NaN)).toBe(30);
+  });
+  test("non-finite Infinity -> sensible default of 30", () => {
+    expect(clampDays(Number.POSITIVE_INFINITY)).toBe(30);
+  });
+  test("finite in-range value passes through unchanged", () => {
+    expect(clampDays(45)).toBe(45);
+  });
+  test("fractional value floors to integer", () => {
+    expect(clampDays(45.9)).toBe(45);
+  });
+});
+
+// CA-3: cursor-pagination + since/until window filter coverage.
+describe("listSdkCapabilityCallsForExtension — pagination + windowing", () => {
+  test("cursor pagination: insert 5, page through 2 + 2 + 1 by cursor", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      // Insert with strictly increasing createdAt so descending order
+      // is well-defined. PGlite's NOW() resolution is microseconds, but
+      // a tight loop can collide; explicit timestamps remove the race.
+      const created = new Date(Date.now() - (5 - i) * 1000); // 5s, 4s, ... 1s ago
+      const [row] = await getTestDb()
+        .insert(sdkCapabilityCalls)
+        .values({
+          extensionId,
+          onBehalfOf: userId,
+          capability: "llm" as const,
+          action: "complete",
+          success: true,
+          durationMs: 1,
+          createdAt: created,
+        })
+        .returning({ id: sdkCapabilityCalls.id });
+      ids.push(row!.id);
+    }
+    // Page 1 (newest 2) — descending order means createdAt-newest first.
+    const page1 = await listSdkCapabilityCallsForExtension(extensionId, { limit: 2 });
+    expect(page1.length).toBe(2);
+    // Page 2 — pass last row's id as cursor; expect rows strictly older.
+    const page2 = await listSdkCapabilityCallsForExtension(extensionId, {
+      limit: 2,
+      cursor: page1[page1.length - 1]!.id,
+    });
+    expect(page2.length).toBe(2);
+    // No overlap.
+    const page1Ids = new Set(page1.map((r) => r.id));
+    for (const r of page2) expect(page1Ids.has(r.id)).toBe(false);
+    // Page 3 — last row.
+    const page3 = await listSdkCapabilityCallsForExtension(extensionId, {
+      limit: 2,
+      cursor: page2[page2.length - 1]!.id,
+    });
+    expect(page3.length).toBe(1);
+    // Combined coverage = all 5 inserted ids.
+    const all = new Set([...page1, ...page2, ...page3].map((r) => r.id));
+    expect(all.size).toBe(5);
+    for (const id of ids) expect(all.has(id)).toBe(true);
+  });
+
+  test("cursor with non-existent id returns rows as if no cursor (resolveCursor null branch)", async () => {
+    await insertSdkCapabilityCall({
+      extensionId,
+      onBehalfOf: userId,
+      capability: "llm",
+      action: "complete",
+      success: true,
+      durationMs: 1,
+    });
+    const rows = await listSdkCapabilityCallsForExtension(extensionId, {
+      limit: 10,
+      cursor: "00000000-0000-0000-0000-000000000000",
+    });
+    expect(rows.length).toBe(1);
+  });
+
+  test("since/until: Date window includes only rows created inside the window", async () => {
+    const now = Date.now();
+    // Insert three rows at distinct timestamps: 3h ago, 2h ago, 1h ago.
+    const olderRow = await getTestDb()
+      .insert(sdkCapabilityCalls)
+      .values({
+        extensionId,
+        onBehalfOf: userId,
+        capability: "llm" as const,
+        action: "complete",
+        success: true,
+        durationMs: 1,
+        createdAt: new Date(now - 3 * 60 * 60 * 1000),
+      })
+      .returning({ id: sdkCapabilityCalls.id });
+    const middleRow = await getTestDb()
+      .insert(sdkCapabilityCalls)
+      .values({
+        extensionId,
+        onBehalfOf: userId,
+        capability: "llm" as const,
+        action: "complete",
+        success: true,
+        durationMs: 1,
+        createdAt: new Date(now - 2 * 60 * 60 * 1000),
+      })
+      .returning({ id: sdkCapabilityCalls.id });
+    const newerRow = await getTestDb()
+      .insert(sdkCapabilityCalls)
+      .values({
+        extensionId,
+        onBehalfOf: userId,
+        capability: "llm" as const,
+        action: "complete",
+        success: true,
+        durationMs: 1,
+        createdAt: new Date(now - 1 * 60 * 60 * 1000),
+      })
+      .returning({ id: sdkCapabilityCalls.id });
+
+    // Window: (since=2.5h ago, until=0.5h ago). Only middle and newer
+    // are inside (older < since; newer < until).
+    const since = new Date(now - 2.5 * 60 * 60 * 1000);
+    const until = new Date(now - 0.5 * 60 * 60 * 1000);
+    const windowed = await listSdkCapabilityCallsForExtension(extensionId, {
+      since,
+      until,
+      limit: 100,
+    });
+    const ids = windowed.map((r) => r.id).sort();
+    expect(ids).toEqual([middleRow[0]!.id, newerRow[0]!.id].sort());
+    // Older row excluded.
+    expect(ids).not.toContain(olderRow[0]!.id);
   });
 });
 
@@ -302,6 +450,44 @@ describe("schema enforcement", () => {
         durationMs: 1,
       }),
     ).rejects.toThrow() as unknown as Promise<void>);
+  });
+
+  // CR-2: on_behalf_of FK is ON DELETE RESTRICT. A user with capability-
+  // call rows cannot be hard-deleted; admin must scrub PII separately
+  // (Phase 52 admin tools). The previous SET NULL spec was internally
+  // inconsistent with the NOT NULL column constraint.
+  test("FK on on_behalf_of: ON DELETE RESTRICT — deleting a user with capability rows is rejected", async () => {
+    // Use a fresh user so we don't interfere with the suite's shared
+    // userId (which may be referenced by other rows from other tests).
+    const u = await createUser({
+      email: "sdk-cap-fk-restrict@example.com",
+      passwordHash: "h",
+      name: "FK-RESTRICT",
+      role: "member",
+      status: "active",
+    });
+    await insertSdkCapabilityCall({
+      extensionId,
+      onBehalfOf: u.id,
+      capability: "llm",
+      action: "complete",
+      success: true,
+      durationMs: 1,
+    });
+    // Drizzle's delete-builder is a thenable but `expect.rejects`
+    // wants a real Promise — wrap in an async fn so the thenable's
+    // execute() is awaited in a Promise context.
+    await (expect(
+      (async () => {
+        await getTestDb().delete(users).where(eq(users.id, u.id));
+      })(),
+    ).rejects.toThrow() as unknown as Promise<void>);
+    // Sanity: user row still exists.
+    const remaining = await getTestDb()
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, u.id));
+    expect(remaining.length).toBe(1);
   });
 
   // Sanity: indexes exist (smoke check via system catalog).

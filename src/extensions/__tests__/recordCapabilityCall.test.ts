@@ -42,6 +42,8 @@ import {
   errorLogs,
   lessons,
   lessonsAuditLog,
+  memories,
+  memoryAuditLog,
 } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import type { HandlerContext } from "../handler-context";
@@ -106,6 +108,8 @@ beforeEach(async () => {
   await getTestDb().delete(messages);
   await getTestDb().delete(lessonsAuditLog);
   await getTestDb().delete(lessons);
+  await getTestDb().delete(memoryAuditLog);
+  await getTestDb().delete(memories);
   await getTestDb().delete(sdkCapabilityCalls);
   await getTestDb().delete(errorLogs);
 });
@@ -280,6 +284,113 @@ describe("recordCapabilityCall — per-resource audit (lessons)", () => {
     expect(auditRows[0]!.actorExtensionId).toBe(extensionId);
     expect(auditRows[0]!.previousBody).toBe("old body");
     expect(auditRows[0]!.newBody).toBe("new body");
+  });
+});
+
+// CA-4: kind="memory" per-resource branch coverage (validator finding).
+// Symmetric with the existing kind="lesson" test above. Asserts the
+// memory_audit_log row carries `reason = ext:<extId>` and the
+// before/after content fields are populated from previousBody/newBody.
+describe("recordCapabilityCall — per-resource audit (memory)", () => {
+  test("perResourceAudit kind=memory writes a memory_audit_log row with reason=ext:<id>", async () => {
+    // Create a memory row to attach the audit row to.
+    const [mem] = await getTestDb()
+      .insert(memories)
+      .values({
+        content: "old memory content",
+        category: "preferences",
+        projectId,
+        userId,
+      })
+      .returning({ id: memories.id });
+
+    const result = await recordCapabilityCall({
+      ctx: makeCtx(),
+      capability: "memory",
+      action: "update",
+      resourceType: "memory",
+      resourceId: mem!.id,
+      durationMs: 1,
+      success: true,
+      insertChatPill: false,
+      perResourceAudit: {
+        kind: "memory",
+        memoryId: mem!.id,
+        previousBody: "old memory content",
+        newBody: "new memory content",
+        memoryAction: "updated",
+      },
+    });
+    expect(result.sdkCapabilityCallId).toBeTruthy();
+
+    const auditRows = await getTestDb()
+      .select().from(memoryAuditLog)
+      .where(eq(memoryAuditLog.memoryId, mem!.id));
+    expect(auditRows.length).toBe(1);
+    const row = auditRows[0]!;
+    expect(row.action).toBe("updated");
+    expect(row.previousContent).toBe("old memory content");
+    expect(row.newContent).toBe("new memory content");
+    // The reason field carries `ext:<extensionId>` so a downstream
+    // governance feed can join the audit row back to the actor — same
+    // shape recordCapabilityCall uses for the lesson branch.
+    expect(row.reason).toBe(`ext:${extensionId}`);
+  });
+
+  test("kind=memory with default action defaults to 'updated'", async () => {
+    const [mem] = await getTestDb()
+      .insert(memories)
+      .values({
+        content: "x",
+        category: "technical",
+        projectId,
+        userId,
+      })
+      .returning({ id: memories.id });
+
+    await recordCapabilityCall({
+      ctx: makeCtx(),
+      capability: "memory",
+      action: "update",
+      durationMs: 1,
+      success: true,
+      insertChatPill: false,
+      perResourceAudit: {
+        kind: "memory",
+        memoryId: mem!.id,
+        // memoryAction omitted — wrapper defaults to "updated"
+      },
+    });
+
+    const rows = await getTestDb()
+      .select().from(memoryAuditLog)
+      .where(eq(memoryAuditLog.memoryId, mem!.id));
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.action).toBe("updated");
+  });
+
+  test("kind=memory without memoryId is a silent no-op (no row written)", async () => {
+    // Defensive: the wrapper guards on `pra.memoryId` (line 148) — without
+    // it, the per-resource audit branch is skipped. We assert the sdk row
+    // still writes successfully and no memory_audit_log row appears.
+    const before = await getTestDb().select().from(memoryAuditLog);
+    const result = await recordCapabilityCall({
+      ctx: makeCtx(),
+      capability: "memory",
+      action: "read",
+      durationMs: 1,
+      success: true,
+      insertChatPill: false,
+      perResourceAudit: {
+        kind: "memory",
+        // memoryId intentionally omitted
+        previousBody: "x",
+        newBody: "y",
+      },
+    });
+    expect(result.sdkCapabilityCallId).toBeTruthy();
+    const after = await getTestDb().select().from(memoryAuditLog);
+    expect(after.length).toBe(before.length);
   });
 });
 

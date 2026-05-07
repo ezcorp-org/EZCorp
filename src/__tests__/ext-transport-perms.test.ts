@@ -44,7 +44,6 @@ afterAll(() => restoreModuleMocks());
 
 import { denyAndDisable } from "../extensions/security";
 import {
-  checkPermission,
   getRequiredPermissions,
   diffPermissions,
   isSensitiveOperation,

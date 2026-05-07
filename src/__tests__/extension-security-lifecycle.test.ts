@@ -17,7 +17,6 @@ import {
 import { denyAndDisable } from "../extensions/security";
 import type { SecurityViolation } from "../extensions/security";
 import {
-  checkPermission,
   diffPermissions,
   getRequiredPermissions,
   isSensitiveOperation,

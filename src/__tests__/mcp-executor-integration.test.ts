@@ -196,14 +196,17 @@ describe("ToolExecutor MCP path — events + DB recording", () => {
     await deleteExtension(ext.id);
   });
 
-  test("permission checker is honored on MCP path", async () => {
+  test("PDP deny is honored on MCP path", async () => {
     const { ext, registry } = await setupMcp(
       "ev-perm",
       { type: "object", properties: {} },
       async () => ({ content: [{ type: "text", text: "should-not-reach" }], isError: false }),
     );
     const conv = await createConversation(projectId, { title: "perm" });
-    const executor = new ToolExecutor(registry, createStubPermissionEngine());
+    // Phase 1: the per-call permission gate is the PDP, not a checker
+    // injected at construction time. Deny-all engine = same observable
+    // semantics: PermissionDeniedError + subprocess never invoked.
+    const executor = new ToolExecutor(registry, createStubPermissionEngine("deny-all"));
     await expect(
       executor.executeToolCall("ev-perm__probe", {}, conv.id, null),
     ).rejects.toThrow(/Permission denied/);

@@ -152,40 +152,81 @@ interface DistilledLesson {
   frontmatter?: Record<string, unknown> | null;
 }
 
-// ── Pipeline entry point ──────────────────────────────────────────
+// ── Distillation outcome (post-trigger-gate pipeline) ─────────────
 //
-// Same signature shape as `extractMemories(run, conversationId)`.
-// Returns void; errors are logged + swallowed so the listener's
-// fire-and-forget contract holds.
-export async function distillLesson(
-  run: AgentRun,
-  conversationId: string,
-): Promise<void> {
-  // ── Settings toggle ─────────────────────────────────────────────
-  // Mirrors extraction.ts:77 — treat missing setting as enabled.
-  const enabled = await getSetting("global:lessonDistillerEnabled");
-  if (enabled === false) return;
+// `runDistillation` returns one of three discriminated shapes so its
+// callers can render diagnostic surfaces. The legacy auto-listener
+// (`distillLesson` → `registerLessonDistillerListener`) ignores the
+// outcome and treats decline + error as silent no-ops to preserve
+// fire-and-forget semantics. The manual `!EZ:distill` handler maps
+// the outcome to a result card so users see WHY a manual trigger
+// declined / errored — closing the v1.5 diagnostic gap that motivated
+// the EZ Actions sigil.
+export type DistillationOutcome =
+  /** Lesson row created. `lesson` is the inserted row (post-DB write). */
+  | { kind: "success"; lesson: import("../../db/schema").Lesson }
+  /** A pre-existing row with the same slug already covers this — no
+   *  new insert. Surfaces as "decline" rather than "success" so the UI
+   *  can tell the user nothing changed; the legacy auto-listener
+   *  treats this same case as a debug-level soft-skip. */
+  | { kind: "decline"; reason: "slug_collision"; existingSlug: string }
+  /** Trigger gate didn't fire — only emitted when `skipTriggerGate=false`.
+   *  The manual handler always passes `skipTriggerGate=true` so this
+   *  variant is unreachable from the !EZ:distill path. */
+  | { kind: "decline"; reason: "trigger_gate_blocked" }
+  /** Conversation has no messages — nothing to feed the LLM. */
+  | { kind: "decline"; reason: "empty_conversation" }
+  /** LLM returned EMPTY / null / `{}` / `[]` — model declined to
+   *  fabricate. The desired path; not an error. */
+  | { kind: "decline"; reason: "llm_empty" }
+  /** LLM returned non-JSON or schema-mismatched JSON. */
+  | { kind: "decline"; reason: "llm_malformed"; detail: string }
+  /** DB error during persistence (excluding slug collisions). */
+  | { kind: "error"; reason: "db_error"; detail: string }
+  /** LLM call threw. */
+  | { kind: "error"; reason: "llm_error"; detail: string };
 
-  // ── Status / agent gating ──────────────────────────────────────
-  // Same shape as extraction.ts:81 — only successful chat runs.
-  if (run.agentName !== "chat" || run.status !== "success") return;
+/** Inputs to the post-trigger-gate distillation pipeline. */
+export interface RunDistillationOptions {
+  conversationId: string;
+  projectId: string;
+  ownerId: string;
+  /** When `true`, the pure-heuristic trigger gate is bypassed. Used by
+   *  the manual `!EZ:distill` action — the user explicitly asked, so
+   *  we pay the LLM call regardless of low-signal heuristics. */
+  skipTriggerGate: boolean;
+  /** Provider preference for the cheap-tier model. Defaults to
+   *  `"google"` — same fallback as the auto-listener. */
+  providerHint?: string;
+}
 
-  // ── Conversation fetch ──────────────────────────────────────────
-  // We need both messages (LLM input) and the conversation row (to
-  // resolve ownerId, since AgentRun has no user attribution).
-  const conversation = await getConversation(conversationId);
-  if (!conversation) return;
-  const ownerId = conversation.userId;
-  if (!ownerId) {
-    // System-initiated runs (no user). Nothing to attribute the
-    // lesson to — silent no-op.
-    return;
-  }
-  const projectId = run.projectId ?? conversation.projectId;
-  if (!projectId) return;
+// ── Post-trigger-gate pipeline ────────────────────────────────────
+//
+// Extracted from the original `distillLesson` (Phase 2 refactor).
+// Contains: messages-fetch → empty check → optional trigger gate →
+// LLM call → JSON parse → field validation → mutex-protected DB
+// write. Returns a structured outcome so callers can decide how to
+// surface decline / error states.
+//
+// Critical invariants preserved by the refactor:
+//   - Per-project mutex (`withDistillationLock`) still wraps the
+//     `createLesson` call, so two concurrent distillations on the
+//     same project still serialize at the DB write step.
+//   - LLM EMPTY / null / array / non-object responses are still
+//     non-fatal — they map to `decline` outcomes (not `error`).
+//   - Slug collision on the partial unique index still returns
+//     `decline: slug_collision` (legacy code logged at debug + no-op).
+//   - "EMPTY" string check, JSON-fence unwrapping, and the
+//     5-hop cause-chain walk for SQLSTATE 23505 are unchanged.
+export async function runDistillation(
+  opts: RunDistillationOptions,
+): Promise<DistillationOutcome> {
+  const { conversationId, projectId, ownerId, skipTriggerGate } = opts;
 
   const allMessages = await getMessages(conversationId);
-  if (allMessages.length === 0) return;
+  if (allMessages.length === 0) {
+    return { kind: "decline", reason: "empty_conversation" };
+  }
 
   // Take last ~20 messages (10 pairs) for context — same window as
   // extraction.ts:88 to keep token cost predictable.
@@ -204,56 +245,57 @@ export async function distillLesson(
   // Pure-heuristic OR-of-flags from `runtime/lessons/triggers.ts`:
   // we only pay the LLM call when at least one signal fires
   // (≥5 tool calls, error→ok recovery, user-correction tokens,
-  // explicit `[lesson]` tag). Sources:
-  //   - tool-call signals come from `tool_calls` (single SELECT
-  //     of just the `success` column, ordered by created_at —
-  //     order matters for the recovery detector)
-  //   - text signals reuse the `recentMessages` slice already in
-  //     memory (no re-load)
-  //
-  // If the tool-calls query throws, we DO NOT swallow it: the
-  // listener's `.catch` already logs, and a hard DB failure here
-  // is a real signal that something is wrong with the runtime.
-  const userMessageTexts = recentMessages
-    .filter((m) => m.role === "user")
-    .map((m) => m.content);
-  const toolCallRows = await listToolCallsByConversation(conversationId);
-  const triggerInput = {
-    toolCallCount: toolCallRows.length,
-    errorRecoveryObserved: detectErrorRecovery(
-      toolCallRows.map((r) => ({ status: r.success ? "ok" : "error" })),
-    ),
-    userCorrectionObserved: detectUserCorrection(userMessageTexts),
-    explicitlyTagged: detectExplicitTag(userMessageTexts),
-  };
-  if (!shouldDistill(triggerInput)) return;
+  // explicit `[lesson]` tag). The manual `!EZ:distill` handler
+  // bypasses this gate (`skipTriggerGate=true`) — the user
+  // explicitly invoked the action, the tokens are spent.
+  if (!skipTriggerGate) {
+    const userMessageTexts = recentMessages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content);
+    const toolCallRows = await listToolCallsByConversation(conversationId);
+    const triggerInput = {
+      toolCallCount: toolCallRows.length,
+      errorRecoveryObserved: detectErrorRecovery(
+        toolCallRows.map((r) => ({ status: r.success ? "ok" : "error" })),
+      ),
+      userCorrectionObserved: detectUserCorrection(userMessageTexts),
+      explicitlyTagged: detectExplicitTag(userMessageTexts),
+    };
+    if (!shouldDistill(triggerInput)) {
+      return { kind: "decline", reason: "trigger_gate_blocked" };
+    }
+  }
 
   // ── Provider / model resolution ────────────────────────────────
-  // Mirrors extraction.ts:94–108.
-  const provider = run.provider ?? "google";
+  const provider = opts.providerHint ?? "google";
   const { provider: distProvider, model } = getDistillationModel(provider);
 
   const { complete } = await import("@mariozechner/pi-ai");
   const { resolveModel } = await import("../../providers/router");
   const { getCredential } = await import("../../providers/credentials");
 
-  const resolved = await resolveModel(distProvider, model);
-  const cred = await getCredential(resolved.provider);
+  let result: Awaited<ReturnType<typeof complete>>;
+  try {
+    const resolved = await resolveModel(distProvider, model);
+    const cred = await getCredential(resolved.provider);
 
-  const result = await complete(
-    resolved.piModel,
-    {
-      systemPrompt: DISTILLATION_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `Distill at most one lesson from this conversation:\n\n${conversationText}`,
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    { apiKey: cred.token, maxTokens: 1024, temperature: 0 },
-  );
+    result = await complete(
+      resolved.piModel,
+      {
+        systemPrompt: DISTILLATION_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `Distill at most one lesson from this conversation:\n\n${conversationText}`,
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      { apiKey: cred.token, maxTokens: 1024, temperature: 0 },
+    );
+  } catch (err) {
+    return { kind: "error", reason: "llm_error", detail: (err as Error).message };
+  }
 
   // ── Parse JSON envelope ────────────────────────────────────────
   let lesson: DistilledLesson | null;
@@ -267,34 +309,30 @@ export async function distillLesson(
     if (fenced) jsonText = fenced[1]!.trim();
 
     if (!jsonText) {
-      // Empty response — silent no-op (model declined).
-      return;
+      return { kind: "decline", reason: "llm_empty" };
     }
     if (jsonText === "EMPTY" || jsonText === '"EMPTY"' || jsonText === "null") {
-      // Model explicitly declined — silent no-op.
-      return;
+      return { kind: "decline", reason: "llm_empty" };
     }
     // Tolerate `[]` / `{}` as additional "nothing here" signals,
     // mirroring extraction.ts's defensiveness.
     const parsed = JSON.parse(jsonText);
-    if (parsed === null || parsed === "EMPTY") return;
+    if (parsed === null || parsed === "EMPTY") {
+      return { kind: "decline", reason: "llm_empty" };
+    }
     if (Array.isArray(parsed)) {
-      // Empty array, or first element if non-empty — but the
-      // schema is single-object; an array means the model misread
-      // the prompt, so treat empty as no-op and any other array
-      // shape as malformed.
-      if (parsed.length === 0) return;
+      if (parsed.length === 0) return { kind: "decline", reason: "llm_empty" };
       log.warn("Distiller: LLM returned an array; expected single object");
-      return;
+      return { kind: "decline", reason: "llm_malformed", detail: "expected single object, got array" };
     }
     if (typeof parsed !== "object") {
       log.warn("Distiller: LLM response was not a JSON object", { got: typeof parsed });
-      return;
+      return { kind: "decline", reason: "llm_malformed", detail: `expected object, got ${typeof parsed}` };
     }
     lesson = parsed as DistilledLesson;
   } catch (err) {
     log.warn("Distiller: failed to parse JSON response", { error: (err as Error).message });
-    return;
+    return { kind: "decline", reason: "llm_malformed", detail: (err as Error).message };
   }
 
   if (!lesson?.slug || !lesson.title || !lesson.body) {
@@ -303,10 +341,15 @@ export async function distillLesson(
       hasTitle: !!lesson?.title,
       hasBody: !!lesson?.body,
     });
-    return;
+    return {
+      kind: "decline",
+      reason: "llm_malformed",
+      detail: "missing required fields (slug, title, body)",
+    };
   }
 
   // ── Persist (serialized per project) ───────────────────────────
+  let outcome: DistillationOutcome | null = null;
   await withDistillationLock(projectId, async () => {
     const row: NewLesson = {
       projectId,
@@ -320,7 +363,8 @@ export async function distillLesson(
       sourceSha256,
     };
     try {
-      await createLesson(row);
+      const inserted = await createLesson(row);
+      outcome = { kind: "success", lesson: inserted };
     } catch (err) {
       // Slug collision against the partial unique index — soft skip.
       // The migration declares two such indexes:
@@ -338,12 +382,77 @@ export async function distillLesson(
           projectId,
           ownerId,
         });
+        outcome = {
+          kind: "decline",
+          reason: "slug_collision",
+          existingSlug: lesson!.slug,
+        };
         return;
       }
-      // Anything else is a real DB error — let it propagate so the
-      // listener's catch logs it with the surrounding context.
+      // Persist any other DB error as `error` outcome AND re-throw so
+      // the legacy auto-listener's `.catch` still surfaces a log line
+      // (preserving the pre-refactor observability surface).
+      outcome = { kind: "error", reason: "db_error", detail: (err as Error).message };
       throw err;
     }
+  });
+
+  // The mutex callback always sets `outcome` (success or one of the
+  // decline/error variants). The non-null assertion captures that
+  // invariant — if it ever fires, it's a coding bug.
+  return outcome!;
+}
+
+// ── Pipeline entry point (auto-listener) ──────────────────────────
+//
+// Same signature shape as `extractMemories(run, conversationId)`.
+// Returns void; errors are logged + swallowed so the listener's
+// fire-and-forget contract holds.
+//
+// Refactored in Phase 2 of EZ Actions v1: the post-trigger-gate
+// pipeline is now in `runDistillation` and the manual `!EZ:distill`
+// handler also calls it (with `skipTriggerGate=true`). This function
+// retains all pre-refactor public behavior — the auto-listener still
+// silently no-ops on every decline / error path.
+export async function distillLesson(
+  run: AgentRun,
+  conversationId: string,
+): Promise<void> {
+  // ── Settings toggle ─────────────────────────────────────────────
+  // Mirrors extraction.ts:77 — treat missing setting as enabled.
+  const enabled = await getSetting("global:lessonDistillerEnabled");
+  if (enabled === false) return;
+
+  // ── Status / agent gating ──────────────────────────────────────
+  // Same shape as extraction.ts:81 — only successful chat runs.
+  if (run.agentName !== "chat" || run.status !== "success") return;
+
+  // ── Conversation fetch ──────────────────────────────────────────
+  // We need the conversation row to resolve ownerId, since AgentRun
+  // has no user attribution.
+  const conversation = await getConversation(conversationId);
+  if (!conversation) return;
+  const ownerId = conversation.userId;
+  if (!ownerId) {
+    // System-initiated runs (no user). Nothing to attribute the
+    // lesson to — silent no-op.
+    return;
+  }
+  const projectId = run.projectId ?? conversation.projectId;
+  if (!projectId) return;
+
+  // Delegate to the shared post-trigger-gate pipeline. The auto-
+  // listener path keeps the trigger gate (`skipTriggerGate=false`) so
+  // low-signal runs don't burn LLM tokens. Outcome is intentionally
+  // discarded — decline + error remain silent for the listener
+  // contract; the `db_error` re-throw inside `runDistillation` is what
+  // the listener's `.catch` logs.
+  await runDistillation({
+    conversationId,
+    projectId,
+    ownerId,
+    skipTriggerGate: false,
+    providerHint: run.provider,
   });
 }
 

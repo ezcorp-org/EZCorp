@@ -15,12 +15,12 @@
  * Empty list in Phase 1 — Phase 2 wires the `distill` handler.
  */
 import type { EzAction } from "./types";
+import { distillAction } from "./distill";
 
-// Phase 1 ships an empty registry — the popover shows "No matches
-// found" until Phase 2 lands the `distill` handler. Adding new
-// actions in v1 = append to this array (after writing the handler
-// file + its tests).
-const REGISTRY: readonly EzAction[] = [];
+// v1 ships exactly one action: `distill`. Adding new actions =
+// append to this array (after writing the handler file + its tests).
+// User-extensible registries are v2.
+const REGISTRY: readonly EzAction[] = [distillAction];
 
 /**
  * Public listing for the popover. `handler` is intentionally NOT

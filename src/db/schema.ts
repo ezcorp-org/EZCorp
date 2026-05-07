@@ -1,4 +1,5 @@
 import { pgTable, text, timestamp, jsonb, integer, real, serial, bigint, boolean, index, primaryKey, vector } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { PipelineStep } from "../types";
 import type { MemoryProvenance } from "../memory/types";
 import { EMBEDDING_DIMENSIONS } from "../memory/types";
@@ -749,6 +750,12 @@ export const lessons = pgTable("lessons", {
   frontmatter: jsonb("frontmatter").$type<Record<string, unknown>>(),
   source: text("source").notNull().default("distiller").$type<"distiller" | "user">(),
   sourceSha256: text("source_sha256"),
+  // Phase 50: which extension authored this lesson, if any. NULL for
+  // legacy host-distilled rows; populated by Phase 51's `ctx.lessons`
+  // handler so the per-extension audit drill-down can attribute lessons
+  // back to their source. ON DELETE SET NULL — uninstalling an extension
+  // doesn't lose the lesson body, just the attribution.
+  authorExtensionId: text("author_extension_id").references(() => extensions.id, { onDelete: "set null" }),
   firedCount: integer("fired_count").notNull().default(0),
   lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
   dismissedCount: integer("dismissed_count").notNull().default(0),
@@ -766,3 +773,91 @@ export const lessons = pgTable("lessons", {
 
 export type Lesson = typeof lessons.$inferSelect;
 export type NewLesson = typeof lessons.$inferInsert;
+
+// ── Phase 50: SDK Capability Calls (high-volume per-call audit) ────
+//
+// One row per Phase 51 capability handler invocation
+// (`ctx.llm.complete`, `ctx.memory.read`, `ctx.lessons.write`, etc.).
+// Separated from the general-purpose `audit_log` table because the
+// volumes (per-LLM-call frequencies) would crowd out the governance
+// feed if merged. Per-capability retention thresholds (90/30/30/90 days
+// for llm/memory/lessons/schedule) are swept hourly by the cleanup
+// timer in `src/startup/background-timers.ts`.
+//
+// `on_behalf_of` is NOT NULL — every row carries the user the call
+// was made on behalf of (derived via `handler-context.ts`). This is
+// the structural defense against provenance spoofing: a subprocess
+// cannot insert a row without a valid user attribution.
+//
+// `parent_call_id` is a self-FK declared inline (no `references()` on
+// purpose — Drizzle's helper struggles with the same-table reference
+// during initial schema build, and the integrity constraint isn't
+// load-bearing; orphan parent_call_ids are tolerable for audit-only
+// data).
+export const sdkCapabilityCalls = pgTable("sdk_capability_calls", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  extensionId: text("extension_id").notNull().references(() => extensions.id, { onDelete: "cascade" }),
+  onBehalfOf: text("on_behalf_of").notNull().references(() => users.id, { onDelete: "set null" }),
+  conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  /** Self-FK to chain scheduled-fire → its child LLM call etc.
+   *  Declared as plain text to avoid Drizzle's same-table-reference
+   *  ergonomics; orphans tolerated (audit-only). */
+  parentCallId: text("parent_call_id"),
+  /** 'llm' | 'memory' | 'lessons' | 'schedule' | 'events' */
+  capability: text("capability").notNull().$type<"llm" | "memory" | "lessons" | "schedule" | "events">(),
+  /** 'complete' | 'read' | 'write' | 'update' | 'delete' | 'fire' | 'register' | 'subscribe' */
+  action: text("action").notNull(),
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  before: jsonb("before").$type<unknown>(),
+  after: jsonb("after").$type<unknown>(),
+  success: boolean("success").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  tokensUsed: integer("tokens_used"),
+  costUsd: real("cost_usd"),
+  provider: text("provider"),
+  model: text("model"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+}, (table) => [
+  index("idx_sdk_cap_ext_created").on(table.extensionId, table.createdAt.desc()),
+  // Partial index — most rows are conversation-scoped, but `register`
+  // and some `fire` rows from scheduled handlers are not. Predicate
+  // via raw SQL since Drizzle's `.where()` on indexes is the standard
+  // pattern for this in the codebase.
+  index("idx_sdk_cap_conv_created").on(table.conversationId, table.createdAt.desc())
+    .where(sql`conversation_id IS NOT NULL`),
+  index("idx_sdk_cap_user_capability_created").on(table.onBehalfOf, table.capability, table.createdAt.desc()),
+  index("idx_sdk_cap_created").on(table.createdAt.desc()),
+]);
+
+export type SdkCapabilityCall = typeof sdkCapabilityCalls.$inferSelect;
+export type NewSdkCapabilityCall = typeof sdkCapabilityCalls.$inferInsert;
+
+// ── Phase 50: Lessons Audit Log ────────────────────────────────────
+//
+// Mirrors `memory_audit_log` shape. Captures full before/after body
+// + frontmatter on every lesson mutation so admins have a forensic
+// trail (forever retention — small table, debugging gold). Cascade
+// delete: removing the lesson removes its audit history.
+export const lessonsAuditLog = pgTable("lessons_audit_log", {
+  id: serial("id").primaryKey(),
+  lessonId: text("lesson_id").notNull().references(() => lessons.id, { onDelete: "cascade" }),
+  /** 'created' | 'updated' | 'deleted' */
+  action: text("action").notNull().$type<"created" | "updated" | "deleted">(),
+  previousBody: text("previous_body"),
+  newBody: text("new_body"),
+  previousFrontmatter: jsonb("previous_frontmatter").$type<Record<string, unknown> | null>(),
+  newFrontmatter: jsonb("new_frontmatter").$type<Record<string, unknown> | null>(),
+  actorUserId: text("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  actorExtensionId: text("actor_extension_id").references(() => extensions.id, { onDelete: "set null" }),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+}, (table) => [
+  index("idx_lessons_audit_lesson_created").on(table.lessonId, table.createdAt.desc()),
+  index("idx_lessons_audit_actor_ext_created").on(table.actorExtensionId, table.createdAt.desc()),
+]);
+
+export type LessonAuditEntry = typeof lessonsAuditLog.$inferSelect;
+export type NewLessonAuditEntry = typeof lessonsAuditLog.$inferInsert;

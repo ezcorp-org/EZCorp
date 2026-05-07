@@ -2,6 +2,7 @@ import { startDecayTimer } from "../memory/lifecycle";
 import { runCompaction } from "../memory/compaction";
 import { deleteExpiredSessions } from "../db/queries/sessions";
 import { cleanupOldErrors } from "../db/queries/error-logs";
+import { cleanupOldSdkCapabilityCalls } from "../db/queries/sdk-capability-calls";
 import { getSetting } from "../db/queries/settings";
 import { logger } from "../logger";
 
@@ -37,6 +38,25 @@ export async function startBackgroundTimers(): Promise<void> {
   }, 60 * 60 * 1000);
   setInterval(() => {
     cleanupOldErrors(30).catch(() => {});
+  }, 60 * 60 * 1000);
+
+  // Phase 50: SDK capability-call retention sweep (hourly).
+  // Per-capability retention thresholds are read on every tick so
+  // admin changes to `global:sdk{Llm,Memory,Lessons,Schedule}RetentionDays`
+  // apply without restart. Defaults: 90/30/30/90 days.
+  // Style mirrors `cleanupOldErrors` above. Failures swallowed —
+  // retention is an opportunistic background sweep; an audit row that
+  // outlives its window for one tick isn't a correctness problem.
+  setInterval(() => {
+    (async () => {
+      const llmDays = Number((await getSetting("global:sdkLlmRetentionDays")) ?? 90);
+      const memoryDays = Number((await getSetting("global:sdkMemoryRetentionDays")) ?? 30);
+      const lessonsDays = Number((await getSetting("global:sdkLessonsRetentionDays")) ?? 30);
+      const scheduleDays = Number((await getSetting("global:sdkScheduleRetentionDays")) ?? 90);
+      await cleanupOldSdkCapabilityCalls({ llmDays, memoryDays, lessonsDays, scheduleDays });
+    })().catch((e: unknown) => {
+      log.warn("sdk-capability-calls cleanup failed", { error: String(e) });
+    });
   }, 60 * 60 * 1000);
 
   // Memory compaction (configurable, default 6h)

@@ -1038,4 +1038,67 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
       ON lessons(project_id, slug)
       WHERE visibility IN ('project', 'global')
   `);
+
+  // ── Phase 50: Audit foundation ─────────────────────────────────────
+  // See src/db/migrations/add-sdk-capability-audit.ts for rationale.
+  // Lands `sdk_capability_calls` (high-volume per-call SDK audit),
+  // `lessons_audit_log` (mirrors memory_audit_log shape), and the
+  // `lessons.author_extension_id` column (so Phase 51 ctx.lessons
+  // doesn't need a follow-up migration). All idempotent (CREATE IF
+  // NOT EXISTS, ADD COLUMN IF NOT EXISTS).
+
+  // sdk_capability_calls — see schema.ts `sdkCapabilityCalls`
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS sdk_capability_calls (
+      id TEXT PRIMARY KEY,
+      extension_id TEXT NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+      on_behalf_of TEXT NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      parent_call_id TEXT,
+      capability TEXT NOT NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT,
+      resource_id TEXT,
+      before JSONB,
+      after JSONB,
+      success BOOLEAN NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      error_code TEXT,
+      error_message TEXT,
+      tokens_used INTEGER,
+      cost_usd REAL,
+      provider TEXT,
+      model TEXT,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_ext_created ON sdk_capability_calls(extension_id, created_at DESC)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_conv_created ON sdk_capability_calls(conversation_id, created_at DESC) WHERE conversation_id IS NOT NULL`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_user_capability_created ON sdk_capability_calls(on_behalf_of, capability, created_at DESC)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sdk_cap_created ON sdk_capability_calls(created_at DESC)`);
+
+  // lessons_audit_log — mirrors memory_audit_log shape
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS lessons_audit_log (
+      id SERIAL PRIMARY KEY,
+      lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      previous_body TEXT,
+      new_body TEXT,
+      previous_frontmatter JSONB,
+      new_frontmatter JSONB,
+      actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      actor_extension_id TEXT REFERENCES extensions(id) ON DELETE SET NULL,
+      reason TEXT,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_lessons_audit_lesson_created ON lessons_audit_log(lesson_id, created_at DESC)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_lessons_audit_actor_ext_created ON lessons_audit_log(actor_extension_id, created_at DESC)`);
+
+  // lessons.author_extension_id — additive column, idempotent
+  await db.execute(sql`
+    ALTER TABLE lessons
+      ADD COLUMN IF NOT EXISTS author_extension_id TEXT REFERENCES extensions(id) ON DELETE SET NULL
+  `);
 }

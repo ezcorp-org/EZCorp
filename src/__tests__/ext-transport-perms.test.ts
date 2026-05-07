@@ -452,81 +452,102 @@ describe("JsonRpcTransport (supplemental)", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("permissions (supplemental)", () => {
-  // ── checkPermission: filesystem exact match ────────────────────
+  // ── PDP edge cases (Phase 1 migration) ─────────────────────────
+  //
+  // Pre-Phase-1 these tested the dead sync `checkPermission`. Phase 1
+  // routes every privileged op through the `PermissionEngine` (PDP);
+  // the cases now exercise `engine.authorize` against a registry stub
+  // configured with the equivalent grant set.
 
-  describe("checkPermission edge cases", () => {
-    test("filesystem exact match (path equals prefix)", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/home/user/docs"],
-        grantedAt: {},
-      };
-      expect(checkPermission("filesystem", "/home/user/docs", granted)).toBe(true);
+  describe("PDP edge cases", () => {
+    const PDPCtx = { extensionId: "ext-1", userId: "u-1", conversationId: "c-1" };
+
+    function makeEngine(granted: ExtensionPermissions) {
+      const { createPermissionEngine } = require("../extensions/permission-engine");
+      return createPermissionEngine({
+        registry: { getGrantedPermissions: () => granted },
+        bus: { emit: () => {}, on: () => () => {} },
+        db: { _token: "ext-transport-edge" },
+      });
+    }
+
+    test("filesystem exact match (path equals prefix)", async () => {
+      const engine = makeEngine({ filesystem: ["/home/user/docs"], grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "fs.read", value: "/home/user/docs" },
+      ]);
+      expect(decision.decision).toBe("allow");
     });
 
-    test("filesystem rejects prefix substring that lacks separator (e.g. /tmpevil vs /tmp)", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/tmp"],
-        grantedAt: {},
-      };
-      expect(checkPermission("filesystem", "/tmpevil", granted)).toBe(false);
+    test("filesystem rejects prefix substring that lacks separator (/tmpevil vs /tmp)", async () => {
+      const engine = makeEngine({ filesystem: ["/tmp"], grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "fs.read", value: "/tmpevil" },
+      ]);
+      expect(decision.decision).toBe("deny");
     });
 
-    test("filesystem with no granted filesystem returns false", () => {
-      const granted: ExtensionPermissions = { grantedAt: {} };
-      expect(checkPermission("filesystem", "/any/path", granted)).toBe(false);
+    test("filesystem with no granted filesystem denies", async () => {
+      const engine = makeEngine({ grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "fs.read", value: "/any/path" },
+      ]);
+      expect(decision.decision).toBe("deny");
     });
 
-    test("env with no granted env returns false", () => {
-      const granted: ExtensionPermissions = { grantedAt: {} };
-      expect(checkPermission("env", "ANY_VAR", granted)).toBe(false);
+    test("env with no granted env denies", async () => {
+      const engine = makeEngine({ grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "env", value: "ANY_VAR" },
+      ]);
+      expect(decision.decision).toBe("deny");
     });
 
-    test("unknown permission type returns false", () => {
-      const granted: ExtensionPermissions = {
-        network: ["a.com"],
-        shell: true,
-        grantedAt: {},
-      };
-      expect(checkPermission("database" as any, "anything", granted)).toBe(false);
+    test("shell returns deny when granted is undefined", async () => {
+      const engine = makeEngine({ grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [{ kind: "shell" }]);
+      expect(decision.decision).toBe("deny");
     });
 
-    test("shell returns false when granted is undefined (no shell key)", () => {
-      const granted: ExtensionPermissions = { grantedAt: {} };
-      expect(checkPermission("shell", true, granted)).toBe(false);
+    test("network with empty array denies", async () => {
+      const engine = makeEngine({ network: [], grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "network", value: "a.com" },
+      ]);
+      expect(decision.decision).toBe("deny");
     });
 
-    test("network with empty array returns false", () => {
-      const granted: ExtensionPermissions = { network: [], grantedAt: {} };
-      expect(checkPermission("network", "a.com", granted)).toBe(false);
+    test("filesystem with empty array denies", async () => {
+      const engine = makeEngine({ filesystem: [], grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "fs.read", value: "/foo" },
+      ]);
+      expect(decision.decision).toBe("deny");
     });
 
-    test("filesystem with empty array returns false", () => {
-      const granted: ExtensionPermissions = { filesystem: [], grantedAt: {} };
-      expect(checkPermission("filesystem", "/foo", granted)).toBe(false);
+    test("filesystem allows deeply nested path under prefix", async () => {
+      const engine = makeEngine({ filesystem: ["/data"], grantedAt: {} });
+      const decision = await engine.authorize(PDPCtx, [
+        { kind: "fs.read", value: "/data/a/b/c/d/e.txt" },
+      ]);
+      expect(decision.decision).toBe("allow");
     });
 
-    test("env with empty array returns false", () => {
-      const granted: ExtensionPermissions = { env: [], grantedAt: {} };
-      expect(checkPermission("env", "FOO", granted)).toBe(false);
-    });
-
-    test("filesystem allows deeply nested path under prefix", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/data"],
-        grantedAt: {},
-      };
-      expect(checkPermission("filesystem", "/data/a/b/c/d/e.txt", granted)).toBe(true);
-    });
-
-    test("network allows multiple domains — checks each", () => {
-      const granted: ExtensionPermissions = {
+    test("network allows multiple domains — checks each", async () => {
+      const engine = makeEngine({
         network: ["a.com", "b.com", "c.com"],
         grantedAt: {},
-      };
-      expect(checkPermission("network", "a.com", granted)).toBe(true);
-      expect(checkPermission("network", "b.com", granted)).toBe(true);
-      expect(checkPermission("network", "c.com", granted)).toBe(true);
-      expect(checkPermission("network", "d.com", granted)).toBe(false);
+      });
+      for (const host of ["a.com", "b.com", "c.com"]) {
+        const decision = await engine.authorize(PDPCtx, [
+          { kind: "network", value: host },
+        ]);
+        expect(decision.decision).toBe("allow");
+      }
+      const denied = await engine.authorize(PDPCtx, [
+        { kind: "network", value: "d.com" },
+      ]);
+      expect(denied.decision).toBe("deny");
     });
   });
 

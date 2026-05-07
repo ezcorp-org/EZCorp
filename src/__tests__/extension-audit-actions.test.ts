@@ -26,10 +26,10 @@ describe("extension audit action constants", () => {
     }
   });
 
-  test("constant set is exhaustive for the audit paths (7 Phase 1 + 4 Phase 2a/b + 1 Phase 2c + 1 Phase 4 + 1 bundled-event-subscriptions backfill + 2 settings.user mutations)", () => {
+  test("constant set is exhaustive — covers every audit-emit site through Phase 1 PDP", () => {
     const keys = new Set(Object.keys(EXT_AUDIT_ACTIONS));
     expect(keys).toEqual(new Set([
-      // Phase 1
+      // Original Phase 1 (admin-driven grant/revoke + bundled lifecycle)
       "PERMISSION_GRANTED",
       "PERMISSION_REVOKED",
       "PERMISSION_REJECTED",
@@ -51,6 +51,10 @@ describe("extension audit action constants", () => {
       // Per-extension settings (lazy-foraging-hammock)
       "SETTINGS_USER_UPDATED",
       "SETTINGS_USER_RESET",
+      // Phase 1 PDP — every authorize() decision lands here
+      "PERM_ALLOWED",
+      "PERM_DENIED",
+      "PERM_PROMPTED",
     ]));
   });
 

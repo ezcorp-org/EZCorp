@@ -431,9 +431,14 @@ describe("code-review-delegator/index.ts", () => {
 });
 
 describe("markdown-utils/ezcorp.config.ts", () => {
-  test("exports a valid manifest with schemaVersion 2", async () => {
+  test("exports a valid manifest, auto-promoted to v3 by the loader", async () => {
     const { loadManifest } = await import("../extensions/loader");
     const manifest = await loadManifest(join(EXAMPLES_DIR, "markdown-utils"));
-    expect(manifest.schemaVersion).toBe(2);
+    // Phase 1: the loader runs migrateManifestV2ToV3 after validation
+    // so every downstream consumer reads v3 shape. The on-disk manifest
+    // is still v2 (`schemaVersion: 2`); the loader sets the result to
+    // v3 with `_inheritedFromV2: true`.
+    expect(manifest.schemaVersion).toBe(3);
+    expect((manifest as { _inheritedFromV2?: boolean })._inheritedFromV2).toBe(true);
   });
 });

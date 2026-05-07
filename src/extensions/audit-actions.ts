@@ -94,7 +94,34 @@ export const EXT_AUDIT_ACTIONS = {
    *  /api/extensions/[id]/settings/user. Audited with the
    *  pre-delete values for forensic trail. */
   SETTINGS_USER_RESET: "ext:settings.user.reset",
+  // ── Phase 1: Policy Decision Point (PDP) ──
+  /** PDP authorized a tool call / privileged op (every needed cap is
+   *  covered by the effective grant set). Metadata: `{auditId, toolName,
+   *  capabilityKind, capabilityValue, parentAuditId, callerExtensionId,
+   *  conversationId}`. Phase 4 will populate `callerExtensionId` for
+   *  cross-ext invokes. */
+  PERM_ALLOWED: "ext:perm:allowed",
+  /** PDP denied a privileged op — at least one needed cap is missing.
+   *  Metadata: same shape as PERM_ALLOWED plus a `reason` field naming
+   *  the missing cap. */
+  PERM_DENIED: "ext:perm:denied",
+  /** PDP returned `prompt` — every needed cap is granted but a
+   *  sensitive cap (shell / fs.write) lacks an always-allow row. Phase
+   *  6 wires the UI; Phase 1 callers treat this as `allow` so the
+   *  audit row is the only externally visible signal. Metadata:
+   *  `{auditId, toolName, capabilityKind, capabilityValue, promptId,
+   *  conversationId}`. */
+  PERM_PROMPTED: "ext:perm:prompted",
 } as const;
+
+// Re-export the three Phase 1 PDP action codes as named constants for
+// import sites that don't go through the `EXT_AUDIT_ACTIONS.*` lookup
+// (the PDP itself, every PEP). Keeping both forms means pre-existing
+// code that already uses `EXT_AUDIT_ACTIONS.PERM_ALLOWED` keeps
+// working.
+export const AUDIT_PERM_ALLOWED = "ext:perm:allowed";
+export const AUDIT_PERM_DENIED = "ext:perm:denied";
+export const AUDIT_PERM_PROMPTED = "ext:perm:prompted";
 
 export type ExtAuditAction = typeof EXT_AUDIT_ACTIONS[keyof typeof EXT_AUDIT_ACTIONS];
 

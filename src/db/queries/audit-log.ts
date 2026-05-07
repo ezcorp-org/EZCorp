@@ -2,20 +2,37 @@ import { desc, eq, and, like, or } from "drizzle-orm";
 import { getDb } from "../connection";
 import { auditLog } from "../schema";
 import type { AuditEntry } from "../schema";
+import { redactForAudit } from "../../extensions/audit-redaction";
 
 export type { AuditEntry };
 
+/**
+ * Insert a row into the shared `audit_log` table.
+ *
+ * The `metadata` argument is ALWAYS routed through `redactForAudit`
+ * before persistence — this is the single chokepoint that every existing
+ * call site (18+ across `bundled.ts`, `task-events-handler.ts`, the
+ * permission grant/revoke endpoints, etc.) plus every future capability
+ * handler relies on. No call site is permitted to bypass this wrapper
+ * (i.e. there must be exactly one `getDb().insert(auditLog).values(...)`
+ * invocation in the codebase, here).
+ *
+ * Ref: tasks/v1.3-phase-50-audit-foundation.md § Phase 50.2.
+ */
 export async function insertAuditEntry(
   userId: string | null,
   action: string,
   target?: string,
   metadata?: Record<string, unknown>,
 ): Promise<void> {
+  const safeMetadata = metadata
+    ? (redactForAudit(metadata).redacted as Record<string, unknown> | null)
+    : null;
   await getDb().insert(auditLog).values({
     userId,
     action,
     target: target ?? null,
-    metadata: metadata ?? null,
+    metadata: safeMetadata,
   });
 }
 

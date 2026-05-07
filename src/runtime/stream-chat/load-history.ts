@@ -256,7 +256,19 @@ export async function loadHistory(
     });
   }
 
-  const history: Message[] = await Promise.all(branchMessages.map(async (m, idx): Promise<Message> => {
+  // Map each branch row to a pi-ai message OR null. `null` means the row
+  // is intentionally absent from the LLM-visible history — currently used
+  // for `ez-action-result` synthetic rows (the inline card payload is for
+  // the UI, not the model). The post-map filter strips nulls.
+  //
+  // The downstream `convertToLlm` filter in build-pi-agent.ts only sees the
+  // POST-mapping role — by then `ez-action-result` would have been mapped to
+  // `"user"` (the fall-through branch below) and the JSON-encoded card
+  // would leak into the prompt as a fake user turn. Filter at the source.
+  const mapped = await Promise.all(branchMessages.map(async (m, idx): Promise<Message | null> => {
+    // EZ action result rows are UI-only — never send the JSON-encoded
+    // EzActionResult payload to the LLM. Spec invariant.
+    if (m.role === "ez-action-result") return null;
     if (m.role === "assistant") {
       return {
         role: "assistant" as const,
@@ -290,6 +302,7 @@ export async function loadHistory(
       timestamp: Date.now(),
     } satisfies UserMessage;
   }));
+  const history: Message[] = mapped.filter((m): m is Message => m !== null);
 
   // System prompt lives on the per-call context so the memory/KB injection
   // closure (in the parallel Promise.all below) and the orchestrator-prompt

@@ -302,15 +302,16 @@
 						<button
 							id="mention-item-{idx}"
 							role="option"
+							data-mention-kind="EZ"
 							aria-selected={idx === highlightedIndex}
-							class="flex w-full flex-col gap-0.5 px-4 py-2 text-left transition-colors border-l-2 border-amber-500/60 {idx === highlightedIndex
+							class="flex w-full flex-col gap-0.5 px-4 py-2 text-left transition-colors border-l-2 border-orange-500/60 {idx === highlightedIndex
 								? 'bg-[var(--color-surface-tertiary)]'
 								: 'hover:bg-[var(--color-surface-tertiary)]/50'}"
 							onclick={() => onselect(item)}
 							onmouseenter={() => (highlightedIndex = idx)}
 						>
 							<div class="flex items-baseline gap-2">
-								<span class="text-sm font-medium text-amber-300">!EZ:{item.name}</span>
+								<span class="text-sm font-medium text-orange-300">!EZ:{item.name}</span>
 							</div>
 							<span class="truncate text-xs text-[var(--color-text-muted)]">{item.description || "—"}</span>
 						</button>

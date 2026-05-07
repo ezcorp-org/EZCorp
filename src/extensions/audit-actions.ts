@@ -94,6 +94,42 @@ export const EXT_AUDIT_ACTIONS = {
    *  /api/extensions/[id]/settings/user. Audited with the
    *  pre-delete values for forensic trail. */
   SETTINGS_USER_RESET: "ext:settings.user.reset",
+  // ── Phase 50: SDK capability tier (Phase 51 handlers write these) ──
+  // These rows accompany the high-volume sdk_capability_calls table:
+  // every SDK call writes a row to sdk_capability_calls AND a row
+  // here, the latter being what governance dashboards filter on.
+  // The `permission` field on ExtensionAuditMetadata is now optional
+  // because SDK_* rows don't carry a permission name — they carry
+  // `capability` instead.
+  /** ctx.llm.complete() succeeded. Metadata: capability='llm',
+   *  provider, model, tokensUsed, costUsd, durationMs, conversationId. */
+  SDK_LLM_CALL: "ext:sdk-llm-call",
+  /** ctx.llm.complete() rejected before issuing the provider request
+   *  (rate-limit, cost cap, un-granted provider). */
+  SDK_LLM_REJECTED: "ext:sdk-llm-rejected",
+  /** ctx.memory.read() / search() / getById(). */
+  SDK_MEMORY_READ: "ext:sdk-memory-read",
+  /** ctx.memory.write() / update() / delete(). */
+  SDK_MEMORY_WRITE: "ext:sdk-memory-write",
+  /** ctx.memory.* rejected (selfOnly violation, category-scope, etc.). */
+  SDK_MEMORY_REJECTED: "ext:sdk-memory-rejected",
+  /** ctx.lessons.read() / search() / getBySlug(). */
+  SDK_LESSONS_READ: "ext:sdk-lessons-read",
+  /** ctx.lessons.write() / update() / delete(). */
+  SDK_LESSONS_WRITE: "ext:sdk-lessons-write",
+  /** ctx.lessons.* rejected (slug collision, visibility scope). */
+  SDK_LESSONS_REJECTED: "ext:sdk-lessons-rejected",
+  /** ctx.schedule.register() — extension declared a recurring or
+   *  delayed fire. */
+  SDK_SCHEDULE_REGISTERED: "ext:sdk-schedule-registered",
+  /** Daemon dispatched a fire callback to the extension. */
+  SDK_SCHEDULE_FIRE: "ext:sdk-schedule-fire",
+  /** ctx.schedule.* rejected (cron parse error, quota, dst-edge). */
+  SDK_SCHEDULE_REJECTED: "ext:sdk-schedule-rejected",
+  /** ctx.events.subscribe() — extension wired a new event listener. */
+  SDK_EVENT_SUBSCRIBED: "ext:sdk-event-subscribed",
+  /** Event delivery rejected (rate-limit, payload denied by allowlist). */
+  SDK_EVENT_DELIVERY_REJECTED: "ext:sdk-event-delivery-rejected",
 } as const;
 
 export type ExtAuditAction = typeof EXT_AUDIT_ACTIONS[keyof typeof EXT_AUDIT_ACTIONS];
@@ -101,10 +137,18 @@ export type ExtAuditAction = typeof EXT_AUDIT_ACTIONS[keyof typeof EXT_AUDIT_ACT
 /**
  * Metadata shape stored in `audit_log.metadata` for every `ext:*` row.
  * Downstream code (e.g. the detail page) can rely on this contract.
+ *
+ * Phase 50: `permission` is now optional. Permission-tier rows
+ * (PERMISSION_GRANTED, etc.) populate it; SDK_* rows leave it
+ * undefined and populate `capability` instead.
  */
 export type ExtensionAuditMetadata = {
-  /** Which permission field was affected (e.g. "storage", "shell", "network"). */
-  permission: string;
+  /** Which permission field was affected (e.g. "storage", "shell", "network").
+   *  Optional — SDK_* tier rows omit it and use `capability` instead. */
+  permission?: string;
+  /** SDK capability bucket — populated by SDK_* tier rows; undefined on
+   *  permission-tier rows. */
+  capability?: "llm" | "memory" | "lessons" | "schedule" | "events";
   /** Prior value — typically `boolean`, `string[]`, or `undefined`. */
   oldValue: unknown;
   /** Post-change value. For rejected attempts, the VALUE THAT WAS REJECTED. */

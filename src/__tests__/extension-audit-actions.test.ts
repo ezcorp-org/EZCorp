@@ -26,7 +26,7 @@ describe("extension audit action constants", () => {
     }
   });
 
-  test("constant set is exhaustive for the audit paths (7 Phase 1 + 4 Phase 2a/b + 1 Phase 2c + 1 Phase 4 + 1 bundled-event-subscriptions backfill + 2 settings.user mutations)", () => {
+  test("constant set is exhaustive for the audit paths", () => {
     const keys = new Set(Object.keys(EXT_AUDIT_ACTIONS));
     expect(keys).toEqual(new Set([
       // Phase 1
@@ -51,6 +51,20 @@ describe("extension audit action constants", () => {
       // Per-extension settings (lazy-foraging-hammock)
       "SETTINGS_USER_UPDATED",
       "SETTINGS_USER_RESET",
+      // Phase 50 — SDK capability tier (audit-actions for Phase 51 handlers)
+      "SDK_LLM_CALL",
+      "SDK_LLM_REJECTED",
+      "SDK_MEMORY_READ",
+      "SDK_MEMORY_WRITE",
+      "SDK_MEMORY_REJECTED",
+      "SDK_LESSONS_READ",
+      "SDK_LESSONS_WRITE",
+      "SDK_LESSONS_REJECTED",
+      "SDK_SCHEDULE_REGISTERED",
+      "SDK_SCHEDULE_FIRE",
+      "SDK_SCHEDULE_REJECTED",
+      "SDK_EVENT_SUBSCRIBED",
+      "SDK_EVENT_DELIVERY_REJECTED",
     ]));
   });
 

@@ -5,6 +5,7 @@ import { ExtensionRegistry, } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
 import { parseArgs } from "../cli";
 import type { JsonRpcRequest, JsonRpcResponse, ExtensionManifestV2, DependencySpec } from "../extensions/types";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -240,7 +241,7 @@ describe("ToolExecutor.handlePiInvoke", () => {
     });
 
     // Mock the executor's internal executeToolCall to avoid subprocess
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const calls: Array<{ toolName: string; callerExtensionId?: string }> = [];
 
     // Override executeToolCall to capture calls
@@ -268,7 +269,7 @@ describe("ToolExecutor.handlePiInvoke", () => {
     const registry = ExtensionRegistry.getInstance();
     registry.setDepRoutes(new Map());
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
 
     const req: JsonRpcRequest = {
       jsonrpc: "2.0",
@@ -296,7 +297,7 @@ describe("ToolExecutor.handlePiInvoke", () => {
       extensionName: "dep-pkg",
     });
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
 
     const req: JsonRpcRequest = {
       jsonrpc: "2.0",
@@ -324,7 +325,7 @@ describe("ToolExecutor.handlePiInvoke", () => {
       extensionName: "dep-pkg",
     });
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     let capturedOpts: any = null;
     executor.executeToolCall = async (_tn, _in, _cid, _mid, opts?) => {
       capturedOpts = opts;
@@ -399,7 +400,7 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
       extensionName: "dep-pkg",
     });
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     executor.executeToolCall = async () => {
       throw new Error("Subprocess crashed");
     };
@@ -422,7 +423,7 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
     const registry = ExtensionRegistry.getInstance();
     registry.setDepRoutes(new Map());
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
 
     const req: JsonRpcRequest = {
       jsonrpc: "2.0",
@@ -450,7 +451,7 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
       extensionName: "dep-pkg",
     });
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     let capturedInput: Record<string, unknown> = {};
     executor.executeToolCall = async (_tn, input, _cid, _mid, _opts?) => {
       capturedInput = input;
@@ -484,7 +485,7 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
       extensionName: "dep-pkg",
     });
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     executor.executeToolCall = async () => {
       return { content: [{ type: "text" as const, text: "ok" }], isError: false };
     };

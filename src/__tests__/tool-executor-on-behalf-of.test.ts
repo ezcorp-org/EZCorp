@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ToolExecutor } from "../extensions/tool-executor";
 import type { ExtensionRegistry } from "../extensions/registry";
 import type { ExtensionManifestV2, ToolCallResult } from "../extensions/types";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 
 // Capture every call the registry routes to a subprocess.
 interface CapturedCall {
@@ -73,7 +74,7 @@ describe("ToolExecutor — _meta.ezOnBehalfOf side channel", () => {
 
   beforeEach(() => {
     captured = [];
-    execu = new ToolExecutor(makeFakeRegistry(captured));
+    execu = new ToolExecutor(makeFakeRegistry(captured), createStubPermissionEngine());
   });
 
   afterEach(() => {
@@ -151,7 +152,7 @@ describe("ToolExecutor — _meta.ezOnBehalfOf side channel", () => {
 
     // New executor instance (simulates a fresh run for a different conv)
     const captured2: CapturedCall[] = [];
-    const execu2 = new ToolExecutor(makeFakeRegistry(captured2));
+    const execu2 = new ToolExecutor(makeFakeRegistry(captured2), createStubPermissionEngine());
     await execu2.executeToolCall("my_tool", {}, "conv-2", "msg-2");
     expect(captured2[0]!.meta?.["ezOnBehalfOf"]).toBeUndefined();
   });

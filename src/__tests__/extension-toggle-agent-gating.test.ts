@@ -71,6 +71,7 @@ import { PATCH } from "../../web/src/routes/api/extensions/[id]/+server";
 import { POST as ACTIVATE } from "../../web/src/routes/api/extensions/[id]/activate/+server";
 import { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { extensions, agentConfigs, users, settings, toolCalls } from "../db/schema";
 import { eq } from "drizzle-orm";
 import type { ExtensionManifestV2 } from "../extensions/types";
@@ -226,7 +227,7 @@ describe("UI toggle-off gates the extension from assigned agents", () => {
     // tool at runtime — must reject with the "Unknown tool" branch
     // (not a permission check, not a subprocess call). That proves
     // the gating happens at the registry, upstream of execution.
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const result = await executor.executeToolCall(
       NAMESPACED_TOOL,
       {},

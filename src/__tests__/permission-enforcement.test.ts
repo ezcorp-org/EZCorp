@@ -60,6 +60,7 @@ afterAll(() => restoreModuleMocks());
 // ── Imports after mocks ─────────────────────────────────────────────
 
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { ExtensionRegistry, buildAllowedEnv } from "../extensions/registry";
 import { fetchPermitted } from "@ezcorp/sdk/runtime";
 
@@ -201,7 +202,7 @@ describe("empty or scoped grantedPermissions — handlePiFs blocks filesystem es
     const registry = ExtensionRegistry.getInstance();
     registry.setGrantedPermsForTest("ext-fs", granted);
     registry.setInstallPathForTest("ext-fs", installDir);
-    return new ToolExecutor(registry);
+    return new ToolExecutor(registry, createStubPermissionEngine());
   }
 
   function fsReq(path: string): JsonRpcRequest {
@@ -240,7 +241,7 @@ describe("empty or scoped grantedPermissions — handlePiFs blocks filesystem es
 
     test("read of /etc/passwd is still denied", async () => {
       setup({ grantedAt: {}, filesystem: [sandboxDir] });
-      const executor = new ToolExecutor(ExtensionRegistry.getInstance());
+      const executor = new ToolExecutor(ExtensionRegistry.getInstance(), createStubPermissionEngine());
 
       const resp = await executor.handlePiFs("ext-fs", fsReq("/etc/passwd"));
       expect(resp.error?.code).toBe(-32001);
@@ -252,7 +253,7 @@ describe("empty or scoped grantedPermissions — handlePiFs blocks filesystem es
       // resolved prefix and is rejected. This is the key anti-traversal
       // guarantee: string-prefix checks alone are not enough.
       setup({ grantedAt: {}, filesystem: [sandboxDir] });
-      const executor = new ToolExecutor(ExtensionRegistry.getInstance());
+      const executor = new ToolExecutor(ExtensionRegistry.getInstance(), createStubPermissionEngine());
 
       const traversal = join(sandboxDir, "..", "escape", "secret.txt");
       const resp = await executor.handlePiFs("ext-fs", fsReq(traversal));
@@ -265,7 +266,7 @@ describe("empty or scoped grantedPermissions — handlePiFs blocks filesystem es
       // A symlink pointing outside the sandbox should NOT grant access,
       // because checkFilesystemPermission resolves realpath before compare.
       setup({ grantedAt: {}, filesystem: [sandboxDir] });
-      const executor = new ToolExecutor(ExtensionRegistry.getInstance());
+      const executor = new ToolExecutor(ExtensionRegistry.getInstance(), createStubPermissionEngine());
 
       const linkPath = join(sandboxDir, "escape-link");
       symlinkSync(outsideDir, linkPath);

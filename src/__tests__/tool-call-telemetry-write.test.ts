@@ -20,6 +20,7 @@ mockDbConnection();
 
 import { eq } from "drizzle-orm";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import type { ExtensionRegistry } from "../extensions/registry";
 import type { ToolCallResult } from "../extensions/types";
 import { persistToolCall } from "../db/queries/tool-calls";
@@ -109,7 +110,7 @@ beforeEach(async () => {
 
 describe("tool_calls write path — extension tools (ToolExecutor.recordToolCall)", () => {
   test("populates userId, agentConfigId, model, provider from executor state", async () => {
-    const execu = new ToolExecutor(makeFakeRegistry());
+    const execu = new ToolExecutor(makeFakeRegistry(), createStubPermissionEngine());
     execu.setCurrentUserId(USER_ID);
     execu.setCurrentAgentConfigId(AGENT_ID);
     execu.setCurrentModel("claude-opus-4-7");
@@ -130,7 +131,7 @@ describe("tool_calls write path — extension tools (ToolExecutor.recordToolCall
   });
 
   test("persists nulls when dimensions are not set (top-level chat with no agent binding)", async () => {
-    const execu = new ToolExecutor(makeFakeRegistry());
+    const execu = new ToolExecutor(makeFakeRegistry(), createStubPermissionEngine());
     // No setters called — simulates an un-scoped invocation.
     await execu.executeToolCall("my_tool", {}, CONV_ID, null);
 
@@ -145,7 +146,7 @@ describe("tool_calls write path — extension tools (ToolExecutor.recordToolCall
   });
 
   test("setCurrentAgentConfigId(null) clears a previously-set agent", async () => {
-    const execu = new ToolExecutor(makeFakeRegistry());
+    const execu = new ToolExecutor(makeFakeRegistry(), createStubPermissionEngine());
     execu.setCurrentAgentConfigId(AGENT_ID);
     execu.setCurrentAgentConfigId(null);
     execu.setCurrentUserId(USER_ID);
@@ -176,7 +177,7 @@ describe("tool_calls write path — extension tools (ToolExecutor.recordToolCall
       getMcpClient: async () => { throw new Error("not mcp"); },
     } as unknown as ExtensionRegistry;
 
-    const execu = new ToolExecutor(erroringRegistry);
+    const execu = new ToolExecutor(erroringRegistry, createStubPermissionEngine());
     execu.setCurrentUserId(USER_ID);
     execu.setCurrentAgentConfigId(AGENT_ID);
     execu.setCurrentModel("claude-opus-4-7");

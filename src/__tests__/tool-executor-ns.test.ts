@@ -1,6 +1,7 @@
 import { test, expect, describe, mock } from "bun:test";
 import type { RegisteredTool } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import type { ToolCallResult } from "../extensions/types";
 
 // ── Mock Registry & Process ──────────────────────────────────────────
@@ -57,7 +58,7 @@ describe("ToolExecutor namespace stripping", () => {
 
   test("proc.callTool receives originalName, not namespaced name", async () => {
     const registry = createMockRegistry([weatherTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "weather.getForecast",
@@ -75,7 +76,7 @@ describe("ToolExecutor namespace stripping", () => {
 
   test("unknown namespaced tool returns error", async () => {
     const registry = createMockRegistry([weatherTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     const result = await executor.executeToolCall(
       "nonexistent.tool",
@@ -96,7 +97,7 @@ describe("ToolExecutor namespace stripping", () => {
         emitted.push({ event, data });
       },
     };
-    const executor = new ToolExecutor(registry as any, { bus: bus as any });
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine(), { bus: bus as any });
 
     await executor.executeToolCall(
       "weather.getForecast",

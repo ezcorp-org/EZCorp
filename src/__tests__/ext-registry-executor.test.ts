@@ -67,6 +67,7 @@ import {
   extensionToAgentTool,
   MAX_TOOL_CALLS_PER_TURN,
 } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 
 // ════════════════════════════════════════════════════════════════════
 // Helpers
@@ -593,7 +594,7 @@ describe("extensionToAgentTool", () => {
         extensionId: "ext-r",
       })]]),
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
     const agentTool = extensionToAgentTool(toolDef, executor, "conv-1", "msg-1");
 
@@ -618,7 +619,7 @@ describe("extensionToAgentTool", () => {
       })]]),
       process: mockProc,
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
     const agentTool = extensionToAgentTool(toolDef, executor, "conv-1", "msg-1");
 
     const result = await agentTool.execute("call-1", { path: "/test" }, new AbortController().signal);
@@ -641,7 +642,7 @@ describe("extensionToAgentTool", () => {
       })]]),
       process: mockProc,
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
     const agentTool = extensionToAgentTool(toolDef, executor, "conv-1", "msg-1");
 
     const result = await agentTool.execute("call-1", {}, new AbortController().signal);
@@ -665,7 +666,7 @@ describe("extensionToAgentTool", () => {
         name: "orch.invoke", originalName: "invoke", extensionId: "ext-o",
       })]]),
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
     const agentTool = extensionToAgentTool(toolDef, executor, "conv-1", "msg-1", override);
     // `parameters` is a TypeBox Unsafe wrapper — its bound schema is visible
     // as the enumerable JSON-schema keys merged in by Type.Unsafe.
@@ -683,7 +684,7 @@ describe("extensionToAgentTool", () => {
         name: "orch.invoke", originalName: "invoke", extensionId: "ext-o",
       })]]),
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
     // Spy on executeToolCall to capture the trailing invocationMetadata arg.
     const capturedMetadata: Array<Record<string, unknown> | undefined> = [];
     const originalExecute = executor.executeToolCall.bind(executor);
@@ -732,7 +733,7 @@ describe("extensionToAgentTool", () => {
       })]]),
       process: mockProc,
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
     // 4-arg form — pre-Phase-4 callers.
     const agentTool = extensionToAgentTool(toolDef, executor, "conv-1", "msg-1");
     const params = agentTool.parameters as unknown as Record<string, unknown>;
@@ -784,7 +785,7 @@ describe("extensionToAgentTool", () => {
       ]),
       process: mockProc,
     });
-    const executor = new ToolExecutor(mockRegistry);
+    const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
     // Build the 6-arg wrapper first (with schemaOverride + invocationMetadata).
     const orchTool = extensionToAgentTool(
@@ -863,7 +864,7 @@ describe("ToolExecutor", () => {
   describe("executeToolCall", () => {
     test("returns error result for unknown tool", async () => {
       const mockRegistry = makeMockRegistry(); // empty toolMap
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const result = await executor.executeToolCall("nonexistent.tool", {}, "conv-1", "msg-1");
 
@@ -886,7 +887,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["ext.my-tool", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const result = await executor.executeToolCall("ext.my-tool", { key: "val" }, "conv-1", "msg-1");
 
@@ -895,30 +896,26 @@ describe("ToolExecutor", () => {
       expect(mockProc.callTool).toHaveBeenCalledWith("my-tool", { key: "val" }, expect.any(Object));
     });
 
-    test("throws PermissionDeniedError when checker denies", async () => {
+    test("throws PermissionDeniedError when PDP denies", async () => {
       const tool = makeRegisteredTool();
       const mockRegistry = makeMockRegistry({
         tools: new Map([["test-ext__echo", tool]]),
       });
-      const executor = new ToolExecutor(mockRegistry, {
-        permissionChecker: async () => false,
-      });
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine("deny-all"));
 
       await expect(
         executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1"),
       ).rejects.toThrow(PermissionDeniedError);
     });
 
-    test("allows call when permission checker returns true", async () => {
+    test("allows call when PDP returns allow", async () => {
       const mockProc = makeMockProcess();
       const tool = makeRegisteredTool();
       const mockRegistry = makeMockRegistry({
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry, {
-        permissionChecker: async () => true,
-      });
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine("allow-all"));
 
       const result = await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
       expect(result.isError).toBe(false);
@@ -931,7 +928,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["ext.edit", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
       executor.setArgsResolver(async (input) => {
         // Simulate handle resolution: replace the single known placeholder.
         const out = { ...input };
@@ -958,24 +955,28 @@ describe("ToolExecutor", () => {
       );
     });
 
-    test("argsResolver runs BEFORE permission check (checker sees resolved payload)", async () => {
+    test("argsResolver runs BEFORE PDP gate (subprocess sees resolved payload)", async () => {
       const mockProc = makeMockProcess();
       const tool = makeRegisteredTool({ name: "ext.edit", originalName: "edit", extensionId: "ext-1" });
       const mockRegistry = makeMockRegistry({
         tools: new Map([["ext.edit", tool]]),
         process: mockProc,
       });
-      let seenByChecker: Record<string, unknown> | null = null;
-      const executor = new ToolExecutor(mockRegistry, {
-        permissionChecker: async (_ext, _name, input) => {
-          seenByChecker = input;
-          return true;
-        },
-      });
+      const engine = createStubPermissionEngine();
+      const executor = new ToolExecutor(mockRegistry, engine);
       executor.setArgsResolver(async (input) => ({ ...input, marker: "RESOLVED" }));
 
       await executor.executeToolCall("ext.edit", { prompt: "x" }, "conv-1", "msg-1");
-      expect(seenByChecker).toMatchObject({ marker: "RESOLVED" });
+
+      // Subprocess sees the resolved payload (closes finding C5 part 1)
+      expect(mockProc.callTool).toHaveBeenCalledWith(
+        "edit",
+        { prompt: "x", marker: "RESOLVED" },
+        expect.any(Object),
+      );
+      // PDP also runs after the resolver — verify exactly one authorize
+      // call was made for this dispatch.
+      expect(engine.calls).toHaveLength(1);
     });
 
     test("no argsResolver → input passes through unchanged (back-compat)", async () => {
@@ -985,7 +986,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["ext.echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       await executor.executeToolCall("ext.echo", { key: "val" }, "conv-1", "msg-1");
       expect(mockProc.callTool).toHaveBeenCalledWith("echo", { key: "val" }, expect.any(Object));
@@ -1001,7 +1002,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const result = await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
 
@@ -1019,7 +1020,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const result = await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
 
@@ -1038,7 +1039,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["ext.tool", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       await executor.executeToolCall("ext.tool", { foo: "bar" }, "conv-1", "msg-1", {
         callerExtensionId: "caller",
@@ -1061,7 +1062,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["ext.tool", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       await executor.executeToolCall("ext.tool", { x: 1 }, "conv-1", "msg-1", {
         _callDepth: 0,
@@ -1078,7 +1079,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
       expect(mockProc.setRequestHandler).toHaveBeenCalledTimes(1);
@@ -1089,22 +1090,29 @@ describe("ToolExecutor", () => {
     });
   });
 
-  // ── setPermissionChecker ─────────────────────────────────────────
+  // ── PDP gate ─────────────────────────────────────────
+  //
+  // Phase 1 replaced the per-call `setPermissionChecker` API with a
+  // mandatory `PermissionEngine` injected at construction. The
+  // engine's mode can be flipped at runtime via the test stub's
+  // `setMode`, which gives the same dynamic-decision semantics the
+  // old setter did but routes through the real PDP code path.
 
-  describe("setPermissionChecker", () => {
-    test("updates checker after construction", async () => {
+  describe("PDP gate", () => {
+    test("decisions update at runtime via the stub engine", async () => {
       const tool = makeRegisteredTool();
       const mockRegistry = makeMockRegistry({
         tools: new Map([["test-ext__echo", tool]]),
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const engine = createStubPermissionEngine("allow-all");
+      const executor = new ToolExecutor(mockRegistry, engine);
 
-      // No checker initially -- should work
+      // First call: allow-all → success
       const result1 = await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
       expect(result1.isError).toBe(false);
 
-      // Set a blocking checker
-      executor.setPermissionChecker(async () => false);
+      // Flip to deny-all → next call rejects
+      engine.setMode("deny-all");
       await expect(
         executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1"),
       ).rejects.toThrow(PermissionDeniedError);
@@ -1120,7 +1128,7 @@ describe("ToolExecutor", () => {
 
     test("returns error when path is missing", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", makeRequest({ operation: "read" }));
 
@@ -1131,7 +1139,7 @@ describe("ToolExecutor", () => {
 
     test("returns error when operation is missing", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", makeRequest({ path: "/tmp/file" }));
 
@@ -1141,7 +1149,7 @@ describe("ToolExecutor", () => {
 
     test("returns error when both path and operation are missing", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", makeRequest({}));
 
@@ -1153,7 +1161,7 @@ describe("ToolExecutor", () => {
       const mockRegistry = makeMockRegistry({
         // No granted perms or install paths
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-unknown", makeRequest({
         operation: "read",
@@ -1170,7 +1178,7 @@ describe("ToolExecutor", () => {
       grantedPerms.set("ext-1", { grantedAt: {} });
       // installPaths is empty
       const mockRegistry = makeMockRegistry({ grantedPerms });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", makeRequest({
         operation: "read",
@@ -1190,7 +1198,7 @@ describe("ToolExecutor", () => {
       const installPaths = new Map<string, string>();
       installPaths.set("ext-1", "/opt/ext/test");
       const mockRegistry = makeMockRegistry({ grantedPerms, installPaths });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", makeRequest({
         operation: "read",
@@ -1214,7 +1222,7 @@ describe("ToolExecutor", () => {
       const installPaths = new Map<string, string>();
       installPaths.set("ext-1", "/opt/ext/test");
       const mockRegistry = makeMockRegistry({ grantedPerms, installPaths });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", makeRequest({
         operation: "read",
@@ -1231,7 +1239,7 @@ describe("ToolExecutor", () => {
 
     test("handles request with no params gracefully", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiFs("ext-1", {
         jsonrpc: "2.0",
@@ -1254,7 +1262,7 @@ describe("ToolExecutor", () => {
 
     test("returns error when depth limit exceeded", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "dep.tool",
@@ -1269,7 +1277,7 @@ describe("ToolExecutor", () => {
 
     test("returns error when depth is above limit", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "dep.tool",
@@ -1284,7 +1292,7 @@ describe("ToolExecutor", () => {
       const mockRegistry = makeMockRegistry({
         // No dep routes -> resolveDepTool returns null
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "undeclared-dep__tool",
@@ -1299,7 +1307,7 @@ describe("ToolExecutor", () => {
 
     test("returns error for tool without dot (non-namespaced)", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "bare-tool-name",
@@ -1330,7 +1338,7 @@ describe("ToolExecutor", () => {
         process: mockProc,
         depRoutes,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "dep-pkg__fetch",
@@ -1365,11 +1373,14 @@ describe("ToolExecutor", () => {
         process: mockProc,
         depRoutes,
       });
-      // Need a permission checker that throws PermissionDeniedError to test the catch path
-      // Actually, let's test the error catch in handlePiInvoke by having executeToolCall throw
-      const executor = new ToolExecutor(mockRegistry, {
-        permissionChecker: async () => { throw new Error("checker exploded"); },
-      });
+      // Test the error catch in handlePiInvoke by giving the PDP an
+      // engine whose `authorize` throws — `executeToolCall` propagates,
+      // and `handlePiInvoke` is supposed to wrap it in a -32000.
+      const explodingEngine = createStubPermissionEngine();
+      explodingEngine.authorize = async () => {
+        throw new Error("checker exploded");
+      };
+      const executor = new ToolExecutor(mockRegistry, explodingEngine);
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "dep-pkg__broken",
@@ -1396,7 +1407,7 @@ describe("ToolExecutor", () => {
         process: mockProc,
         depRoutes,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const response = await executor.handlePiInvoke("caller-ext", makeInvokeRequest({
         tool: "dep-pkg__tool",
@@ -1412,7 +1423,7 @@ describe("ToolExecutor", () => {
 
     test("handles request with no params (tool is undefined string)", async () => {
       const mockRegistry = makeMockRegistry();
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       // When params is missing, tool will be undefined -- this can cause a TypeError
       // in resolveDepTool which is caught by the try/catch in handlePiInvoke
@@ -1444,7 +1455,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
       const ctx = executor.createToolsContext("conv-1", "msg-1");
 
       const result = await ctx.invoke("test-ext__echo", { text: "hello" });
@@ -1461,7 +1472,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
       const ctx = executor.createToolsContext("conv-1", "msg-1");
 
       await expect(ctx.invoke("test-ext__echo", {})).rejects.toThrow("something broke");
@@ -1469,7 +1480,7 @@ describe("ToolExecutor", () => {
 
     test("invoke throws for unknown tool (aggregated error text)", async () => {
       const mockRegistry = makeMockRegistry(); // empty
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
       const ctx = executor.createToolsContext("conv-1", "msg-1");
 
       await expect(ctx.invoke("nonexistent.tool", {})).rejects.toThrow("Unknown tool");
@@ -1494,7 +1505,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry, { bus: mockBus as any });
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine(), { bus: mockBus as any });
 
       await executor.executeToolCall("test-ext__echo", { x: 1 }, "conv-1", "msg-1");
 
@@ -1527,7 +1538,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", tool]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry, { bus: mockBus as any });
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine(), { bus: mockBus as any });
 
       await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
 
@@ -1545,7 +1556,7 @@ describe("ToolExecutor", () => {
         process: mockProc,
       });
       // No bus
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       // Should not throw
       const result = await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
@@ -1584,7 +1595,7 @@ describe("ToolExecutor", () => {
         process: mockProc,
         depRoutes,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       // First executeToolCall wires the handler
       await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
@@ -1619,7 +1630,7 @@ describe("ToolExecutor", () => {
         grantedPerms,
         installPaths,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const spy = spyOn(permissionsModule, "checkFilesystemPermission").mockResolvedValue({
         allowed: true, resolvedPath: "/tmp/file.txt",
@@ -1662,7 +1673,7 @@ describe("ToolExecutor", () => {
         process: mockProc,
         grantedPerms,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
       // Wire the minimum needed for cancel dispatch — executor + quota.
       // The handler itself is stubbed, so the shapes only need to exist.
       executor.setExecutor({ cancelRun: () => true } as any);
@@ -1711,7 +1722,7 @@ describe("ToolExecutor", () => {
         tools: new Map([["test-ext__echo", makeRegisteredTool()]]),
         process: mockProc,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");
       expect(capturedHandler).not.toBeNull();
@@ -1748,7 +1759,7 @@ describe("ToolExecutor", () => {
         grantedPerms,
         manifests,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const spy = spyOn(storageHandlerModule, "handleStorageRpc").mockResolvedValue({
         jsonrpc: "2.0", id: 500, result: { value: null, exists: false },
@@ -1774,7 +1785,7 @@ describe("ToolExecutor", () => {
       const mockRegistry = makeMockRegistry({
         tools: new Map([["test-ext__echo", makeRegisteredTool()]]),
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const req: JsonRpcRequest = {
         jsonrpc: "2.0",
@@ -1799,7 +1810,7 @@ describe("ToolExecutor", () => {
         grantedPerms,
         manifests,
       });
-      const executor = new ToolExecutor(mockRegistry);
+      const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const spy = spyOn(storageHandlerModule, "handleStorageRpc").mockResolvedValue({
         jsonrpc: "2.0", id: 2, result: { keys: [] },

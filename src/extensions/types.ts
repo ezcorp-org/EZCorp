@@ -375,6 +375,39 @@ export interface ExtensionManifestV2 {
   category?: string;
   checksum?: string;
   packageChecksums?: Record<string, string>;
+
+  // ── Phase 4 deputy / orchestration opt-in flags ───────────────────
+  /**
+   * When `true`, this extension's tools accept caller capabilities via
+   * `ezcorp/invoke` and run with `intersect(callerCaps, ownCaps)`.
+   * Default `false` — pre-Phase-4 behavior, callee runs with its own
+   * caps as-is. Bundled "deputy" extensions (e.g. ai-kit) opt in;
+   * the install-time UI surfaces the elevated-trust nature.
+   *
+   * The runtime check is `=== true` — v2 manifests that don't carry
+   * this field are treated as opted-out.
+   *
+   * Granted at install time on the `extensions.grantedPermissions`
+   * blob — the runtime consults the GRANT, not the manifest. A
+   * manifest declaring `acceptsCallerCaps: true` without user consent
+   * is treated as if the flag were absent.
+   */
+  acceptsCallerCaps?: boolean;
+  /**
+   * When `true`, this extension's `ezcorp/spawn-assignment` calls do
+   * NOT cap the child conversation by parent capabilities. The child
+   * runs with its own agent-config-declared caps (still intersected
+   * with the child manifest's declared permissions). Default `false`
+   * — child caps are clipped by `intersect(parentGrants,
+   * childManifestPerms)`. Only orchestration extensions whose entire
+   * purpose is delegation should set this; the install-time UI
+   * requires explicit consent.
+   *
+   * Like `acceptsCallerCaps`, the runtime consults the GRANT (not the
+   * manifest) so a manifest without user consent is treated as
+   * opted-out.
+   */
+  escalateChildCaps?: boolean;
 }
 
 // Backward compat alias -- plan 03 will clean up remaining usages
@@ -482,6 +515,15 @@ export interface ExtensionPermissions {
   /** Grants the `ezcorp/append-message` reverse RPC. See the matching
    *  field on `ExtensionManifestV2.permissions`. */
   appendMessages?: { excludedDefault: boolean };
+  /**
+   * Phase 4 deputy/orchestration opt-in flags persisted on install.
+   * Mirrors the manifest declaration of the same names — the runtime
+   * check is `=== true`. The user MUST consent at install time for
+   * either to be honored at runtime; absence on either side defaults
+   * to "opted-out".
+   */
+  acceptsCallerCaps?: boolean;
+  escalateChildCaps?: boolean;
   grantedAt: Record<string, number>; // permission key -> timestamp
 }
 

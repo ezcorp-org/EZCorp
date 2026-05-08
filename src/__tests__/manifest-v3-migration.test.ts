@@ -281,3 +281,123 @@ describe("ExtensionManifestInternal shape", () => {
     expect(out._inheritedFromV2).toBeDefined();
   });
 });
+
+// ── Phase 4: deputy / orchestration manifest fields ────────────────
+
+describe("migrateManifestV2ToV3 — Phase 4 deputy/orchestration flags", () => {
+  test("v2 manifest without flags → migrated v3 has both absent (treated as false at runtime)", () => {
+    const m = makeManifest({
+      schemaVersion: 2,
+      tools: [{ name: "t", description: "t", inputSchema: { type: "object" } }],
+    });
+    const out = migrateManifestV2ToV3(m);
+    expect(out.acceptsCallerCaps).toBeUndefined();
+    expect(out.escalateChildCaps).toBeUndefined();
+  });
+
+  test("v3 manifest with acceptsCallerCaps: true → preserved through migration", () => {
+    const m = makeManifest({
+      schemaVersion: 3,
+      acceptsCallerCaps: true,
+      tools: [
+        {
+          name: "t",
+          description: "t",
+          inputSchema: { type: "object" },
+          capabilities: {},
+        } as ToolDefinition,
+      ],
+    });
+    const out = migrateManifestV2ToV3(m);
+    expect(out.acceptsCallerCaps).toBe(true);
+    expect(out.escalateChildCaps).toBeUndefined();
+  });
+
+  test("v3 manifest with escalateChildCaps: true → preserved through migration", () => {
+    const m = makeManifest({
+      schemaVersion: 3,
+      escalateChildCaps: true,
+      tools: [
+        {
+          name: "t",
+          description: "t",
+          inputSchema: { type: "object" },
+          capabilities: {},
+        } as ToolDefinition,
+      ],
+    });
+    const out = migrateManifestV2ToV3(m);
+    expect(out.escalateChildCaps).toBe(true);
+    expect(out.acceptsCallerCaps).toBeUndefined();
+  });
+
+  test("v3 manifest with both flags → both preserved", () => {
+    const m = makeManifest({
+      schemaVersion: 3,
+      acceptsCallerCaps: true,
+      escalateChildCaps: true,
+      tools: [
+        {
+          name: "t",
+          description: "t",
+          inputSchema: { type: "object" },
+          capabilities: {},
+        } as ToolDefinition,
+      ],
+    });
+    const out = migrateManifestV2ToV3(m);
+    expect(out.acceptsCallerCaps).toBe(true);
+    expect(out.escalateChildCaps).toBe(true);
+  });
+
+  test("v2 manifest carrying acceptsCallerCaps: true → preserved (v2 schema accepts it)", () => {
+    // The validator accepts the field on either version; the runtime
+    // check is `=== true`. This case asserts that authors writing v2
+    // manifests can still surface the deputy flag — the migration
+    // doesn't strip it.
+    const m = makeManifest({
+      schemaVersion: 2,
+      acceptsCallerCaps: true,
+      tools: [{ name: "t", description: "t", inputSchema: { type: "object" } }],
+    });
+    const out = migrateManifestV2ToV3(m);
+    expect(out.acceptsCallerCaps).toBe(true);
+    expect(out._inheritedFromV2).toBe(true);
+  });
+});
+
+// ── Phase 4: validator accepts boolean flags ───────────────────────
+
+describe("validateManifestV2 — Phase 4 deputy/orchestration flags", () => {
+  test("acceptsCallerCaps: true validates", () => {
+    const m = makeManifest({ acceptsCallerCaps: true });
+    const result = validateManifestV2(m);
+    expect(result.valid).toBe(true);
+  });
+
+  test("escalateChildCaps: false validates", () => {
+    const m = makeManifest({ escalateChildCaps: false });
+    const result = validateManifestV2(m);
+    expect(result.valid).toBe(true);
+  });
+
+  test("acceptsCallerCaps: 'yes' (non-boolean) is rejected", () => {
+    const m = {
+      ...makeManifest(),
+      acceptsCallerCaps: "yes" as unknown as boolean,
+    };
+    const result = validateManifestV2(m as ExtensionManifest);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("acceptsCallerCaps"))).toBe(true);
+  });
+
+  test("escalateChildCaps: 1 (non-boolean) is rejected", () => {
+    const m = {
+      ...makeManifest(),
+      escalateChildCaps: 1 as unknown as boolean,
+    };
+    const result = validateManifestV2(m as ExtensionManifest);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("escalateChildCaps"))).toBe(true);
+  });
+});

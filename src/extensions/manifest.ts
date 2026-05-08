@@ -724,6 +724,16 @@ export function validateManifestV2(
     }
   }
 
+  // Phase 4 deputy / orchestration opt-in flags. Both are optional and
+  // boolean. The runtime check is `=== true`; v2 manifests omitting
+  // them inherit the default opted-out behavior.
+  if (m.acceptsCallerCaps !== undefined && typeof m.acceptsCallerCaps !== "boolean") {
+    errors.push("acceptsCallerCaps must be a boolean when set");
+  }
+  if (m.escalateChildCaps !== undefined && typeof m.escalateChildCaps !== "boolean") {
+    errors.push("escalateChildCaps must be a boolean when set");
+  }
+
   return { valid: errors.length === 0, errors };
 }
 

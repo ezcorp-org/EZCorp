@@ -157,6 +157,16 @@ export interface TagCount {
  * array column. Cheaper than pulling every row's tags into the app
  * and counting in JS — the SQL engine groups + sorts in one pass and
  * we ship only the aggregate.
+ *
+ * Aggregation source: `marketplace_listings` ONLY. Installed-extension
+ * `manifest.tags` are deliberately excluded — categories filter the
+ * public marketplace, and installed extensions don't appear there.
+ * Including installed-only tags would surface chips that match zero
+ * listings (misleading UX). v1.5 may add a separate "My installed
+ * extensions" tag filter on the Installed tab if user research
+ * validates the need. Spec §49.3.1 mentioned aggregating both sources,
+ * but that wording was loose — the implementation is intentionally
+ * marketplace-only.
  */
 export async function getMarketplaceTagCounts(): Promise<TagCount[]> {
   const rows = await getDb().execute(

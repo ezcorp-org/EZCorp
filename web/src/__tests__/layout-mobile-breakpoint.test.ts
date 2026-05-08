@@ -75,6 +75,16 @@ describe("(app) layout — Phase 49.1 sidebar breakpoint policy", () => {
     );
   });
 
+  test("drawer-internal nav-links have 44px touch target (WCAG 2.1 AA)", () => {
+    // Phase 49.1 spec § 49.1.1 — every interactive element in the mobile
+    // surface is ≥44x44 px. The drawer's `<nav>` iterates `navLinks` and
+    // emits each `<a>` with an inline `min-height: 44px` style. Pin that
+    // so a regression that drops the inline style fails fast.
+    expect(layoutSrc).toMatch(
+      /\{#each navLinks as link, i\}[\s\S]*?<a[\s\S]{0,400}style="min-height: 44px;[^"]*"[\s\S]{0,200}<\/a>[\s\S]*?\{\/each\}/,
+    );
+  });
+
   test("hamburger button toggles store.mobileMenuOpen", () => {
     // The drawer infrastructure already existed; widening the
     // breakpoint must not change the click-handler contract.

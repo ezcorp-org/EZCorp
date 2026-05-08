@@ -144,6 +144,69 @@ describe("/agents — Phase 49.2 fuzzy search", () => {
     expect((call[1] as unknown[]).length).toBe(WORKER_THRESHOLD + 5);
   });
 
+  test("stale-response guard: out-of-order worker replies don't clobber newer query", async () => {
+    // Pin the guard at +page.svelte:103 — `if (searchQuery.trim() === trimmed)`.
+    // Two debounced searches fire back-to-back; the SECOND resolves first
+    // (with results for "ab"), then the FIRST resolves with stale results
+    // for "a". The page must keep "ab"'s ranking; otherwise a slow worker
+    // reply for an old keystroke would clobber the newer search.
+    fetchAgentsMock.mockResolvedValue([
+      makeAgent("alpha", "first match"),
+      makeAgent("beta", "second match"),
+    ]);
+
+    // Manually-controlled deferred Promises so we can resolve out of order.
+    let resolveFirst!: (v: { indices: number[]; usedWorker: boolean }) => void;
+    let resolveSecond!: (v: { indices: number[]; usedWorker: boolean }) => void;
+    const firstPromise = new Promise<{ indices: number[]; usedWorker: boolean }>(
+      (r) => {
+        resolveFirst = r;
+      },
+    );
+    const secondPromise = new Promise<{ indices: number[]; usedWorker: boolean }>(
+      (r) => {
+        resolveSecond = r;
+      },
+    );
+    rankAgentsMock
+      .mockReturnValueOnce(firstPromise)
+      .mockReturnValueOnce(secondPromise);
+
+    const { findByTestId, queryByText } = render(AgentsPage);
+    const input = (await findByTestId("agent-search-input")) as HTMLInputElement;
+
+    // First keystroke: "a" — debounce flushes, first bridge call queued.
+    await fireEvent.input(input, { target: { value: "a" } });
+    await waitFor(() => expect(rankAgentsMock).toHaveBeenCalledTimes(1), {
+      timeout: 500,
+    });
+    expect(rankAgentsMock.mock.calls[0]![0]).toBe("a");
+
+    // Second keystroke: "ab" — debounce flushes, second bridge call queued.
+    await fireEvent.input(input, { target: { value: "ab" } });
+    await waitFor(() => expect(rankAgentsMock).toHaveBeenCalledTimes(2), {
+      timeout: 500,
+    });
+    expect(rankAgentsMock.mock.calls[1]![0]).toBe("ab");
+
+    // Resolve SECOND (newer) first: "ab" → only index 1 (beta).
+    resolveSecond({ indices: [1], usedWorker: false });
+    await waitFor(() => {
+      // After "ab" resolves, only "beta" should be visible.
+      expect(queryByText("alpha")).toBeNull();
+      expect(queryByText("beta")).not.toBeNull();
+    });
+
+    // Now resolve FIRST (older) — its reply is for query "a", but the
+    // current `searchQuery` is "ab", so the guard MUST drop this result.
+    resolveFirst({ indices: [0], usedWorker: false });
+    // Give the microtask + derived re-run a chance to flush.
+    await new Promise((r) => setTimeout(r, 50));
+    // "ab"'s ranking is still in effect — alpha (index 0) remains hidden.
+    expect(queryByText("alpha")).toBeNull();
+    expect(queryByText("beta")).not.toBeNull();
+  });
+
   test("empty results → shows 'No agents match' state with Clear button", async () => {
     fetchAgentsMock.mockResolvedValue([
       makeAgent("summarizer"),

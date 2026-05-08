@@ -10,6 +10,10 @@
  * Tags come from `marketplace_listings.tags` (jsonb array set when a
  * listing is published — see `POST /api/marketplace`). Source of
  * truth is `manifest.tags` (`src/extensions/types.ts:428`).
+ *
+ * Aggregation source is marketplace listings only; installed
+ * extensions are deliberately excluded. See `getMarketplaceTagCounts`
+ * in `src/db/queries/marketplace.ts` for the rationale.
  */
 
 import { json } from "@sveltejs/kit";

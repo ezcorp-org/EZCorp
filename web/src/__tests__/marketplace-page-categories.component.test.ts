@@ -140,6 +140,46 @@ describe("/marketplace — Phase 49.3 tag sidebar", () => {
     expect(await findByText("No tags yet.")).toBeInTheDocument();
   });
 
+  test("typing search while a tag is active sends both q and tag in the same browseMarketplace call", async () => {
+    // Pin: search box debounce + active tag must coalesce into a single
+    // call carrying { q, tag }. Backend `marketplace-queries-deep.test.ts`
+    // covers `q` and `tag` independently — this asserts the combined case
+    // at the page-component level.
+    fetchMarketplaceCategoriesMock.mockResolvedValue({
+      categories: [{ tag: "research", count: 7 }],
+    });
+    const { findAllByTestId, findByPlaceholderText } = render(MarketplacePage);
+    const [chip] = await findAllByTestId("marketplace-tag-chip");
+
+    // Activate the tag first.
+    await fireEvent.click(chip!);
+    await waitFor(() => {
+      const last = browseMarketplaceMock.mock.calls.at(-1)![0] as {
+        tag?: string;
+      };
+      expect(last.tag).toBe("research");
+    });
+
+    // Now type into the search box. The page debounces (300ms) before
+    // calling browseMarketplace; wait for the debounce to flush.
+    const searchInput = (await findByPlaceholderText(
+      "Search agents...",
+    )) as HTMLInputElement;
+    await fireEvent.input(searchInput, { target: { value: "foo" } });
+
+    await waitFor(
+      () => {
+        const last = browseMarketplaceMock.mock.calls.at(-1)![0] as {
+          q?: string;
+          tag?: string;
+        };
+        expect(last.q).toBe("foo");
+        expect(last.tag).toBe("research");
+      },
+      { timeout: 1000 },
+    );
+  });
+
   test("fetchMarketplaceCategories failure is non-fatal (page still renders)", async () => {
     fetchMarketplaceCategoriesMock.mockRejectedValue(new Error("boom"));
     const { findByTestId, findByText } = render(MarketplacePage);

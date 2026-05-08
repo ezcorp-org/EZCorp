@@ -147,3 +147,11 @@ export type {
   MemoryConfidence,
   MemoryStatus,
 } from "./memory";
+
+export { Lessons } from "./lessons";
+export type {
+  LessonRecord,
+  LessonInput,
+  LessonsListOpts,
+  LessonVisibility,
+} from "./lessons";

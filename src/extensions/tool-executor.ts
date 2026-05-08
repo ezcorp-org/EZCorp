@@ -19,6 +19,7 @@ import { handleAppendMessageRpc, type AppendMessageContext } from "./append-mess
 import { handleFinalizeToolCallRpc, type FinalizeToolCallContext } from "./finalize-tool-call-handler";
 import { handlePiLlmComplete } from "./llm-handler";
 import { handlePiMemory } from "./memory-handler";
+import { handlePiLessons } from "./lessons-handler";
 import type { SpawnQuota } from "./spawn-quota";
 import { getConversation, getConversationSpawnDepth } from "../db/queries/conversations";
 import { persistToolCall } from "../db/queries/tool-calls";
@@ -707,6 +708,9 @@ export class ToolExecutor {
       if (req.method === "ezcorp/memory") {
         return this.handlePiMemory(extensionId, req);
       }
+      if (req.method === "ezcorp/lessons") {
+        return this.handlePiLessons(extensionId, req);
+      }
       return {
         jsonrpc: "2.0" as const,
         id: req.id,
@@ -752,6 +756,26 @@ export class ToolExecutor {
     }
     const rpcMeta = this.buildHandlerRpcMeta();
     return handlePiMemory(req, {
+      granted,
+      registeredTool: { extensionId },
+    }, rpcMeta);
+  }
+
+  /** Phase 51 — `ctx.lessons.*` reverse-RPC. */
+  async handlePiLessons(
+    extensionId: string,
+    req: JsonRpcRequest,
+  ): Promise<JsonRpcResponse> {
+    const granted = this.registry.getGrantedPermissions(extensionId);
+    if (!granted) {
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32603, message: "Extension not found in registry" },
+      };
+    }
+    const rpcMeta = this.buildHandlerRpcMeta();
+    return handlePiLessons(req, {
       granted,
       registeredTool: { extensionId },
     }, rpcMeta);

@@ -755,7 +755,9 @@ export const lessons = pgTable("lessons", {
   title: text("title").notNull(),
   body: text("body").notNull(),
   frontmatter: jsonb("frontmatter").$type<Record<string, unknown>>(),
-  source: text("source").notNull().default("distiller").$type<"distiller" | "user">(),
+  // Phase 51 extends the source enum to include "extension" — the
+  // ctx.lessons handler stamps this on writes.
+  source: text("source").notNull().default("distiller").$type<"distiller" | "user" | "extension">(),
   sourceSha256: text("source_sha256"),
   // Phase 50: which extension authored this lesson, if any. NULL for
   // legacy host-distilled rows; populated by Phase 51's `ctx.lessons`

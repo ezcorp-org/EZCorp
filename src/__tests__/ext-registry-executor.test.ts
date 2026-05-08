@@ -1231,7 +1231,7 @@ describe("ToolExecutor", () => {
 
     test("returns success when permission is allowed", async () => {
       const spy = spyOn(permissionsModule, "checkFilesystemPermission").mockResolvedValue({
-        allowed: true, resolvedPath: "/tmp/test",
+        allowed: true, resolvedPath: "/tmp/test", mode: "read",
       });
       const grantedPerms = new Map<string, ExtensionPermissions>();
       grantedPerms.set("ext-1", { filesystem: ["/tmp"], grantedAt: {} });
@@ -1252,7 +1252,7 @@ describe("ToolExecutor", () => {
 
     test("returns error and calls denyAndDisable when permission denied", async () => {
       const permSpy = spyOn(permissionsModule, "checkFilesystemPermission").mockResolvedValue({
-        allowed: false, resolvedPath: "/etc/passwd",
+        allowed: false, resolvedPath: "/etc/passwd", mode: "read",
       });
       const secSpy = spyOn(securityModule, "denyAndDisable").mockResolvedValue({
         extensionId: "ext-1", reason: "denied", path: "/etc/passwd", timestamp: Date.now(),
@@ -1673,7 +1673,7 @@ describe("ToolExecutor", () => {
       const executor = new ToolExecutor(mockRegistry, createStubPermissionEngine());
 
       const spy = spyOn(permissionsModule, "checkFilesystemPermission").mockResolvedValue({
-        allowed: true, resolvedPath: "/tmp/file.txt",
+        allowed: true, resolvedPath: "/tmp/file.txt", mode: "read",
       });
 
       await executor.executeToolCall("test-ext__echo", {}, "conv-1", "msg-1");

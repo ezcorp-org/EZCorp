@@ -155,3 +155,6 @@ export type {
   LessonsListOpts,
   LessonVisibility,
 } from "./lessons";
+
+export { Schedule } from "./schedule";
+export type { ScheduleHandler, ScheduleHandlerContext } from "./schedule";

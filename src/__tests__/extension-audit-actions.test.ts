@@ -26,7 +26,7 @@ describe("extension audit action constants", () => {
     }
   });
 
-  test("constant set is exhaustive — covers every audit-emit site through Phase 1 PDP", () => {
+  test("constant set is exhaustive — covers every audit-emit site through Phase 5", () => {
     const keys = new Set(Object.keys(EXT_AUDIT_ACTIONS));
     expect(keys).toEqual(new Set([
       // Original Phase 1 (admin-driven grant/revoke + bundled lifecycle)
@@ -44,8 +44,9 @@ describe("extension audit action constants", () => {
       "EMIT_EVENT_REJECTED",
       // Phase 2c — server→extension subscription delivery
       "EVENT_SUBSCRIPTION_DENIED",
-      // Phase 4 — ezcorp/cancel-run RPC
+      // Phase 4 — ezcorp/cancel-run RPC + spawn-assignment chain
       "SPAWN_CANCELLED",
+      "SPAWN_AUTHORIZED",
       // Bundled-grant backfill for eventSubscriptions (auto-heal policy)
       "BUNDLED_EVENT_SUBSCRIPTIONS_BACKFILLED",
       // Per-extension settings (lazy-foraging-hammock)
@@ -55,6 +56,9 @@ describe("extension audit action constants", () => {
       "PERM_ALLOWED",
       "PERM_DENIED",
       "PERM_PROMPTED",
+      // Phase 5 — bundled cap-ceiling clamp + manifest tamper detection
+      "BUNDLED_CEILING_CLAMP",
+      "BUNDLED_MANIFEST_TAMPER",
     ]));
   });
 

@@ -105,6 +105,14 @@ describe("parseAlwaysAllowValue", () => {
   test('numeric `1` → "needs_confirmation" (only literal `true` counts as legacy allow)', () => {
     expect(parseAlwaysAllowValue(1)).toBe("needs_confirmation");
   });
+
+  test('direct string `"yes"` → "needs_confirmation" (typeof !== "object" branch)', () => {
+    // A bare string is neither `true`/`false` (legacy) nor an object
+    // (new shape). It must fall through to the final fail-closed
+    // return — locking the `typeof value === "object"` guard against
+    // a future refactor that loosens to e.g. `value && typeof v.allowed`.
+    expect(parseAlwaysAllowValue("yes")).toBe("needs_confirmation");
+  });
 });
 
 // ── buildAlwaysAllowValue ───────────────────────────────────────────

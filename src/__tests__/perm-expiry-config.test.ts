@@ -175,6 +175,23 @@ describe("getForeverTtlMs", () => {
     expect(getForeverTtlMs()).toBe(90 * DAY_MS);
   });
 
+  test("falls back to 90 days on Infinity (Number.isFinite false)", () => {
+    // `Number("Infinity") === Infinity`, which is non-finite — the
+    // `!Number.isFinite(n)` branch must catch it. A naive `n > 0`
+    // guard would let Infinity through and the sweep would never
+    // expire any forever-scope grant. Lock the contract.
+    process.env.EZCORP_PERM_FOREVER_TTL_DAYS = "Infinity";
+    expect(getForeverTtlMs()).toBe(90 * DAY_MS);
+  });
+
+  test("falls back to 90 days on NaN literal (Number.isFinite false)", () => {
+    // `Number("NaN") === NaN`. Same `!Number.isFinite(n)` branch as
+    // Infinity — sister coverage so a future refactor that swaps the
+    // guard for e.g. `n > 0` fails loudly.
+    process.env.EZCORP_PERM_FOREVER_TTL_DAYS = "NaN";
+    expect(getForeverTtlMs()).toBe(90 * DAY_MS);
+  });
+
   test("falls back to 90 days on empty string", () => {
     process.env.EZCORP_PERM_FOREVER_TTL_DAYS = "";
     expect(getForeverTtlMs()).toBe(90 * DAY_MS);

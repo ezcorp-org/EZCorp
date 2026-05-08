@@ -7,7 +7,8 @@
  *   - Sampled audit fires reproducibly (sampleN=1 → every event
  *     audited; default 100 → not every event).
  */
-import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { restoreModuleMocks } from "../../__tests__/helpers/mock-cleanup";
 import { EventBus } from "../../runtime/events";
 import type { AgentEvents } from "../../types";
 
@@ -26,6 +27,14 @@ mock.module("../../db/queries/audit-log", () => ({
 }));
 
 const { EventSubscriptionDispatcher } = await import("../event-subscription-dispatcher");
+
+afterAll(() => {
+  // Restore the real `audit-log` module so subsequent test files
+  // (e.g. schedule-daemon.test.ts) see actual DB writes, not the
+  // in-memory `auditCalls` capture above. Without this, Bun's
+  // mock.module pollutes across files.
+  restoreModuleMocks();
+});
 
 interface SendCall { method: string; params: Record<string, unknown> }
 

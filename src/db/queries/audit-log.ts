@@ -10,13 +10,22 @@ export async function insertAuditEntry(
   action: string,
   target?: string,
   metadata?: Record<string, unknown>,
-): Promise<void> {
-  await getDb().insert(auditLog).values({
-    userId,
-    action,
-    target: target ?? null,
-    metadata: metadata ?? null,
-  });
+): Promise<string> {
+  // Phase 4 §M2 — return the inserted row's id so callers chaining
+  // audit rows (spawn-assignment seeding the child's parentAuditId)
+  // don't need a follow-up SELECT. Existing void-return callers
+  // simply ignore the returned id (back-compat: TS accepts ignoring
+  // a non-void Promise).
+  const inserted = await getDb()
+    .insert(auditLog)
+    .values({
+      userId,
+      action,
+      target: target ?? null,
+      metadata: metadata ?? null,
+    })
+    .returning({ id: auditLog.id });
+  return inserted[0]?.id ?? "";
 }
 
 export async function listAuditLog(opts?: {

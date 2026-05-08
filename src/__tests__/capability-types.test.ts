@@ -379,20 +379,63 @@ describe("intersectPermissions — filesystem", () => {
     const b: ExtensionPermissions = { filesystem: ["/foobar"], grantedAt: {} };
     expect(intersectPermissions(a, b).filesystem).toBeUndefined();
   });
+
+  test("mode-array intersection at the CapabilityDeclaration → CapabilitySet layer: read+write ∩ read = read (no fs.write)", () => {
+    // Spec phase-4-cross-ext-attribution.md:247 — read+write ∩ read =
+    // read at the cap-set layer (the place mode actually lives).
+    // `ExtensionPermissions.filesystem` is path-only (no mode field),
+    // so we exercise the round-trip through
+    // capabilityDeclarationToSet → intersect. This pins that the
+    // narrower mode side wins.
+    const wide = capabilityDeclarationToSet(
+      { filesystem: { paths: ["/data"], mode: ["read", "write"] } },
+      {},
+    );
+    const narrow = capabilityDeclarationToSet(
+      { filesystem: { paths: ["/data"], mode: ["read"] } },
+      {},
+    );
+    const result = intersect(wide, narrow);
+    const kinds = result.map((c) => c.kind).sort();
+    // wide emits: fs.read+fs.list+fs.stat+fs.write
+    // narrow emits: fs.read+fs.list+fs.stat (NO fs.write)
+    // intersection drops fs.write since narrow doesn't have it.
+    expect(kinds).toEqual(["fs.list", "fs.read", "fs.stat"]);
+    expect(kinds).not.toContain("fs.write");
+  });
+
+  test("mode-array intersection: write-only ∩ read-only = empty", () => {
+    const writeOnly = capabilityDeclarationToSet(
+      { filesystem: { paths: ["/data"], mode: ["write"] } },
+      {},
+    );
+    const readOnly = capabilityDeclarationToSet(
+      { filesystem: { paths: ["/data"], mode: ["read"] } },
+      {},
+    );
+    expect(intersect(writeOnly, readOnly)).toEqual([]);
+  });
 });
 
 describe("intersectPermissions — shell, env, storage", () => {
-  test("shell AND truth table", () => {
+  test("shell AND truth table — full 9-cell coverage", () => {
     const tt = (sa: boolean | undefined, sb: boolean | undefined) =>
       intersectPermissions(
         { shell: sa, grantedAt: {} } as ExtensionPermissions,
         { shell: sb, grantedAt: {} } as ExtensionPermissions,
       ).shell;
+    // (true, *) — only true∧true emits
     expect(tt(true, true)).toBe(true);
     expect(tt(true, false)).toBeUndefined();
+    expect(tt(true, undefined)).toBeUndefined();
+    // (false, *) — never emits
     expect(tt(false, true)).toBeUndefined();
     expect(tt(false, false)).toBeUndefined();
+    expect(tt(false, undefined)).toBeUndefined();
+    // (undefined, *) — never emits
     expect(tt(undefined, true)).toBeUndefined();
+    expect(tt(undefined, false)).toBeUndefined();
+    expect(tt(undefined, undefined)).toBeUndefined();
   });
 
   test("env array intersection", () => {
@@ -418,15 +461,24 @@ describe("intersectPermissions — shell, env, storage", () => {
 });
 
 describe("intersectPermissions — capability tier", () => {
-  test("taskEvents AND truth table", () => {
+  test("taskEvents AND truth table — full 9-cell coverage", () => {
     const tt = (a: boolean | undefined, b: boolean | undefined) =>
       intersectPermissions(
         { taskEvents: a, grantedAt: {} } as ExtensionPermissions,
         { taskEvents: b, grantedAt: {} } as ExtensionPermissions,
       ).taskEvents;
+    // (true, *) — only true∧true emits
     expect(tt(true, true)).toBe(true);
     expect(tt(true, false)).toBeUndefined();
+    expect(tt(true, undefined)).toBeUndefined();
+    // (false, *) — never emits
+    expect(tt(false, true)).toBeUndefined();
+    expect(tt(false, false)).toBeUndefined();
+    expect(tt(false, undefined)).toBeUndefined();
+    // (undefined, *) — never emits
     expect(tt(undefined, true)).toBeUndefined();
+    expect(tt(undefined, false)).toBeUndefined();
+    expect(tt(undefined, undefined)).toBeUndefined();
   });
 
   test("agentConfig: both 'read' → 'read'; only one 'read' → absent", () => {
@@ -468,18 +520,50 @@ describe("intersectPermissions — capability tier", () => {
     expect(r.eventSubscriptions).toEqual(["a:b"]);
   });
 
-  test("appendMessages: AND on excludedDefault", () => {
+  test("appendMessages: OR on excludedDefault (force-exclude wins, both sides)", () => {
+    // Phase 4 §M5 — clip semantics. If EITHER side says
+    // "excludedDefault: true", the intersection forces excluded.
+    // AND would have let `false ∩ true → false` accidentally
+    // publish turns the restrictive side wanted hidden.
     const r1 = intersectPermissions(
       { appendMessages: { excludedDefault: true }, grantedAt: {} },
       { appendMessages: { excludedDefault: true }, grantedAt: {} },
     );
     expect(r1.appendMessages).toEqual({ excludedDefault: true });
 
+    // Restrictive side wins: (true, false) → true.
     const r2 = intersectPermissions(
       { appendMessages: { excludedDefault: true }, grantedAt: {} },
       { appendMessages: { excludedDefault: false }, grantedAt: {} },
     );
-    expect(r2.appendMessages).toEqual({ excludedDefault: false });
+    expect(r2.appendMessages).toEqual({ excludedDefault: true });
+
+    // Symmetric: (false, true) → true.
+    const r3 = intersectPermissions(
+      { appendMessages: { excludedDefault: false }, grantedAt: {} },
+      { appendMessages: { excludedDefault: true }, grantedAt: {} },
+    );
+    expect(r3.appendMessages).toEqual({ excludedDefault: true });
+
+    // Neither side restrictive: (false, false) → false.
+    const r4 = intersectPermissions(
+      { appendMessages: { excludedDefault: false }, grantedAt: {} },
+      { appendMessages: { excludedDefault: false }, grantedAt: {} },
+    );
+    expect(r4.appendMessages).toEqual({ excludedDefault: false });
+
+    // Missing on EITHER side → no appendMessages in result (both
+    // sides must declare for the field to survive intersection).
+    const r5 = intersectPermissions(
+      { appendMessages: { excludedDefault: true }, grantedAt: {} },
+      { grantedAt: {} },
+    );
+    expect(r5.appendMessages).toBeUndefined();
+    const r6 = intersectPermissions(
+      { grantedAt: {} },
+      { appendMessages: { excludedDefault: false }, grantedAt: {} },
+    );
+    expect(r6.appendMessages).toBeUndefined();
   });
 });
 

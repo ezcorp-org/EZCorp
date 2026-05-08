@@ -448,21 +448,23 @@ describe("(h) acceptsCallerCaps: true but caller is undefined → behaves as if 
 
 // ── Matrix item (i): chained deputies — A → B → C ──
 
-describe("(i) Chained deputies (A → B → C, all deputies) — intersection narrows at each step", () => {
-  test("A → B with deputy B → capContext = intersect(A,B)", async () => {
-    // Phase 4's contract: each invoke step computes the IMMEDIATE
-    // caller→callee intersection. A → B with B as deputy yields
-    // intersect(A_grants, B_grants).
+describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN intersection (M1 spec lock-in)", () => {
+  test("A=[foo,bar] → B=[foo,bar] → C=[foo] all deputies → C sees intersect(intersect(A,B),C) = [foo]", async () => {
+    // Phase 4 §M1 — spec lock-in
+    // (tasks/phase-4-cross-ext-attribution.md:331):
+    //   "chained deputies multiply intersections — A → B → C with
+    //    acceptsCallerCaps: true everywhere → C sees
+    //    intersect(intersect(A,B), C)"
     //
-    // For the next hop B → C, the same handler runs, and the result
-    // is intersect(B_grants, C_grants). Phase 4 doesn't (yet) reduce
-    // to intersect(intersect(A,B), C) at the single-step layer —
-    // that's the chained-reduction the spec calls out at the engine
-    // layer. Phase 5/6 will surface the upstream capContext at the
-    // engine level so the chain truly multiplies.
-    //
-    // For Phase 4 we lock in the documented behavior: each step's
-    // intersection is computed from the IMMEDIATE caller's grants.
+    // This is verified by simulating the runtime ALS context. The
+    // production wrapping happens inside `executeToolCall`, but our
+    // tests stub executeToolCall — so we manually call
+    // `withRuntimeToolContext` to mirror what the real path does at
+    // the inner dispatch site.
+    const { withRuntimeToolContext } = await import(
+      "../extensions/runtime-tool-context"
+    );
+
     registry.setManifestForTest("a-id", makeManifest("a", false));
     registry.setManifestForTest("b-id", makeManifest("b", true));
     registry.setManifestForTest("c-id", makeManifest("c", true));
@@ -514,22 +516,15 @@ describe("(i) Chained deputies (A → B → C, all deputies) — intersection na
       return { content: [{ type: "text" as const, text: "ok" }], isError: false };
     };
 
-    // A → B
+    // A → B (top-level — no upstream context)
     await executor.handlePiInvoke("a-id", {
       jsonrpc: "2.0",
       id: 9,
       method: "ezcorp/invoke",
       params: { tool: "b__doStuff", arguments: {} },
     });
-    // B → C (immediate caller is B)
-    await executor.handlePiInvoke("b-id", {
-      jsonrpc: "2.0",
-      id: 10,
-      method: "ezcorp/invoke",
-      params: { tool: "c__doStuff", arguments: {} },
-    });
 
-    // A → B step: intersect(A's foo.com+bar.com, B's foo.com+bar.com) = both
+    // A → B step: intersect(A's foo+bar, B's foo+bar) = [foo, bar]
     const expectedAtoB = intersect(
       grantsToCapabilitySet({
         network: ["foo.com", "bar.com"],
@@ -543,8 +538,166 @@ describe("(i) Chained deputies (A → B → C, all deputies) — intersection na
     );
     expect(observedAtoB).toEqual(expectedAtoB);
 
-    // B → C step: intersect(B's foo.com+bar.com, C's foo.com) = foo.com only
+    // B → C: simulate the production path where the inner dispatch
+    // for B's tool runs with `capContext = expectedAtoB` set in the
+    // runtime ALS scope. The next handlePiInvoke (B calling C) then
+    // reads it as the caller's effective set.
+    await withRuntimeToolContext(
+      { currentCapContext: expectedAtoB },
+      async () => {
+        await executor.handlePiInvoke("b-id", {
+          jsonrpc: "2.0",
+          id: 10,
+          method: "ezcorp/invoke",
+          params: { tool: "c__doStuff", arguments: {} },
+        });
+      },
+    );
+
+    // B → C step under FULL-CHAIN semantics:
+    //   capContext = intersect(intersect(A,B), C)
+    //              = intersect([foo,bar], [foo])
+    //              = [foo]
+    // Without the M1 fix this would have been intersect(B's installed
+    // [foo,bar], C's [foo]) = [foo] — same result here, but the
+    // attack-scenario test below shows the cases that diverge.
     expect(observedBtoC).toEqual([{ kind: "network", value: "foo.com" }]);
+  });
+
+  test("ATTACK: A=[] → B=[evil] → C=[evil] all deputies → A→B step denies → B→C never widens (M1 critical)", async () => {
+    // Without M1: B→C step would compute intersect(B's installed
+    // [evil], C's [evil]) = [evil] → C reaches evil even though A
+    // authorized nothing. With M1: B→C step reads upstream capContext
+    // = intersect([], [evil]) = []. So intersect([], [evil]) = [],
+    // and evil never reaches C.
+    //
+    // This is the spec-locked safety property: a no-cap caller
+    // CANNOT laundry-launder a chain into having any caps.
+    const { withRuntimeToolContext } = await import(
+      "../extensions/runtime-tool-context"
+    );
+
+    registry.setManifestForTest("a-id", makeManifest("a", false));
+    registry.setManifestForTest("b-id", makeManifest("b", true));
+    registry.setManifestForTest("c-id", makeManifest("c", true));
+
+    registry.setGrantedPermsForTest("a-id", { grantedAt: {} }); // EMPTY
+    registry.setGrantedPermsForTest("b-id", {
+      network: ["evil.com"],
+      acceptsCallerCaps: true,
+      grantedAt: {},
+    });
+    registry.setGrantedPermsForTest("c-id", {
+      network: ["evil.com"],
+      acceptsCallerCaps: true,
+      grantedAt: {},
+    });
+
+    registry.setDepRoutes(new Map([
+      ["a-id", new Map([["b", "b-id"]])],
+      ["b-id", new Map([["c", "c-id"]])],
+    ]));
+    registry.registerToolForTest("b__doStuff", {
+      name: "b__doStuff",
+      originalName: "doStuff",
+      description: "b tool",
+      inputSchema: { type: "object" },
+      extensionId: "b-id",
+      extensionName: "b",
+    });
+    registry.registerToolForTest("c__doStuff", {
+      name: "c__doStuff",
+      originalName: "doStuff",
+      description: "c tool",
+      inputSchema: { type: "object" },
+      extensionId: "c-id",
+      extensionName: "c",
+    });
+
+    let observedAtoB: CapabilitySet | undefined;
+    let observedBtoC: CapabilitySet | undefined;
+    executor.executeToolCall = async (toolName, _input, _cid, _mid, opts) => {
+      if (toolName === "b__doStuff") {
+        observedAtoB = opts?.capContext;
+      } else if (toolName === "c__doStuff") {
+        observedBtoC = opts?.capContext;
+      }
+      return { content: [{ type: "text" as const, text: "ok" }], isError: false };
+    };
+
+    // A → B: A has empty caps, B is deputy. capContext = intersect([], [evil]) = []
+    await executor.handlePiInvoke("a-id", {
+      jsonrpc: "2.0",
+      id: 11,
+      method: "ezcorp/invoke",
+      params: { tool: "b__doStuff", arguments: {} },
+    });
+    expect(observedAtoB).toEqual([]); // empty intersection
+
+    // B → C: under M1, the upstream capContext is the empty set.
+    // The fix reads getRuntimeToolContext()?.currentCapContext = []
+    // as the caller's effective set, NOT B's installed [evil].
+    // intersect([], [evil]) = [] → C sees empty caps.
+    await withRuntimeToolContext(
+      { currentCapContext: observedAtoB ?? [] },
+      async () => {
+        await executor.handlePiInvoke("b-id", {
+          jsonrpc: "2.0",
+          id: 12,
+          method: "ezcorp/invoke",
+          params: { tool: "c__doStuff", arguments: {} },
+        });
+      },
+    );
+    // M1 critical: C must NOT see [evil]. The empty upstream context
+    // narrows the chain.
+    expect(observedBtoC).toEqual([]);
+    expect(observedBtoC).not.toContainEqual({ kind: "network", value: "evil.com" });
+  });
+
+  test("Top-level invoke (no upstream context) falls back to caller's installed grants — back-compat", async () => {
+    // Without ANY surrounding withRuntimeToolContext scope, the
+    // upstream check returns undefined and handlePiInvoke uses the
+    // immediate caller's installed grants — preserving pre-M1 behavior
+    // for top-level cross-ext calls (which can't be a chain by def).
+    registry.setManifestForTest("a-id", makeManifest("a", false));
+    registry.setManifestForTest("b-id", makeManifest("b", true));
+    registry.setGrantedPermsForTest("a-id", {
+      network: ["foo.com"],
+      grantedAt: {},
+    });
+    registry.setGrantedPermsForTest("b-id", {
+      network: ["foo.com", "bar.com"],
+      acceptsCallerCaps: true,
+      grantedAt: {},
+    });
+    registry.setDepRoutes(new Map([
+      ["a-id", new Map([["b", "b-id"]])],
+    ]));
+    registry.registerToolForTest("b__doStuff", {
+      name: "b__doStuff",
+      originalName: "doStuff",
+      description: "b tool",
+      inputSchema: { type: "object" },
+      extensionId: "b-id",
+      extensionName: "b",
+    });
+
+    let observed: CapabilitySet | undefined;
+    executor.executeToolCall = async (_tn, _in, _cid, _mid, opts) => {
+      observed = opts?.capContext;
+      return { content: [{ type: "text" as const, text: "ok" }], isError: false };
+    };
+
+    await executor.handlePiInvoke("a-id", {
+      jsonrpc: "2.0",
+      id: 13,
+      method: "ezcorp/invoke",
+      params: { tool: "b__doStuff", arguments: {} },
+    });
+
+    // Top-level: capContext = intersect(A's INSTALLED [foo], B's [foo,bar]) = [foo]
+    expect(observed).toEqual([{ kind: "network", value: "foo.com" }]);
   });
 });
 
@@ -595,6 +748,23 @@ describe("CONFUSED-DEPUTY integration — A no-network → B (deputy with networ
     });
     expect((r.result as any).isError).toBe(true);
     expect((r.result as any).content[0].text).toContain("intersection missing network:api.evil.com");
+
+    // N3 — audit row assertion. The recording engine captures every
+    // authorize call; we inspect what would have been written to
+    // auditLog as a denial (the production engine writes a
+    // `ext:perm:denied` row with metadata.reason matching this
+    // shape — see permission-engine.ts writeAuditRow).
+    expect(engine.calls.length).toBeGreaterThanOrEqual(1);
+    const denyCall = engine.calls.find(
+      (c) => c.ctx.capContext !== undefined &&
+        c.needed.some((n) => n.kind === "network" && n.value === "api.evil.com"),
+    );
+    expect(denyCall).toBeDefined();
+    // The intersection (capContext) should be EMPTY (caller has no
+    // network grants) — that's why the deny fires. The audit row's
+    // ctx.capContext is the same as what the engine saw.
+    expect(denyCall?.ctx.capContext).toEqual([]);
+    expect(denyCall?.ctx.callerExtensionId).toBe("caller-id");
   });
 
   test("A still has no network, B same → URL=api.foo.com → DENY (A's intersection with B is empty)", async () => {

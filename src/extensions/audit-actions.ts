@@ -56,6 +56,13 @@ export const EXT_AUDIT_ACTIONS = {
    *  field distinguishes outcomes: `"cancelled"`, `"not-owned"`,
    *  `"missing-run"`, `"permission-missing"` (Phase 4). */
   SPAWN_CANCELLED: "ext:spawn-cancelled",
+  /** `ezcorp/spawn-assignment` successfully spawned a child agent run.
+   *  The metadata carries `subConversationId`, `agentRunId`, and the
+   *  effective grant set so the audit chain rooted here can be
+   *  reconstructed (Phase 4 §M2). Every authorize() inside the
+   *  child conversation's tool calls threads `parentAuditId` back to
+   *  this row's id. */
+  SPAWN_AUTHORIZED: "ext:spawn-authorized",
   /** `ezcorp/emit-task-event` rejected an emission — rate-limited,
    *  unauthorized conversation wiring, or malformed payload (Phase 2b). */
   EMIT_EVENT_REJECTED: "ext:emit-event-rejected",

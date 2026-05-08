@@ -676,3 +676,248 @@ describe("Child agent's wired-extension allowlist filters the inherited extensio
     expect(barEff).toBeNull(); // ext-bar-x not wired into child at all
   });
 });
+
+// ── M4: registry?-undefined fallback path ──────────────────────────
+
+describe("M4 — ctx.registry undefined → legacy blanket-copy fallback + console.warn", () => {
+  test("handleSpawnAssignmentRpc with ctx.registry === undefined writes blanket rows and warns", async () => {
+    await seedSpawner(false);
+    await ensureExtension(
+      "ext-fb-x",
+      { network: ["any.com"], grantedAt: {} },
+      { network: ["any.com"] },
+    );
+    await wireParent(PARENT_CONV, "ext-fb-x");
+
+    FIXTURE_CONFIGS.push({
+      id: "cfg-child-fb",
+      name: "child-fb",
+      description: "wires ext-fb-x",
+      prompt: "p",
+      capabilities: ["llm"],
+      extensions: ["ext-fb-x"],
+      references: { agents: [], extensions: ["ext-fb-x"] },
+      userId: "user-cap",
+      model: null,
+      provider: null,
+    });
+
+    // Capture console.warn calls.
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (msg: unknown, ...rest: unknown[]) => {
+      warnings.push(typeof msg === "string" ? msg : String(msg));
+      // Suppress to keep test output clean — we already capture above.
+      void rest;
+    };
+
+    try {
+      const bus = new EventBus<AgentEvents>();
+      const quota = createSpawnQuota(bus);
+      const ctx: SpawnAssignmentContext = {
+        conversationId: PARENT_CONV,
+        userId: "user-cap",
+        projectId: PROJECT,
+        grantedPermissions: { spawnAgents: { maxPerHour: 10 }, grantedAt: {} },
+        executor: {} as unknown as AgentExecutor,
+        bus,
+        quota,
+        spawnDepth: 0,
+        // Deliberately omit registry — that's the M4 fallback case.
+      };
+      const r = await handleSpawnAssignmentRpc(
+        SPAWNER_EXT,
+        rpc({ v: 1, task: "go", agentConfigId: "cfg-child-fb" }, "m4"),
+        ctx,
+      );
+      expect(r.error).toBeUndefined();
+      const subId = (r.result as { subConversationId: string }).subConversationId;
+
+      // Blanket-copy fallback: the row exists but effective_granted_permissions is null.
+      const eff = await getEffectiveGrants(subId, "ext-fb-x");
+      expect(eff).toBeNull();
+
+      // Visible signal that the fallback fired.
+      const warnedAboutFallback = warnings.some((w) =>
+        w.includes("registry not threaded") && w.includes("Phase 4 §M4"),
+      );
+      expect(warnedAboutFallback).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
+// ── M7: nested spawn cannot widen caps beyond child1's clipping ────
+
+describe("M7 — 2-deep spawn does not widen caps; sub-spawn reads parent CONVERSATION's clipped grants", () => {
+  test("A → child1 (clipped to foo.com only) → child2 also sees foo.com only, not full bar.com", async () => {
+    await seedSpawner(false);
+    // Extension whose installed registry grants are network: foo+bar,
+    // but the spawn-handler clips it to foo.com on child1, then
+    // child1 spawns child2 which must inherit child1's [foo.com], not
+    // the registry's [foo.com, bar.com].
+    await ensureExtension(
+      "ext-nested-x",
+      { network: ["foo.com", "bar.com"], grantedAt: {} },
+      { network: ["foo.com", "bar.com"] },
+    );
+    await wireParent(PARENT_CONV, "ext-nested-x");
+
+    const reg = ExtensionRegistry.getInstance();
+    // Spawner registered too (via seedSpawner).
+    reg.setManifestForTest("ext-nested-x", {
+      schemaVersion: 2,
+      name: "ext-nested-x",
+      version: "1.0.0",
+      description: "t",
+      author: { name: "t" },
+      permissions: { network: ["foo.com", "bar.com"] },
+    });
+    reg.setGrantedPermsForTest("ext-nested-x", {
+      network: ["foo.com", "bar.com"],
+      grantedAt: {},
+    });
+
+    // Child1's agent config wires the spawner so it can spawn child2,
+    // plus the nested extension. Manifest ceiling for the nested
+    // extension is foo.com only — that's what clips child1's grants.
+    FIXTURE_CONFIGS.push({
+      id: "cfg-child1-nested",
+      name: "child1-nested",
+      description: "child1 — clipped to foo.com on ext-nested-x",
+      prompt: "p",
+      capabilities: ["llm"],
+      extensions: ["ext-nested-x", SPAWNER_EXT],
+      references: { agents: [], extensions: ["ext-nested-x", SPAWNER_EXT] },
+      userId: "user-cap",
+      model: null,
+      provider: null,
+    });
+
+    // Spawn child1 from PARENT_CONV. The handler must clip
+    // child1's ext-nested-x grants to manifest ceiling [foo.com,
+    // bar.com] ∩ parent's installed [foo.com, bar.com] = [foo.com,
+    // bar.com] — but to genuinely test the M7 widening fix we want
+    // child1's effective grant to be NARROWER than the registry's
+    // installed grant. So we pre-seed PARENT_CONV with an effective
+    // grant of [foo.com] only on ext-nested-x to simulate having
+    // arrived at PARENT_CONV via a prior clipping step.
+    await getDb()
+      .insert(conversationExtensions)
+      .values({
+        conversationId: PARENT_CONV,
+        extensionId: "ext-nested-x",
+        effectiveGrantedPermissions: { network: ["foo.com"], grantedAt: {} },
+      } as any)
+      .onConflictDoUpdate({
+        target: [conversationExtensions.conversationId, conversationExtensions.extensionId],
+        set: {
+          effectiveGrantedPermissions: { network: ["foo.com"], grantedAt: {} },
+        },
+      })
+      .catch(async () => {
+        // PGlite may not support onConflictDoUpdate composite key — fall
+        // back to a manual update path.
+        await getDb()
+          .update(conversationExtensions)
+          .set({
+            effectiveGrantedPermissions: { network: ["foo.com"], grantedAt: {} },
+          } as any)
+          .where(
+            and(
+              eq(conversationExtensions.conversationId, PARENT_CONV),
+              eq(conversationExtensions.extensionId, "ext-nested-x"),
+            ),
+          );
+      });
+
+    const ctx = makeCtx(
+      { spawnAgents: { maxPerHour: 10 }, grantedAt: {} },
+      reg,
+    );
+    const r = await handleSpawnAssignmentRpc(
+      SPAWNER_EXT,
+      rpc({ v: 1, task: "go", agentConfigId: "cfg-child1-nested" }, "m7"),
+      ctx,
+    );
+    expect(r.error).toBeUndefined();
+    const childSubId = (r.result as { subConversationId: string }).subConversationId;
+
+    // M7 guarantee: child sees the parent CONVERSATION's already-
+    // clipped [foo.com], NOT the registry's full installed
+    // [foo.com, bar.com]. Without the fix, the spawn handler would
+    // intersect registry grants with manifest ceiling and widen
+    // back to [foo.com, bar.com].
+    const childEff = await getEffectiveGrants(childSubId, "ext-nested-x");
+    expect(childEff?.network).toEqual(["foo.com"]);
+    expect(childEff?.network).not.toContain("bar.com");
+  });
+});
+
+// ── M2: parentAuditId chain seeded on the child conversation ───────
+
+describe("M2 — spawn writes SPAWN_AUTHORIZED audit row + seeds child conversation's parentAuditId", () => {
+  test("after spawn, the child conversation has a spawnParentAuditId pointing at a SPAWN_AUTHORIZED audit row", async () => {
+    await seedSpawner(false);
+    await ensureExtension(
+      "ext-aud-x",
+      { network: ["any.com"], grantedAt: {} },
+      { network: ["any.com"] },
+    );
+    await wireParent(PARENT_CONV, "ext-aud-x");
+
+    const reg = ExtensionRegistry.getInstance();
+    reg.setManifestForTest("ext-aud-x", {
+      schemaVersion: 2,
+      name: "ext-aud-x",
+      version: "1.0.0",
+      description: "t",
+      author: { name: "t" },
+      permissions: { network: ["any.com"] },
+    });
+    reg.setGrantedPermsForTest("ext-aud-x", { network: ["any.com"], grantedAt: {} });
+
+    FIXTURE_CONFIGS.push({
+      id: "cfg-child-aud",
+      name: "child-aud",
+      description: "wires ext-aud-x",
+      prompt: "p",
+      capabilities: ["llm"],
+      extensions: ["ext-aud-x"],
+      references: { agents: [], extensions: ["ext-aud-x"] },
+      userId: "user-cap",
+      model: null,
+      provider: null,
+    });
+
+    const ctx = makeCtx(
+      { spawnAgents: { maxPerHour: 10 }, grantedAt: {} },
+      reg,
+    );
+    const r = await handleSpawnAssignmentRpc(
+      SPAWNER_EXT,
+      rpc({ v: 1, task: "go", agentConfigId: "cfg-child-aud" }, "m2"),
+      ctx,
+    );
+    expect(r.error).toBeUndefined();
+    const subId = (r.result as { subConversationId: string }).subConversationId;
+
+    // The child's metadata should carry the spawn-authorize audit id.
+    const { getConversationSpawnParentAuditId } = await import(
+      "../db/queries/conversations"
+    );
+    const spawnAuditId = await getConversationSpawnParentAuditId(subId);
+    expect(spawnAuditId).toBeTruthy();
+    expect(typeof spawnAuditId).toBe("string");
+
+    // And that audit id should resolve to a SPAWN_AUTHORIZED row.
+    const { auditLog } = await import("../db/schema");
+    const rows = await getDb()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.id, spawnAuditId!));
+    expect(rows[0]?.action).toBe("ext:spawn-authorized");
+    expect((rows[0]?.metadata as Record<string, unknown>)?.subConversationId).toBe(subId);
+  });
+});

@@ -29,6 +29,7 @@ import type { EventBus } from "../runtime/events";
 import type { AgentEvents } from "../types";
 import {
   firstMissingCapability,
+  grantsToCapabilitySet,
   SENSITIVE_KINDS,
   type Capability,
   type CapabilitySet,
@@ -45,6 +46,7 @@ import {
 } from "./permissions";
 import { getSetting, upsertSetting } from "../db/queries/settings";
 import { getConversationExtensionEffectiveGrants } from "../db/queries/conversation-extensions";
+import { getConversationSpawnParentAuditId } from "../db/queries/conversations";
 import type { ExtensionPermissions } from "./types";
 
 // ── Public surface ──────────────────────────────────────────────────
@@ -144,6 +146,26 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
   ): Promise<Decision> {
     const auditId = crypto.randomUUID();
 
+    // Phase 4 §M2 — resolve parentAuditId if the caller didn't set
+    // one. Spawned-child conversations have a `spawnParentAuditId`
+    // seed stored on `conversations.metadata` by the spawn-assignment
+    // handler; the engine reads it once per authorize() so every
+    // tool call inside the child threads its audit chain back to
+    // the spawn's authorize row.
+    let parentAuditId = ctx.parentAuditId;
+    if (parentAuditId === undefined) {
+      try {
+        parentAuditId = (await loadSpawnParentAuditId(ctx.conversationId)) ?? undefined;
+      } catch {
+        // Fallback: leave undefined — audit chain will simply not
+        // reach the spawn root, but the call still succeeds.
+      }
+    }
+    const ctxWithChain: AuthorizeContext = {
+      ...ctx,
+      ...(parentAuditId !== undefined ? { parentAuditId } : {}),
+    };
+
     // 1. Compute effective grant set.
     //
     // Resolution order (most-specific first):
@@ -163,7 +185,7 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
         ctx.extensionId,
       );
       granted = override
-        ? grantedFromExtensionPermissions(override)
+        ? grantsToCapabilitySet(override)
         : grantedFromRegistry(deps.registry, ctx.extensionId);
     }
 
@@ -171,7 +193,7 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
     const missing = firstMissingCapability(needed, granted);
     if (missing) {
       const reason = formatMissingReason(missing, ctx.toolName);
-      await writeAuditRow(AUDIT_PERM_DENIED, auditId, ctx, missing, reason);
+      await writeAuditRow(AUDIT_PERM_DENIED, auditId, ctxWithChain, missing, reason);
       return { decision: "deny", reason, auditId, missing };
     }
 
@@ -192,7 +214,7 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
         await writeAuditRow(
           AUDIT_PERM_PROMPTED,
           auditId,
-          ctx,
+          ctxWithChain,
           sensitive,
           undefined,
           { promptId },
@@ -202,7 +224,7 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
     }
 
     // 4. Allow.
-    await writeAuditRow(AUDIT_PERM_ALLOWED, auditId, ctx, undefined);
+    await writeAuditRow(AUDIT_PERM_ALLOWED, auditId, ctxWithChain, undefined);
     return { decision: "allow", auditId };
   }
 
@@ -301,65 +323,11 @@ function grantedFromRegistry(
   registry: ExtensionRegistry,
   extensionId: string,
 ): CapabilitySet {
-  const granted = registry.getGrantedPermissions(extensionId);
-  return grantedFromExtensionPermissions(granted);
-}
-
-/**
- * Translate an `ExtensionPermissions` blob into a `CapabilitySet`.
- * Shared between the registry-grant path and the per-conversation
- * override path so both produce identical cap shapes.
- */
-function grantedFromExtensionPermissions(
-  granted: ExtensionPermissions | null,
-): CapabilitySet {
-  if (!granted) return [];
-
-  const caps: Capability[] = [];
-
-  if (granted.network) {
-    for (const host of granted.network) {
-      caps.push({ kind: "network", value: host.toLowerCase() });
-    }
-  }
-  if (granted.filesystem) {
-    for (const path of granted.filesystem) {
-      caps.push({ kind: "fs.read", value: path });
-      caps.push({ kind: "fs.list", value: path });
-      caps.push({ kind: "fs.stat", value: path });
-      caps.push({ kind: "fs.write", value: path });
-    }
-  }
-  if (granted.shell === true) {
-    caps.push({ kind: "shell" });
-  }
-  if (granted.env) {
-    for (const name of granted.env) {
-      caps.push({ kind: "env", value: name });
-    }
-  }
-  if (granted.storage === true) {
-    caps.push({ kind: "storage" });
-  }
-  if (granted.appendMessages !== undefined) {
-    caps.push({ kind: "ezcorp:chat:append" });
-  }
-  if (granted.agentConfig === "read") {
-    caps.push({ kind: "ezcorp:agent:config" });
-  }
-  if (granted.spawnAgents) {
-    caps.push({ kind: "ezcorp:agent:spawn" });
-  }
-  if (granted.taskEvents === true) {
-    caps.push({ kind: "ezcorp:tasks:emit" });
-  }
-  if (granted.eventSubscriptions) {
-    for (const evt of granted.eventSubscriptions) {
-      caps.push({ kind: "ezcorp:events:subscribe", value: evt });
-    }
-  }
-
-  return caps;
+  // Phase 4 §M6 — single flattener. Both the registry-grant path
+  // here and the per-conversation override path above funnel through
+  // `grantsToCapabilitySet` from capability-types.ts so the two
+  // routes produce identical cap shapes.
+  return grantsToCapabilitySet(registry.getGrantedPermissions(extensionId));
 }
 
 /**
@@ -382,6 +350,26 @@ async function loadConversationOverride(
   }
   try {
     return await getConversationExtensionEffectiveGrants(conversationId, extensionId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Phase 4 §M2 — read the spawn-authorize audit id seeded on the
+ * conversation by `spawn-assignment-handler`. Returns `null` for
+ * top-level conversations or DB blips. The engine uses this as the
+ * `parentAuditId` for every authorize() inside a spawned child so
+ * the audit chain reaches the spawn's root row.
+ */
+async function loadSpawnParentAuditId(
+  conversationId: string,
+): Promise<string | null> {
+  if (!conversationId || conversationId === "unknown" || conversationId === "cross-ext") {
+    return null;
+  }
+  try {
+    return await getConversationSpawnParentAuditId(conversationId);
   } catch {
     return null;
   }

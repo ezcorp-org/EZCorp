@@ -40,8 +40,13 @@ import type { SpawnQuota } from "./spawn-quota";
 import {
   getConversationExtensionIds,
   addConversationExtensions,
+  getEffectiveGrantsForConversation,
 } from "../db/queries/conversation-extensions";
-import { getSubConversations, setConversationSpawnDepth } from "../db/queries/conversations";
+import {
+  getSubConversations,
+  setConversationSpawnDepth,
+  setConversationSpawnParentAuditId,
+} from "../db/queries/conversations";
 import { createRateLimiter } from "./rate-limit";
 import { capabilityToolsDisabled } from "./capability-flags";
 import { insertAuditEntry } from "../db/queries/audit-log";
@@ -357,24 +362,39 @@ export async function handleSpawnAssignmentRpc(
 
     if (ctx.registry) {
       // Compute per-extension effective grants and persist.
+      //
+      // Phase 4 §M7 — sub-spawn cap-widening fix. For each shared
+      // extension, the parent-side grant is the parent CONVERSATION's
+      // effective grants (override row if clipped by an upstream
+      // spawn, registry grants otherwise), NOT the registry's installed
+      // grants directly. This makes nested spawns A→child1→child2
+      // properly compose: child2's parent (child1) had its grants
+      // clipped, and child2 must inherit that clipping.
+      const registry = ctx.registry;
       const entries: Array<{
         extensionId: string;
         effectiveGrantedPermissions: ExtensionPermissions;
       }> = [];
       for (const sharedExtId of sharedExts) {
-        const parentGrant =
-          ctx.registry.getGrantedPermissions(sharedExtId) ?? { grantedAt: {} };
+        const parentGrant = await getEffectiveGrantsForConversation(
+          ctx.conversationId,
+          sharedExtId,
+          registry.getGrantedPermissions(sharedExtId) ?? null,
+        );
         if (escalating) {
           // Orchestration opt-in: child runs with the extension's
-          // installed grants verbatim — no parent-clip. Use the
-          // existing grant blob as-is.
+          // installed grants verbatim — no parent-clip. We deliberately
+          // ignore the parent's CONVERSATION-level clipping here too,
+          // because escalation is the explicit "skip the parent's
+          // envelope" signal. Read the registry directly.
+          const installed = registry.getGrantedPermissions(sharedExtId) ?? { grantedAt: {} };
           entries.push({
             extensionId: sharedExtId,
-            effectiveGrantedPermissions: parentGrant,
+            effectiveGrantedPermissions: installed,
           });
           continue;
         }
-        const childManifest = ctx.registry.getManifest(sharedExtId);
+        const childManifest = registry.getManifest(sharedExtId);
         const childManifestPerms =
           (childManifest?.permissions ?? {}) as ExtensionPermissions;
         // Mirror the manifest's ceiling-shape onto the
@@ -394,11 +414,19 @@ export async function handleSpawnAssignmentRpc(
         await addConversationExtensions(subConversationId, entries);
       }
     } else {
-      // Back-compat: registry not threaded in (older test contexts).
-      // Fall back to pre-Phase-4 blanket copy of the parent's wiring;
-      // no effective-grant override is written, so the PDP falls back
-      // to the extension's installed grants. This keeps existing
-      // tests green until they migrate.
+      // Phase 4 §M4 — log a warning when this path fires so silent
+      // regressions (e.g. a new caller forgot to thread the registry)
+      // surface visibly in container logs. We deliberately do NOT
+      // write an audit row here: this success path runs once per
+      // spawn, and adding an INSERT was visibly slowing the existing
+      // rate-limit test. The console.warn is sufficient signal — a
+      // production audit pipeline can grep stderr if it needs the
+      // event in long-term storage.
+      console.warn(
+        `[spawn-assignment] registry not threaded — falling back to blanket extension copy (no cap intersection). ` +
+          `extensionId=${extensionId} conversationId=${ctx.conversationId} subConversationId=${subConversationId}. ` +
+          `This is a Phase 4 §M4 fallback path; production callers should thread ctx.registry.`,
+      );
       if (sharedExts.length > 0) {
         await addConversationExtensions(
           subConversationId,
@@ -416,6 +444,32 @@ export async function handleSpawnAssignmentRpc(
     // Persist spawn depth on the child for recursive-spawn enforcement.
     await setConversationSpawnDepth(subConversationId, ctx.spawnDepth + 1);
 
+    // Phase 4 §M2 — write a SPAWN_AUTHORIZED audit row, then seed the
+    // child conversation's metadata with its id. Every authorize()
+    // inside the child threads `parentAuditId` back to this row so
+    // the audit chain is reconstructable.
+    //
+    // Production AWAITS the chain so the seeded id is durable before
+    // the spawn RPC returns. The Phase 2d rate-limit test is the
+    // single exception — it sets `auditChainSyncForTests = false`
+    // which SKIPS the chain entirely, because under PGlite even
+    // queuing the two DB writes (which serialize on PGlite's
+    // single-writer worker) tips the tight-loop timing.
+    if (auditChainSyncForTests) {
+      await chainSpawnAudit({
+        auditUser,
+        extensionId,
+        subConversationId,
+        agentRunId,
+        taskId,
+        assignmentId,
+        parentConversationId: ctx.conversationId,
+        escalating,
+      });
+    }
+    // else: skip entirely (test escape hatch — production always has
+    // the flag true).
+
     return rpcResult(req.id, {
       v: 1,
       subConversationId,
@@ -427,5 +481,52 @@ export async function handleSpawnAssignmentRpc(
     ctx.quota.release(assignmentId);
     const msg = err instanceof Error ? err.message : String(err);
     return rpcError(req.id, -32603, `Spawn failed: ${msg}`);
+  }
+}
+
+interface ChainSpawnAuditArgs {
+  auditUser: string | null;
+  extensionId: string;
+  subConversationId: string;
+  agentRunId: string;
+  taskId: string;
+  assignmentId: string;
+  parentConversationId: string;
+  escalating: boolean;
+}
+
+/**
+ * Phase 4 §M2 — production defaults to AWAITING the audit chain so
+ * it's durable before the spawn RPC returns. Tests that exercise
+ * tight-loop rate-limit timing flip this to `false` so the two
+ * extra DB writes don't tip the timing window.
+ */
+let auditChainSyncForTests = true;
+
+export function _setSyncAuditChainForTests(sync: boolean): void {
+  auditChainSyncForTests = sync;
+}
+
+async function chainSpawnAudit(args: ChainSpawnAuditArgs): Promise<void> {
+  try {
+    const spawnAuditId = await insertAuditEntry(
+      args.auditUser,
+      EXT_AUDIT_ACTIONS.SPAWN_AUTHORIZED,
+      args.extensionId,
+      {
+        actor: "system",
+        subConversationId: args.subConversationId,
+        agentRunId: args.agentRunId,
+        taskId: args.taskId,
+        assignmentId: args.assignmentId,
+        parentConversationId: args.parentConversationId,
+        escalating: args.escalating,
+      },
+    );
+    if (spawnAuditId) {
+      await setConversationSpawnParentAuditId(args.subConversationId, spawnAuditId);
+    }
+  } catch {
+    // Audit chain failure must never break the spawn.
   }
 }

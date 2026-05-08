@@ -251,17 +251,36 @@ describe("spawn-assignment — rate + depth", () => {
   const validParams = { v: 1, task: "hi", agentConfigId: "cfg-alice-helper" };
 
   test("60 tight-loop requests → ~50 accepted, remainder -32029 + audit rate-limited", async () => {
-    const ext = `rl-ext-${crypto.randomUUID().slice(0, 8)}`;
-    await wireConversation(CONV_WIRED, ext);
-    let accepted = 0;
-    let limited = 0;
-    for (let i = 0; i < 60; i++) {
-      const resp = await handleSpawnAssignmentRpc(ext, rpc(validParams, `rl-${i}`), makeCtx());
-      if (resp.error?.code === -32029) limited++;
-      else if (!resp.error) accepted++;
+    // Phase 4 §M2 added per-success work (SPAWN_AUTHORIZED audit
+    // chain + the M4 fallback console.warn that fires for every
+    // success since this test never threads ctx.registry). Both add
+    // PGlite latency that tipped this test's tight-loop calibration.
+    // Switch the chain to fire-and-forget AND suppress the warn for
+    // this test so we still measure rate-limiter behavior, not Phase
+    // 4 overhead. Production stays on the default sync path with the
+    // warn enabled.
+    const { _setSyncAuditChainForTests } = await import(
+      "../extensions/spawn-assignment-handler"
+    );
+    _setSyncAuditChainForTests(false);
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const ext = `rl-ext-${crypto.randomUUID().slice(0, 8)}`;
+      await wireConversation(CONV_WIRED, ext);
+      let accepted = 0;
+      let limited = 0;
+      for (let i = 0; i < 60; i++) {
+        const resp = await handleSpawnAssignmentRpc(ext, rpc(validParams, `rl-${i}`), makeCtx());
+        if (resp.error?.code === -32029) limited++;
+        else if (!resp.error) accepted++;
+      }
+      expect(accepted).toBeGreaterThanOrEqual(45);
+      expect(limited).toBeGreaterThan(0);
+    } finally {
+      console.warn = originalWarn;
+      _setSyncAuditChainForTests(true);
     }
-    expect(accepted).toBeGreaterThanOrEqual(45);
-    expect(limited).toBeGreaterThan(0);
   });
 
   test("spawnDepth >= MAX_SPAWN_DEPTH → -32000 + audit depth-exceeded", async () => {

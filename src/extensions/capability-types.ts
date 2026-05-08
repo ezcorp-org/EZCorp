@@ -330,13 +330,17 @@ export function intersectPermissions(
     }
   }
 
-  // appendMessages — both sides must declare; AND `excludedDefault`
-  // (true ∧ true is the only safe shape — the field's intent is "force
-  // exclude unless both sides agreed otherwise").
+  // appendMessages — both sides must declare; OR on `excludedDefault`
+  // (force-exclude wins on either side). This is the correct CLIP
+  // semantics for a "default exclude this turn from history" toggle:
+  // intersection should never RELAX a restriction. If EITHER side
+  // says "exclude by default", the result excludes; AND would have
+  // let `false ∩ true → false` accidentally publish turns the more
+  // restrictive side wanted to hide.
   if (a.appendMessages && b.appendMessages) {
     out.appendMessages = {
       excludedDefault:
-        a.appendMessages.excludedDefault === true &&
+        a.appendMessages.excludedDefault === true ||
         b.appendMessages.excludedDefault === true,
     };
   }

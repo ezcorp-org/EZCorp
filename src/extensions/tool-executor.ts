@@ -23,6 +23,7 @@ import { persistToolCall } from "../db/queries/tool-calls";
 import { resolveExtensionSettings } from "../db/queries/extension-settings";
 import type { PermissionEngine } from "./permission-engine";
 import { capabilityDeclarationToSet, grantsToCapabilitySet, intersect, type CapabilitySet } from "./capability-types";
+import { getRuntimeToolContext, withRuntimeToolContext } from "./runtime-tool-context";
 import { handleNetworkInternalRpc, type NetworkInternalContext } from "./network-handler";
 import {
   handleFsReadRpc,
@@ -294,6 +295,16 @@ export class ToolExecutor {
     // silently allowing the dispatch on the existing try/catch's
     // success path. The thrown error propagates up the same reject
     // path as a normal deny.
+    // Phase 4 §M1/M2 — chain `parentAuditId` from the upstream
+    // runtime context (set by the previous authorize() in this call
+    // chain) when the caller didn't supply one explicitly. Top-level
+    // dispatches see `getRuntimeToolContext() === undefined` and pass
+    // `parentAuditId` as undefined; nested invokes pick it up from
+    // the surrounding ALS scope.
+    const upstreamCtx = getRuntimeToolContext();
+    const inheritedParentAuditId =
+      _opts?.parentAuditId ?? upstreamCtx?.currentAuditId;
+
     let decision: Awaited<ReturnType<typeof this.engine.authorize>>;
     try {
       decision = await this.engine.authorize(
@@ -304,7 +315,7 @@ export class ToolExecutor {
           toolName: originalName,
           callerExtensionId: _opts?.callerExtensionId,
           capContext: _opts?.capContext,
-          parentAuditId: _opts?.parentAuditId,
+          ...(inheritedParentAuditId !== undefined ? { parentAuditId: inheritedParentAuditId } : {}),
         },
         needed,
       );
@@ -328,10 +339,22 @@ export class ToolExecutor {
     // Track current call context for reverse RPC handlers (e.g. ezcorp/storage)
     this.currentConversationId = conversationId;
 
+    // Phase 4 §M1/M2 — establish the runtime tool context for the
+    // remainder of this dispatch. Any nested `handlePiInvoke` reads
+    // `currentCapContext` (the post-intersection set this call ran
+    // with) and `currentAuditId` (this authorize's row id). Inherits
+    // unspecified fields from any surrounding scope so nested
+    // invocations stack chained-deputy intersections correctly.
+    const runtimeCtxForCall: import("./runtime-tool-context").RuntimeToolContext = {
+      ...(_opts?.capContext !== undefined ? { currentCapContext: _opts.capContext } : {}),
+      currentAuditId: decision.auditId,
+    };
+
     const startTime = Date.now();
     const meta = _opts?.metadata;
     this.bus?.emit("tool:start", { conversationId, extensionId, toolName, input, timestamp: startTime, ...(registered.cardType && { cardType: registered.cardType }), ...(meta?.source && { source: meta.source }), ...(meta?.invocationId && { invocationId: meta.invocationId }) });
 
+    return withRuntimeToolContext(runtimeCtxForCall, async () => {
     try {
       // Resolve shared variables (x-shared) before dispatching to either
       // subprocess or MCP client.
@@ -453,6 +476,7 @@ export class ToolExecutor {
 
       return errorResult;
     }
+    });
   }
 
   /**
@@ -606,56 +630,45 @@ export class ToolExecutor {
       };
     }
 
-    // Phase 4 §6.3 — confused-deputy attribution.
+    // Phase 4 §M1 — full-chain chained-deputy attribution.
     //
     // When the callee's INSTALL-TIME GRANT carries
     // `acceptsCallerCaps: true`, run the callee's tool with
-    // `intersect(callerGrants, calleeGrants)` so the caller's missing
-    // caps deny the callee's tool even though the callee has them.
-    // Defaulting to `undefined` preserves pre-Phase-4 behavior for
-    // non-deputy callees.
+    // `intersect(callerCaps, calleeGrants)` where `callerCaps` is the
+    // UPSTREAM caller's effective set:
     //
-    // Implementation note (chained deputies, spec lock-in):
-    //   When this invoke is itself running inside a `capContext` (the
-    //   request handler that arrived here was itself authorized via
-    //   an earlier intersection), the chained reduction lives at the
-    //   `engine.authorize` layer — Phase 6 will plumb the upstream
-    //   capContext down. Phase 4's contract is that EACH invoke step
-    //   computes the intersection of the IMMEDIATE caller's grants
-    //   with the callee's grants; when nested, the engine sees
-    //   progressively narrower sets because each step's "caller
-    //   grants" is the previously narrowed set.
+    //   - If we're inside a runtime tool-context (a previous invoke
+    //     in the chain authorized this dispatch with a `capContext`),
+    //     the upstream `capContext` IS the caller's effective caps.
+    //     This makes A → B → C with all `acceptsCallerCaps: true`
+    //     yield `intersect(intersect(A, B), C)` — the spec-locked
+    //     full-chain semantics from
+    //     `tasks/phase-4-cross-ext-attribution.md:331`.
+    //   - If there's no upstream context (top-level LLM call coming
+    //     in via this invoke path), fall back to the immediate
+    //     caller's INSTALLED grants. Top-level can't be a chain.
     //
-    // The check is `=== true` on the GRANT, not the manifest — a
-    // manifest declaring the flag without user consent is treated as
-    // opted-out (spec lock-in: "runtime checks consult the grant").
+    // Without the upstream view, a chain A=[] → B=[evil] → C=[evil]
+    // with all deputies would let evil reach C even though A
+    // authorized nothing. The upstream context closes that gap.
+    //
+    // The check is `=== true` on the callee's GRANT, not its
+    // manifest — a manifest declaring the flag without user consent
+    // is treated as opted-out (spec lock-in: "runtime checks consult
+    // the grant").
     const calleeGrants = this.registry.getGrantedPermissions(resolved.extensionId);
-    const calleeManifest = this.registry.getManifest(resolved.extensionId);
-    const callerGrants = this.registry.getGrantedPermissions(callerExtId);
-    const callerManifest = this.registry.getManifest(callerExtId);
+    const upstreamRuntimeCtx = getRuntimeToolContext();
 
     let capContext: CapabilitySet | undefined;
     if (calleeGrants?.acceptsCallerCaps === true) {
-      // Translate both sides' INSTALLED grants to capability sets and
-      // intersect. The caller-side cap set must reflect what the user
-      // installed-and-granted, not the manifest's declaration —
-      // otherwise a deputy could escalate beyond what the user
-      // approved.
-      //
-      // We use `deriveCapsFromExtensionPerms` semantics by passing the
-      // grant blob through `capabilityDeclarationToSet`; this works
-      // because the runtime cap shapes are identical between the two
-      // (network array of hosts, fs paths, etc.).
-      const callerCaps = grantsToCapabilitySet(callerGrants ?? null);
-      const calleeCaps = grantsToCapabilitySet(calleeGrants ?? null);
+      // Caller side: prefer the upstream effective caps when we're
+      // inside a chain; fall back to caller's installed grants for
+      // top-level invokes.
+      const callerCaps: CapabilitySet =
+        upstreamRuntimeCtx?.currentCapContext ??
+        grantsToCapabilitySet(this.registry.getGrantedPermissions(callerExtId) ?? null);
+      const calleeCaps = grantsToCapabilitySet(calleeGrants);
       capContext = intersect(callerCaps, calleeCaps);
-      // Don't strip per-call here: the callee's tool's manifest
-      // declaration STILL gates downstream calls (the PDP reduces
-      // `needed` against `capContext` already). Caller manifest is
-      // referenced only to suppress unused-var lint on test scaffolds
-      // that mock manifests rather than grants.
-      void callerManifest;
-      void calleeManifest;
     }
 
     try {
@@ -668,6 +681,15 @@ export class ToolExecutor {
           callerExtensionId: callerExtId,
           _callDepth: depth + 1,
           ...(capContext !== undefined ? { capContext } : {}),
+          // Phase 4 §M2 — chain the audit id from the upstream
+          // authorize. The inner executeToolCall will use it as
+          // `parentAuditId` if `_opts.parentAuditId` isn't set. We
+          // pass it explicitly so spawn-assignment + invoke chains
+          // both flow through the same audit lineage even when the
+          // ALS scope is dropped between async boundaries.
+          ...(upstreamRuntimeCtx?.currentAuditId !== undefined
+            ? { parentAuditId: upstreamRuntimeCtx.currentAuditId }
+            : {}),
         },
       );
 

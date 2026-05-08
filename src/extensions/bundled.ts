@@ -8,6 +8,8 @@ import { installFromLocal } from "./installer";
 import { loadManifestFresh } from "./loader";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS, type ExtensionAuditMetadata } from "./audit-actions";
+import { clampToBundledCeiling, getCeiling } from "./bundled-ceiling";
+import { verifyManifestAgainstLock } from "./bundled-lock";
 import { join, dirname } from "node:path";
 import { logger } from "../logger";
 const log = logger.child("extensions");
@@ -425,9 +427,39 @@ export async function ensureBundledExtensions(): Promise<void> {
         // (§detectVersionBumpRequiringReapproval) as the sole escalation
         // paths for permission changes. Non-permission fields (tools,
         // description, version-unless-gated, entrypoint) track source.
+        //
+        // Phase 5: gate the refresh on `manifest.lock.json`. A
+        // mismatch on tool-list / entrypoint / version means either
+        // a maintainer forgot to regenerate the lockfile or the file
+        // was tampered with. Either way, fail-closed: disable the
+        // extension, write an audit row, do NOT proceed with refresh.
         try {
           const diskDir = join(getProjectRoot(), entry.path);
           const diskManifest = await loadManifestFresh(diskDir);
+
+          const lockResult = await verifyManifestAgainstLock(entry.name, diskManifest);
+          if (!lockResult.ok) {
+            log.error("Manifest tamper detected for bundled extension", {
+              name: entry.name,
+              extensionId: existing.id,
+              reason: lockResult.reason,
+              expected: lockResult.expected,
+              actual: lockResult.actual,
+            });
+            await writeBundledManifestTamperAudit(
+              existing.id,
+              entry.name,
+              lockResult.reason,
+              lockResult.expected,
+              lockResult.actual,
+            );
+            // Disable the extension. The DB-stored manifest + grant
+            // remain intact so a future re-approval can re-enable
+            // without losing user state.
+            await updateExtension(existing.id, { enabled: false });
+            continue;
+          }
+
           const refreshed: ExtensionManifestV2 = {
             ...diskManifest,
             permissions: (existing.manifest as ExtensionManifestV2).permissions ?? diskManifest.permissions,
@@ -469,7 +501,25 @@ export async function ensureBundledExtensions(): Promise<void> {
       }
 
       const resolvedPath = join(getProjectRoot(), entry.path);
-      const installed = await installFromLocal(resolvedPath, entry.permissions, true);
+
+      // Phase 5: clamp the bundled install request to the hardcoded
+      // capability ceiling. The ceiling is independent of the manifest
+      // — a compromised `BUNDLED_EXTENSIONS` entry that requests wider
+      // perms cannot exceed `bundled-ceiling.ts`. Persist the CLAMPED
+      // grant; audit when narrowing occurred.
+      const { effective: clampedPerms, clamped } = clampToBundledCeiling(
+        entry.name,
+        entry.permissions,
+      );
+      if (clamped) {
+        log.warn("Bundled install grant clamped to ceiling", {
+          name: entry.name,
+          requested: entry.permissions,
+          effective: clampedPerms,
+        });
+      }
+
+      const installed = await installFromLocal(resolvedPath, clampedPerms, true);
       // Mark provenance AFTER the row exists. installFromLocal is shared
       // with the user install path (which must default isBundled=false),
       // so bundled trust is granted here, in the one place that knows.
@@ -482,7 +532,10 @@ export async function ensureBundledExtensions(): Promise<void> {
         });
       }
       log.info("Installed extension", { name: entry.name });
-      await writeBundledInstallAudit(installed.id, entry.permissions);
+      await writeBundledInstallAudit(installed.id, clampedPerms);
+      if (clamped) {
+        await writeBundledCeilingClampAudit(installed.id, entry.name, entry.permissions, clampedPerms);
+      }
     } catch (error) {
       log.error("Failed to install extension", { name: entry.name, error: String(error) });
     }
@@ -810,5 +863,63 @@ async function writeBundledRegrantAudit(
       };
       await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_REGRANTED, extensionId, meta);
     }
+  } catch { /* audit write failure is non-fatal */ }
+}
+
+/**
+ * Phase 5: write an audit row for a bundled-install grant clamped to
+ * the hardcoded ceiling. The metadata captures the FULL requested vs.
+ * effective grant so an admin reviewing the audit log can reconstruct
+ * exactly which fields were narrowed without consulting `bundled.ts`
+ * source.
+ */
+async function writeBundledCeilingClampAudit(
+  extensionId: string,
+  extensionName: string,
+  requested: ExtensionPermissions,
+  effective: ExtensionPermissions,
+): Promise<void> {
+  const ceiling = getCeiling(extensionName);
+  const meta: ExtensionAuditMetadata = {
+    permission: "ceiling-clamp",
+    oldValue: requested,
+    newValue: effective,
+    actor: "system",
+    reason: `bundled-ceiling-clamp: bundled '${extensionName}' install request narrowed by hardcoded ceiling`,
+    extensionName,
+    requested,
+    effective,
+    ceiling,
+  };
+  try {
+    await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_CEILING_CLAMP, extensionId, meta);
+  } catch { /* audit write failure is non-fatal */ }
+}
+
+/**
+ * Phase 5: write an audit row when `verifyManifestAgainstLock` returns
+ * `ok: false`. Captures the lockfile-vs-disk diff so an admin can
+ * confirm whether the mismatch was a maintainer's missed lockfile
+ * regenerate or a tampering signal.
+ */
+async function writeBundledManifestTamperAudit(
+  extensionId: string,
+  extensionName: string,
+  reason: string,
+  expected: unknown,
+  actual: unknown,
+): Promise<void> {
+  const meta: ExtensionAuditMetadata = {
+    permission: "manifest-tamper",
+    oldValue: expected,
+    newValue: actual,
+    actor: "system",
+    reason: `bundled-manifest-tamper: ${reason}`,
+    extensionName,
+    expected,
+    actual,
+  };
+  try {
+    await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_MANIFEST_TAMPER, extensionId, meta);
   } catch { /* audit write failure is non-fatal */ }
 }

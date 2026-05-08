@@ -269,9 +269,12 @@ function equalPermissions(
 
 function canonicalizePerms(p: ExtensionPermissions): string {
   const ordered: Record<string, unknown> = {};
-  const keys = Object.keys(p).sort();
+  // `as unknown` first because `ExtensionPermissions` has typed fields
+  // that don't structurally overlap with `Record<string, unknown>`.
+  const asRecord = p as unknown as Record<string, unknown>;
+  const keys = Object.keys(asRecord).sort();
   for (const k of keys) {
-    const v = (p as Record<string, unknown>)[k];
+    const v = asRecord[k];
     if (v === undefined) continue;
     if (Array.isArray(v)) {
       // Sort string arrays for order-independence; non-string arrays

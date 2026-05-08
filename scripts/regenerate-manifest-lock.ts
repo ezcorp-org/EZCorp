@@ -59,6 +59,12 @@ const BUNDLED: readonly BundledEntry[] = [
   { name: "claude-design", path: "docs/extensions/examples/claude-design" },
   { name: "excel", path: "docs/extensions/examples/excel" },
   { name: "kokoro-tts", path: "docs/extensions/examples/kokoro-tts" },
+  // Phase 53 bundled ports — live at the milestone-spec'd
+  // `extensions/<name>/` path rather than the legacy
+  // `docs/extensions/examples/<name>/`. Both are bundled-trust by code
+  // review.
+  { name: "lessons-distiller", path: "extensions/lessons-distiller" },
+  { name: "memory-extractor", path: "extensions/memory-extractor" },
 ];
 
 interface LockfileEntry {

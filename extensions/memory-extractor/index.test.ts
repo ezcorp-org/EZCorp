@@ -1,0 +1,518 @@
+/**
+ * Unit tests for the bundled memory-extractor extension.
+ *
+ * The runtime API is swapped out via `_setRuntimeApiForTests` so these
+ * tests run without any JSON-RPC pipe / DB / LLM. The host-side
+ * pipeline is exercised by the parity test
+ * (`src/__tests__/memory-extractor-port-parity.test.ts`); this file
+ * isolates the extension's own logic — JSON parsing, settings
+ * gating, the `run:complete` handler shape, the compaction tick.
+ */
+import { test, expect, describe, afterEach } from "bun:test";
+import {
+  handleRunComplete,
+  handleCompactionTick,
+  extract,
+  _setRuntimeApiForTests,
+  _resetRuntimeApiForTests,
+  type MemoryExtractorRuntimeApi,
+} from "./index";
+
+interface RecordedCall {
+  api: keyof MemoryExtractorRuntimeApi;
+  args: unknown;
+}
+
+function makeFakeRuntime(overrides: Partial<MemoryExtractorRuntimeApi> = {}): {
+  calls: RecordedCall[];
+  api: MemoryExtractorRuntimeApi;
+  setMessages(msgs: { id: string; role: string; content: string }[]): void;
+  setLlmContent(text: string): void;
+  setSettings(values: Record<string, unknown>): void;
+  setLlmThrow(err: Error): void;
+  setDedupResult(result: { action: "inserted" | "updated"; memoryId: string }): void;
+  setDedupSequence(results: Array<{ action: "inserted" | "updated"; memoryId: string }>): void;
+  setCompactResult(result: { mergedCount: number }): void;
+  state: {
+    messages: { id: string; role: string; content: string }[];
+    projectId: string | null;
+    llmContent: string;
+    llmThrow: Error | null;
+    settings: Record<string, unknown>;
+    dedupResult: { action: "inserted" | "updated"; memoryId: string };
+    dedupSequence: Array<{ action: "inserted" | "updated"; memoryId: string }> | null;
+    dedupCallIndex: number;
+    compactResult: { mergedCount: number };
+  };
+} {
+  const state = {
+    messages: [
+      { id: "m1", role: "user", content: "I prefer TypeScript" },
+      { id: "m2", role: "assistant", content: "Got it." },
+    ],
+    projectId: "proj-fake" as string | null,
+    llmContent:
+      '[{"content":"User prefers TypeScript","category":"preferences","confidence":"high","messageIds":["m1"]}]',
+    llmThrow: null as Error | null,
+    settings: { enabled: true } as Record<string, unknown>,
+    dedupResult: { action: "inserted", memoryId: "mem-1" } as {
+      action: "inserted" | "updated";
+      memoryId: string;
+    },
+    dedupSequence: null as Array<{ action: "inserted" | "updated"; memoryId: string }> | null,
+    dedupCallIndex: 0,
+    compactResult: { mergedCount: 0 },
+  };
+  const calls: RecordedCall[] = [];
+
+  const api: MemoryExtractorRuntimeApi = {
+    async getMessagesEnvelope(conversationId: string) {
+      calls.push({ api: "getMessagesEnvelope", args: { conversationId } });
+      return { messages: state.messages, projectId: state.projectId };
+    },
+    async llmComplete(opts) {
+      calls.push({ api: "llmComplete", args: opts });
+      if (state.llmThrow) throw state.llmThrow;
+      return { content: state.llmContent };
+    },
+    async dedupMemoryWrite(input) {
+      calls.push({ api: "dedupMemoryWrite", args: input });
+      if (state.dedupSequence) {
+        const result = state.dedupSequence[state.dedupCallIndex];
+        state.dedupCallIndex += 1;
+        return result ?? { action: "inserted", memoryId: `mem-${state.dedupCallIndex}` };
+      }
+      return state.dedupResult;
+    },
+    async compact(args) {
+      calls.push({ api: "compact", args });
+      return state.compactResult;
+    },
+    async getMySettings() {
+      calls.push({ api: "getMySettings", args: {} });
+      return state.settings;
+    },
+    ...overrides,
+  };
+
+  return {
+    calls,
+    api,
+    state,
+    setMessages(msgs) { state.messages = msgs; },
+    setLlmContent(text) { state.llmContent = text; },
+    setSettings(values) { state.settings = values; },
+    setLlmThrow(err) { state.llmThrow = err; },
+    setDedupResult(result) { state.dedupResult = result; },
+    setDedupSequence(results) {
+      state.dedupSequence = results;
+      state.dedupCallIndex = 0;
+    },
+    setCompactResult(result) { state.compactResult = result; },
+  };
+}
+
+afterEach(() => {
+  _resetRuntimeApiForTests();
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// extract — happy path: N memories
+// ─────────────────────────────────────────────────────────────────────
+
+describe("extract — happy path", () => {
+  test("LLM returns array of facts → dedupMemoryWrite called per fact → success outcome", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent(
+      '[{"content":"User prefers TypeScript","category":"preferences","confidence":"high","messageIds":["m1"]},{"content":"User builds healthcare SaaS","category":"biographical","confidence":"medium","messageIds":["m2"]}]',
+    );
+    fake.setDedupSequence([
+      { action: "inserted", memoryId: "mem-1" },
+      { action: "inserted", memoryId: "mem-2" },
+    ]);
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "conv-1",
+      settings: { provider: "google" },
+      projectId: "proj-1",
+    });
+
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.writes).toHaveLength(2);
+      expect(outcome.writes[0]!.fact.content).toBe("User prefers TypeScript");
+      expect(outcome.writes[0]!.fact.category).toBe("preferences");
+      expect(outcome.writes[0]!.action).toBe("inserted");
+      expect(outcome.writes[1]!.fact.category).toBe("biographical");
+    }
+    const writeCalls = fake.calls.filter((c) => c.api === "dedupMemoryWrite");
+    expect(writeCalls).toHaveLength(2);
+    expect(writeCalls[0]!.args).toMatchObject({
+      content: "User prefers TypeScript",
+      category: "preferences",
+      conversationId: "conv-1",
+      projectId: "proj-fake",
+      extensionId: "memory-extractor",
+    });
+  });
+
+  test("provider setting overrides the default", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    await extract({
+      conversationId: "conv-1",
+      settings: { provider: "anthropic" },
+      projectId: "proj-1",
+    });
+    const llmCall = fake.calls.find((c) => c.api === "llmComplete");
+    expect(llmCall?.args).toMatchObject({
+      provider: "anthropic",
+      model: "claude-haiku-4-5-20250514",
+    });
+  });
+
+  test("model override wins over provider default", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    await extract({
+      conversationId: "conv-1",
+      settings: { provider: "openai", model: "gpt-4o-custom" },
+      projectId: "proj-1",
+    });
+    const llmCall = fake.calls.find((c) => c.api === "llmComplete");
+    expect(llmCall?.args).toMatchObject({ provider: "openai", model: "gpt-4o-custom" });
+  });
+
+  test("unknown provider falls back to google", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    await extract({
+      conversationId: "conv-1",
+      settings: { provider: "fictitious" },
+      projectId: "proj-1",
+    });
+    const llmCall = fake.calls.find((c) => c.api === "llmComplete");
+    expect(llmCall?.args).toMatchObject({ provider: "google", model: "gemini-2.0-flash-lite" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// extract — decline branches
+// ─────────────────────────────────────────────────────────────────────
+
+describe("extract — decline branches", () => {
+  test("empty messages → decline empty_conversation; LLM not called", async () => {
+    const fake = makeFakeRuntime();
+    fake.setMessages([]);
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome).toEqual({ kind: "decline", reason: "empty_conversation" });
+    expect(fake.calls.find((c) => c.api === "llmComplete")).toBeUndefined();
+  });
+
+  test("LLM returns [] → success with no writes (zero-fact run)", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent("[]");
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.writes).toHaveLength(0);
+    }
+    expect(fake.calls.find((c) => c.api === "dedupMemoryWrite")).toBeUndefined();
+  });
+
+  test("LLM returns empty string → decline llm_empty", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent("");
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome).toEqual({ kind: "decline", reason: "llm_empty" });
+  });
+
+  test("LLM returns non-array JSON → decline llm_malformed", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent('{"oops":"object not array"}');
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("decline");
+    if (outcome.kind === "decline") {
+      expect(outcome.reason).toBe("llm_malformed");
+    }
+  });
+
+  test("LLM returns garbage → decline llm_malformed with detail", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent("this is not json {oops");
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("decline");
+    if (outcome.kind === "decline") {
+      expect(outcome.reason).toBe("llm_malformed");
+      expect((outcome as { detail?: string }).detail).toBeDefined();
+    }
+  });
+
+  test("```json fenced response is unwrapped", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent(
+      '```json\n[{"content":"unwrapped fact","category":"technical","messageIds":["m1"]}]\n```',
+    );
+    fake.setDedupSequence([{ action: "inserted", memoryId: "mem-fenced" }]);
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.writes).toHaveLength(1);
+    }
+  });
+
+  test("entries with bad category are filtered", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent(
+      '[{"content":"good","category":"preferences"},{"content":"bad","category":"madeupcategory"}]',
+    );
+    fake.setDedupSequence([{ action: "inserted", memoryId: "mem-good" }]);
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      expect(outcome.writes).toHaveLength(1);
+      expect(outcome.writes[0]!.fact.content).toBe("good");
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// extract — error branches
+// ─────────────────────────────────────────────────────────────────────
+
+describe("extract — error branches", () => {
+  test("LLM throws → error llm_error with detail", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmThrow(new Error("upstream 503"));
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("error");
+    if (outcome.kind === "error") {
+      expect(outcome.reason).toBe("llm_error");
+      expect(outcome.detail).toBe("upstream 503");
+    }
+  });
+
+  test("getMessagesEnvelope throws → error internal", async () => {
+    const fake = makeFakeRuntime({
+      async getMessagesEnvelope() {
+        throw new Error("conn lost");
+      },
+    });
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("error");
+    if (outcome.kind === "error") {
+      expect(outcome.reason).toBe("internal");
+      expect(outcome.detail).toContain("conn lost");
+    }
+  });
+
+  test("dedup throws on one fact → other facts still write (per-fact resilience)", async () => {
+    const fake = makeFakeRuntime();
+    fake.setLlmContent(
+      '[{"content":"first","category":"preferences"},{"content":"second","category":"technical"}]',
+    );
+    let callCount = 0;
+    fake.api.dedupMemoryWrite = async () => {
+      callCount += 1;
+      if (callCount === 1) throw new Error("DB blip");
+      return { action: "inserted", memoryId: "mem-2" };
+    };
+    _setRuntimeApiForTests(fake.api);
+
+    const outcome = await extract({
+      conversationId: "c", settings: {}, projectId: "p",
+    });
+    expect(outcome.kind).toBe("success");
+    if (outcome.kind === "success") {
+      // Only the second write succeeded; first was logged + dropped.
+      expect(outcome.writes).toHaveLength(1);
+      expect(outcome.writes[0]!.fact.content).toBe("second");
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// handleRunComplete — event handler gating
+// ─────────────────────────────────────────────────────────────────────
+
+describe("handleRunComplete — event handler", () => {
+  test("ignored when settings.enabled is false", async () => {
+    const fake = makeFakeRuntime();
+    fake.setSettings({ enabled: false });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleRunComplete({
+      run: { agentName: "chat", status: "success" },
+      conversationId: "conv-1",
+    });
+
+    expect(out).toEqual({ kind: "decline", reason: "settings_disabled" });
+    expect(fake.calls.find((c) => c.api === "llmComplete")).toBeUndefined();
+  });
+
+  test("ignored when run.agentName !== 'chat'", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleRunComplete({
+      run: { agentName: "team-handoff", status: "success" },
+      conversationId: "conv-1",
+    });
+
+    expect(out).toEqual({ kind: "decline", reason: "wrong_agent_or_status" });
+    expect(fake.calls.find((c) => c.api === "llmComplete")).toBeUndefined();
+  });
+
+  test("ignored when run.status !== 'success'", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleRunComplete({
+      run: { agentName: "chat", status: "error" },
+      conversationId: "conv-1",
+    });
+
+    expect(out).toEqual({ kind: "decline", reason: "wrong_agent_or_status" });
+  });
+
+  test("ignored when conversationId missing", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleRunComplete({
+      run: { agentName: "chat", status: "success" },
+    });
+    expect(out).toBeUndefined();
+  });
+
+  test("settings throw → defaults to enabled (does not crash)", async () => {
+    const fake = makeFakeRuntime({
+      async getMySettings() {
+        throw new Error("network blip");
+      },
+    });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleRunComplete({
+      run: { agentName: "chat", status: "success" },
+      conversationId: "conv-1",
+    });
+    // Even when getMySettings fails the run should not throw; the
+    // listener contract is fire-and-forget. The handler still passes
+    // through to extract() which returns a success outcome.
+    expect(out).toBeDefined();
+  });
+
+  test("happy path: chat run + enabled → extracts memories", async () => {
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleRunComplete({
+      run: { agentName: "chat", status: "success" },
+      conversationId: "conv-1",
+    });
+    expect(out?.kind).toBe("success");
+    expect(fake.calls.find((c) => c.api === "llmComplete")).toBeDefined();
+    expect(fake.calls.find((c) => c.api === "dedupMemoryWrite")).toBeDefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// handleCompactionTick — schedule handler
+// ─────────────────────────────────────────────────────────────────────
+
+describe("handleCompactionTick — schedule handler", () => {
+  test("happy path: settings enabled → calls runtime.memory.compact", async () => {
+    const fake = makeFakeRuntime();
+    fake.setCompactResult({ mergedCount: 7 });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleCompactionTick();
+    expect(out).toEqual({ mergedCount: 7 });
+    const compactCall = fake.calls.find((c) => c.api === "compact");
+    expect(compactCall).toBeDefined();
+  });
+
+  test("compaction_enabled=false → skipped: settings_disabled", async () => {
+    const fake = makeFakeRuntime();
+    fake.setSettings({ enabled: true, compaction_enabled: false });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleCompactionTick();
+    expect(out).toEqual({ skipped: true, reason: "settings_disabled" });
+    expect(fake.calls.find((c) => c.api === "compact")).toBeUndefined();
+  });
+
+  test("master enabled=false → skipped: extractor_disabled", async () => {
+    const fake = makeFakeRuntime();
+    fake.setSettings({ enabled: false });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleCompactionTick();
+    expect(out).toEqual({ skipped: true, reason: "extractor_disabled" });
+  });
+
+  test("compact throws → skipped: internal_error (no crash)", async () => {
+    const fake = makeFakeRuntime({
+      async compact() {
+        throw new Error("compaction explosion");
+      },
+    });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleCompactionTick();
+    expect(out).toEqual({ skipped: true, reason: "internal_error" });
+  });
+
+  test("settings throw → defaults to enabled and proceeds", async () => {
+    const fake = makeFakeRuntime({
+      async getMySettings() {
+        throw new Error("can't read");
+      },
+    });
+    _setRuntimeApiForTests(fake.api);
+
+    const out = await handleCompactionTick();
+    expect(out).toEqual({ mergedCount: 0 });
+  });
+});

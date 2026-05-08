@@ -4,18 +4,27 @@
  * Two flows under test:
  *
  *   1. Backfill migration
- *      (`src/extensions/migrations/lessons-distiller-conversation-wiring.ts`)
- *      Inserts a `conversation_extensions` row for every existing
+ *      (`src/extensions/migrations/lessons-distiller-conversation-wiring.ts`
+ *       and the parallel
+ *       `src/extensions/migrations/memory-extractor-conversation-wiring.ts`).
+ *      Each inserts a `conversation_extensions` row for every existing
  *      conversation that lacks one, gated by a sentinel setting key.
  *
  *   2. New-conversation hook (`src/extensions/auto-wire-bundled.ts`)
  *      called from `createConversation` so freshly-created
  *      conversations get the wiring row at birth.
  *
+ * Phase 53.4 extends this suite to cover the memory-extractor in
+ * addition to lessons-distiller. The new-conv hook fires for BOTH
+ * extensions in a single createConversation call (one wired-row per
+ * bundled name), and each migration carries its own sentinel so the
+ * two can replay / advance independently.
+ *
  * Acceptance:
- *   a. Backfill on install with N pre-existing convs writes N rows.
+ *   a. Backfill on install with N pre-existing convs writes N rows
+ *      per bundled extension covered.
  *   b. Sentinel idempotency — a second run is a no-op.
- *   c. New-conv hook adds the row automatically.
+ *   c. New-conv hook adds the row automatically for BOTH extensions.
  *   d. Sentinel respects user de-wirings — after the migration
  *      completes once, manually unwiring a conversation does NOT cause
  *      a re-add on the next boot.
@@ -67,6 +76,9 @@ mockDbConnection();
 const { migrateLessonsDistillerConversationWiring } = await import(
   "../extensions/migrations/lessons-distiller-conversation-wiring"
 );
+const { migrateMemoryExtractorConversationWiring } = await import(
+  "../extensions/migrations/memory-extractor-conversation-wiring"
+);
 const { autoWireBundledExtensions } = await import(
   "../extensions/auto-wire-bundled"
 );
@@ -85,9 +97,11 @@ const { conversationExtensions } = await import("../db/schema");
 const { eq, and } = await import("drizzle-orm");
 
 const SENTINEL_KEY = "global:lessonsDistillerAutoWiringMigratedAt";
+const MEMORY_SENTINEL_KEY = "global:memoryExtractorAutoWiringMigratedAt";
 
 let projectId: string;
 let lessonsDistillerExtId: string;
+let memoryExtractorExtId: string;
 
 beforeAll(async () => {
   await setupTestDb();
@@ -119,6 +133,30 @@ beforeAll(async () => {
     } as never,
   });
   lessonsDistillerExtId = ext.id;
+
+  // Phase 53.4: seed the memory-extractor too. Same shape as
+  // lessons-distiller; the auto-wire helper looks it up by name from
+  // the AUTO_WIRE_BUNDLED_EXTENSION_NAMES list.
+  const memExt = await createExtension({
+    name: "memory-extractor",
+    version: "1.0.0",
+    source: "test",
+    description: "test",
+    manifest: {
+      schemaVersion: 2,
+      name: "memory-extractor",
+      version: "1.0.0",
+      description: "test",
+      author: { name: "t" },
+      entrypoint: "x",
+      tools: [],
+      permissions: { eventSubscriptions: ["run:complete"] },
+      settings: {
+        enabled: { type: "boolean", label: "Enabled", default: true },
+      },
+    } as never,
+  });
+  memoryExtractorExtId = memExt.id;
 });
 
 afterAll(async () => {
@@ -127,12 +165,16 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  // Clear sentinel + every wiring row for the lessons-distiller so each
-  // test starts fresh.
+  // Clear sentinel + every wiring row for both bundled extensions so
+  // each test starts fresh.
   await deleteSetting(SENTINEL_KEY);
+  await deleteSetting(MEMORY_SENTINEL_KEY);
   await getDb()
     .delete(conversationExtensions)
     .where(eq(conversationExtensions.extensionId, lessonsDistillerExtId));
+  await getDb()
+    .delete(conversationExtensions)
+    .where(eq(conversationExtensions.extensionId, memoryExtractorExtId));
 });
 
 // ── (a) Backfill on install ──────────────────────────────────────────
@@ -150,9 +192,13 @@ describe("migrateLessonsDistillerConversationWiring — backfill", () => {
       .where(eq(conversationExtensions.extensionId, lessonsDistillerExtId));
     await deleteSetting(SENTINEL_KEY);
 
-    // Pre-condition: none of the three are wired.
+    // Pre-condition: none of the three are wired to LESSONS-DISTILLER
+    // specifically (Phase 53.4 also auto-wires memory-extractor on
+    // createConversation; that row may be present and is irrelevant
+    // to this assertion).
     for (const c of [c1, c2, c3]) {
-      expect(await getConversationExtensionIds(c.id)).toEqual([]);
+      const ids = await getConversationExtensionIds(c.id);
+      expect(ids).not.toContain(lessonsDistillerExtId);
     }
 
     await migrateLessonsDistillerConversationWiring(lessonsDistillerExtId);
@@ -233,26 +279,107 @@ describe("autoWireBundledExtensions — new conversations", () => {
     expect(ids).toContain(lessonsDistillerExtId);
   });
 
-  test("explicit autoWireBundledExtensions call is idempotent", async () => {
+  test("createConversation wires memory-extractor automatically (Phase 53.4)", async () => {
     const conv = await createConversation(projectId);
-    // Already wired by createConversation; explicit second call is
-    // a no-op via onConflictDoNothing.
+    const ids = await getConversationExtensionIds(conv.id);
+    expect(ids).toContain(memoryExtractorExtId);
+  });
+
+  test("createConversation wires BOTH lessons-distiller and memory-extractor", async () => {
+    const conv = await createConversation(projectId);
+    const ids = await getConversationExtensionIds(conv.id);
+    expect(ids).toContain(lessonsDistillerExtId);
+    expect(ids).toContain(memoryExtractorExtId);
+  });
+
+  test("explicit autoWireBundledExtensions call is idempotent for both extensions", async () => {
+    const conv = await createConversation(projectId);
     const wired = await autoWireBundledExtensions(conv.id);
     // Helper returns the count of rows it tried to insert (one per
-    // bundled name); the conflict handler in addConversationExtensions
-    // means the second insert is a no-op at the DB layer.
-    expect(wired).toBe(1);
+    // bundled name in AUTO_WIRE_BUNDLED_EXTENSION_NAMES — currently
+    // lessons-distiller + memory-extractor = 2). The conflict handler
+    // in addConversationExtensions means the second insert is a no-op
+    // at the DB layer.
+    expect(wired).toBe(2);
 
-    const rows = await getDb()
-      .select()
-      .from(conversationExtensions)
+    for (const extId of [lessonsDistillerExtId, memoryExtractorExtId]) {
+      const rows = await getDb()
+        .select()
+        .from(conversationExtensions)
+        .where(
+          and(
+            eq(conversationExtensions.conversationId, conv.id),
+            eq(conversationExtensions.extensionId, extId),
+          ),
+        );
+      expect(rows.length).toBe(1);
+    }
+  });
+});
+
+// ── (e) Memory-extractor backfill migration (sibling sentinel) ──────
+
+describe("migrateMemoryExtractorConversationWiring — backfill", () => {
+  test("inserts a wiring row for every pre-existing conversation lacking one", async () => {
+    const c1 = await createConversation(projectId);
+    const c2 = await createConversation(projectId);
+    await getDb()
+      .delete(conversationExtensions)
+      .where(eq(conversationExtensions.extensionId, memoryExtractorExtId));
+    await deleteSetting(MEMORY_SENTINEL_KEY);
+
+    for (const c of [c1, c2]) {
+      const ids = await getConversationExtensionIds(c.id);
+      expect(ids).not.toContain(memoryExtractorExtId);
+    }
+
+    await migrateMemoryExtractorConversationWiring(memoryExtractorExtId);
+
+    for (const c of [c1, c2]) {
+      const ids = await getConversationExtensionIds(c.id);
+      expect(ids).toContain(memoryExtractorExtId);
+    }
+
+    const sentinel = await getSetting(MEMORY_SENTINEL_KEY);
+    expect(typeof sentinel).toBe("string");
+  });
+
+  test("rerun with sibling memory sentinel present is a no-op", async () => {
+    await upsertSetting(MEMORY_SENTINEL_KEY, new Date().toISOString());
+    const conv = await createConversation(projectId);
+    await getDb()
+      .delete(conversationExtensions)
       .where(
         and(
           eq(conversationExtensions.conversationId, conv.id),
-          eq(conversationExtensions.extensionId, lessonsDistillerExtId),
+          eq(conversationExtensions.extensionId, memoryExtractorExtId),
         ),
       );
-    expect(rows.length).toBe(1);
+
+    await migrateMemoryExtractorConversationWiring(memoryExtractorExtId);
+
+    const ids = await getConversationExtensionIds(conv.id);
+    expect(ids).not.toContain(memoryExtractorExtId);
+  });
+
+  test("memory-extractor and lessons-distiller sentinels are independent", async () => {
+    // Stamp the lessons sentinel only — memory-extractor should still
+    // run a fresh backfill.
+    await upsertSetting(SENTINEL_KEY, new Date().toISOString());
+    const c = await createConversation(projectId);
+    await getDb()
+      .delete(conversationExtensions)
+      .where(eq(conversationExtensions.extensionId, lessonsDistillerExtId));
+    await getDb()
+      .delete(conversationExtensions)
+      .where(eq(conversationExtensions.extensionId, memoryExtractorExtId));
+
+    await migrateLessonsDistillerConversationWiring(lessonsDistillerExtId);
+    await migrateMemoryExtractorConversationWiring(memoryExtractorExtId);
+
+    const ids = await getConversationExtensionIds(c.id);
+    expect(ids).not.toContain(lessonsDistillerExtId);
+    expect(ids).toContain(memoryExtractorExtId);
   });
 });
 

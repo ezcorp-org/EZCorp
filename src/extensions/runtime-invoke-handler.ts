@@ -54,6 +54,9 @@ import {
   detectUserCorrection,
 } from "../runtime/lessons/triggers";
 import { resolveExtensionSettings } from "../db/queries/extension-settings";
+import { isBundledExtensionName } from "./bundled";
+import { runCompaction } from "../memory/compaction";
+import { dedupAndWriteMemory } from "../memory/dedup";
 import { logger } from "../logger";
 
 const log = logger.child("ext.runtime-invoke");
@@ -61,6 +64,14 @@ const log = logger.child("ext.runtime-invoke");
 export interface RuntimeInvokeContext {
   /** Calling extension's id (post-resolution). */
   extensionId: string;
+  /** Calling extension's manifest name. Used by the bundled-only gate
+   *  on `runtime.memory.compact` and `runtime.memory.dedupMemoryWrite`
+   *  — those methods are restricted to bundled extensions because they
+   *  cross-cut every memory in the user's project. The host fills this
+   *  in from the registry; the calling extension cannot spoof it (the
+   *  field is NOT read from `args` or `rpcMeta`). Optional only so the
+   *  test harness can construct a minimal ctx without a registry. */
+  extensionName?: string;
   /** Acting user id, resolved by the host from the per-call rpcMeta.
    *  May be null for system-driven calls (the only `runtime.settings.getMine`
    *  caller in v1 is the `run:complete` listener path). */
@@ -104,6 +115,10 @@ export async function handleRuntimeInvoke(
       return handleTriggerGate(args, ctx, req);
     case "runtime.settings.getMine":
       return handleGetMySettings(ctx, req);
+    case "runtime.memory.compact":
+      return handleMemoryCompact(args, ctx, req);
+    case "runtime.memory.dedupMemoryWrite":
+      return handleDedupMemoryWrite(args, ctx, req);
     default:
       return {
         jsonrpc: "2.0",
@@ -323,5 +338,188 @@ async function handleGetMySettings(
     jsonrpc: "2.0",
     id: req.id,
     result: resolved,
+  };
+}
+
+// ── Phase 53.4 — bundled-only memory invoke methods ────────────────
+//
+// `runtime.memory.compact` triggers the host's decay/merge sweep. The
+// host owns this because compaction is cross-extension by design (it
+// merges memories regardless of which extension authored them) — an
+// extension cannot dedup against memories it can't see, so the same
+// boundary applies to the compaction sweep.
+//
+// `runtime.memory.dedupMemoryWrite` is a pre-insert dedup check. The
+// host's `ezcorp/memory write` action already runs through this helper
+// before insert; this RPC exists for symmetry / future extension use
+// (e.g. an extension running its own pipeline that wants the
+// host-blessed dedup decision before deciding what to write).
+//
+// Both methods are restricted to BUNDLED extensions. The
+// `selfOnly: false` exception that the memory-extractor needs is the
+// same trust boundary that gates these RPCs — only code shipping in
+// the EZCorp repo can call them. User-installed extensions get
+// -32604 (host extension: not-found / no-access). The check is on
+// `ctx.extensionName` (host-stamped from the registry), not on a
+// param; spoofing is structurally impossible.
+
+function checkBundledOnly(
+  ctx: RuntimeInvokeContext,
+  req: JsonRpcRequest,
+  methodName: string,
+): JsonRpcResponse | null {
+  if (!ctx.extensionName || !isBundledExtensionName(ctx.extensionName)) {
+    log.warn("non-bundled extension attempted bundled-only runtime invoke", {
+      method: methodName,
+      extensionId: ctx.extensionId,
+      extensionName: ctx.extensionName ?? "<unknown>",
+    });
+    return {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: {
+        code: -32604,
+        message: `${methodName} is restricted to bundled extensions`,
+      },
+    };
+  }
+  return null;
+}
+
+async function handleMemoryCompact(
+  args: Record<string, unknown>,
+  ctx: RuntimeInvokeContext,
+  req: JsonRpcRequest,
+): Promise<JsonRpcResponse> {
+  const denied = checkBundledOnly(ctx, req, "runtime.memory.compact");
+  if (denied) return denied;
+
+  // `projectId` is optional — undefined means "compact across every
+  // project this server hosts" (matches `runCompaction()`'s legacy
+  // signature). When supplied, the value MUST be a string.
+  const projectIdRaw = args.projectId;
+  let projectId: string | undefined;
+  if (projectIdRaw !== undefined) {
+    if (typeof projectIdRaw !== "string" || !projectIdRaw) {
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32602, message: "projectId must be a non-empty string when provided" },
+      };
+    }
+    projectId = projectIdRaw;
+  }
+
+  let mergedCount: number;
+  try {
+    mergedCount = await runCompaction(projectId);
+  } catch (err) {
+    return {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: { code: -32603, message: `compaction failed: ${(err as Error).message}` },
+    };
+  }
+
+  return {
+    jsonrpc: "2.0",
+    id: req.id,
+    result: { mergedCount },
+  };
+}
+
+async function handleDedupMemoryWrite(
+  args: Record<string, unknown>,
+  ctx: RuntimeInvokeContext,
+  req: JsonRpcRequest,
+): Promise<JsonRpcResponse> {
+  const denied = checkBundledOnly(ctx, req, "runtime.memory.dedupMemoryWrite");
+  if (denied) return denied;
+
+  // Minimal arg validation — the helper itself rejects bad shapes.
+  const {
+    content,
+    category,
+    confidence,
+    sourceMessageIds,
+    conversationId,
+    projectId,
+    extensionId,
+    injectionEligible,
+  } = args as Record<string, unknown>;
+
+  if (typeof content !== "string" || !content) {
+    return {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: { code: -32602, message: "content must be a non-empty string" },
+    };
+  }
+  if (
+    typeof category !== "string" ||
+    !["preferences", "biographical", "technical", "decisions_goals"].includes(category)
+  ) {
+    return {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: {
+        code: -32602,
+        message:
+          "category must be one of preferences|biographical|technical|decisions_goals",
+      },
+    };
+  }
+  if (typeof conversationId !== "string" || !conversationId) {
+    return {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: { code: -32602, message: "conversationId must be a non-empty string" },
+    };
+  }
+
+  let result: Awaited<ReturnType<typeof dedupAndWriteMemory>>;
+  try {
+    result = await dedupAndWriteMemory({
+      fact: {
+        content,
+        category: category as "preferences" | "biographical" | "technical" | "decisions_goals",
+        confidence: (typeof confidence === "string" ? confidence : "medium") as
+          | "high"
+          | "medium"
+          | "low",
+        messageIds: Array.isArray(sourceMessageIds)
+          ? (sourceMessageIds.filter((s) => typeof s === "string") as string[])
+          : [],
+      },
+      conversationId,
+      projectId: typeof projectId === "string" ? projectId : null,
+      provenanceFactory: (action, fact, convId) => ({
+        sourceConversationId: convId,
+        sourceMessageIds: fact.messageIds ?? [],
+        extractedAt: new Date(),
+        confidence: fact.confidence ?? "medium",
+        history: [
+          { action, timestamp: new Date(), reason: "Extracted via runtime.memory.dedupMemoryWrite" },
+        ],
+        // Stamp extension provenance so the bundled extractor's writes
+        // are distinguishable from the legacy pipeline's. Caller
+        // supplies the ext id; the bundled-only gate above means it's
+        // host-trusted.
+        ...(typeof extensionId === "string" ? { extensionId } : {}),
+        ...(typeof injectionEligible === "boolean" ? { injectionEligible } : {}),
+      }),
+    });
+  } catch (err) {
+    return {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: { code: -32603, message: `dedupMemoryWrite failed: ${(err as Error).message}` },
+    };
+  }
+
+  return {
+    jsonrpc: "2.0",
+    id: req.id,
+    result,
   };
 }

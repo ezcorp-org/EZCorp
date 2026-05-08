@@ -1,32 +1,31 @@
 import type { AgentRun, AgentEvents } from "../types";
 import type { EventBus } from "../runtime/events";
-import type { ExtractedFact, MemoryProvenance } from "./types";
+import type { ExtractedFact } from "./types";
 // Lazy-imported to avoid loading onnxruntime-node at module evaluation time (breaks Vite SSR on NixOS)
 async function generateEmbedding(text: string): Promise<number[]> {
   const { generateEmbedding: gen } = await import("./embeddings");
   return gen(text);
 }
-import { insertMemory, updateMemory, findSimilarMemory } from "../db/queries/memories";
 import { logger } from "../logger";
 const log = logger.child("memory");
 
-// Per-project extraction mutex: serializes findSimilarMemory → insert/update within
-// a project so concurrent run:complete events can't race past the dedup check.
-// See src/__tests__/seam-memory-concurrent-dedup-integration.test.ts.
-const extractionLocks = new Map<string, Promise<void>>();
-async function withExtractionLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = extractionLocks.get(projectId) ?? Promise.resolve();
-  let release!: () => void;
-  const next = new Promise<void>((r) => (release = r));
-  extractionLocks.set(projectId, prev.then(() => next));
-  try {
-    await prev;
-    return await fn();
-  } finally {
-    release();
-    if (extractionLocks.get(projectId) === next) extractionLocks.delete(projectId);
-  }
-}
+// Phase 53.4 Stage 1: dedup logic moved to `./dedup.ts` (host-side,
+// cross-extension by design — the bundled memory-extractor needs the
+// SAME mutex instance to dedup against host-extracted memories). The
+// re-exports below preserve the legacy `extraction.ts` API during
+// Stage 1 so existing tests keep working unchanged. Stage 2 deletes
+// this file; the `dedup.ts` module survives.
+import {
+  dedupAndWriteMemory,
+  legacyExtractionProvenance,
+  withDedupLock,
+  dedupLockKey,
+} from "./dedup";
+// Re-export the lock helper as `withExtractionLock` for any host-only
+// caller that imported the legacy name. Tests in
+// `seam-memory-concurrent-dedup-integration.test.ts` exercise the
+// shared mutex via `extractMemories`, so the rename stays internal.
+export { withDedupLock as withExtractionLock, dedupLockKey };
 import { getSetting } from "../db/queries/settings";
 import { getMessages } from "../db/queries/conversations";
 
@@ -132,59 +131,20 @@ export async function extractMemories(
     return;
   }
 
-  // Process each extracted fact
+  // Process each extracted fact via the shared dedup helper. The
+  // helper holds the per-project mutex internally so concurrent
+  // run:complete events extracting overlapping facts cannot race past
+  // the similarity check.
   for (const fact of facts) {
     if (!fact.content || !fact.category) continue;
 
     const embedding = await generateEmbedding(fact.content);
-
-    // Serialize similarity check + insert/update per project so concurrent
-    // run:complete events extracting overlapping facts cannot race past the
-    // dedup check and create duplicate rows (the findSimilarMemory query and
-    // the subsequent insertMemory/updateMemory are not atomic).
-    await withExtractionLock(run.projectId ?? "__global__", async () => {
-    // Check for existing similar memory (deduplication)
-    const similar = await findSimilarMemory(embedding, 0.85);
-
-    if (similar) {
-      // Update existing memory (newer wins)
-      const updatedProvenance: MemoryProvenance = {
-        sourceConversationId: conversationId,
-        sourceMessageIds: fact.messageIds ?? [],
-        extractedAt: new Date(),
-        confidence: fact.confidence ?? "medium",
-        history: [
-          { action: "updated", timestamp: new Date(), reason: "Updated with newer information", previousContent: similar.content },
-        ],
-      };
-      await updateMemory(similar.id, {
-        content: fact.content,
-        confidence: fact.confidence ?? "medium",
-        embedding,
-        provenance: updatedProvenance,
-      });
-    } else {
-      // Insert new memory with full provenance
-      const provenance: MemoryProvenance = {
-        sourceConversationId: conversationId,
-        sourceMessageIds: fact.messageIds ?? [],
-        extractedAt: new Date(),
-        confidence: fact.confidence ?? "medium",
-        history: [
-          { action: "created", timestamp: new Date(), reason: "Extracted from conversation" },
-        ],
-      };
-      await insertMemory({
-        content: fact.content,
-        category: fact.category,
-        projectId: run.projectId,
-        conversationId,
-        messageIds: fact.messageIds ?? [],
-        confidence: fact.confidence ?? "medium",
-        embedding,
-        provenance,
-      });
-    }
+    await dedupAndWriteMemory({
+      fact,
+      conversationId,
+      projectId: run.projectId ?? null,
+      embedding,
+      provenanceFactory: legacyExtractionProvenance,
     });
   }
 }

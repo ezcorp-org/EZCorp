@@ -206,6 +206,67 @@ export const BUNDLED_CEILING: Record<string, ExtensionPermissions> = {
     appendMessages: { excludedDefault: true },
     grantedAt: {},
   },
+
+  // Phase 53 — lessons-distiller (bundled port). Mirrors the install
+  // grant in `bundled.ts`. Ceiling matches today's reality verbatim;
+  // any widening is a deliberate, reviewed PR.
+  "lessons-distiller": {
+    llm: {
+      providers: ["google", "openai", "anthropic", "ollama"],
+      maxCallsPerHour: 30,
+      maxCallsPerDay: 200,
+      maxTokensPerCall: 1024,
+      allowedModels: {
+        google: ["gemini-2.0-flash-lite"],
+        openai: ["gpt-4o-mini"],
+        anthropic: ["claude-haiku-4-5-20250514"],
+        ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
+      },
+    },
+    lessons: {
+      access: "write",
+      maxWritesPerDay: 50,
+      maxVisibility: "user",
+    },
+    eventSubscriptions: ["run:complete"],
+    storage: true,
+    grantedAt: {},
+  },
+
+  // Phase 53.4 — memory-extractor (bundled port). selfOnly: false is
+  // the documented exception (cross-extension dedup); see
+  // `extensions/memory-extractor/ezcorp.config.ts`. The ceiling
+  // mirrors the install grant verbatim.
+  "memory-extractor": {
+    llm: {
+      providers: ["google", "openai", "anthropic", "ollama"],
+      maxCallsPerHour: 30,
+      maxCallsPerDay: 200,
+      maxTokensPerCall: 2048,
+      allowedModels: {
+        google: ["gemini-2.0-flash-lite"],
+        openai: ["gpt-4o-mini"],
+        anthropic: ["claude-haiku-4-5-20250514"],
+        ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
+      },
+    },
+    memory: {
+      access: "write",
+      categories: ["preferences", "biographical", "technical", "decisions_goals"],
+      maxWritesPerDay: 100,
+      selfOnly: false,
+    },
+    eventSubscriptions: ["run:complete"],
+    schedule: {
+      crons: ["0 */6 * * *"],
+      maxRunsPerDay: 4,
+      missedRunPolicy: "fire-once",
+      maxRunDurationMs: 5 * 60 * 1000,
+      maxRetries: 0,
+    },
+    storage: true,
+    grantedAt: {},
+  },
 };
 
 /**

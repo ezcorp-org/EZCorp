@@ -33,6 +33,12 @@ const log = logger.child("auto-wire-bundled");
  *  per user. Add entries deliberately. */
 export const AUTO_WIRE_BUNDLED_EXTENSION_NAMES: readonly string[] = [
   "lessons-distiller",
+  // Phase 53.4 Stage 1 — memory-extractor's `run:complete` handler is
+  // gated on the same `conversation_extensions` row the lessons
+  // distiller needs. Adding it here means new conversations
+  // auto-wire it; the parallel `migrateMemoryExtractorConversationWiring`
+  // covers existing conversations on first boot after the upgrade.
+  "memory-extractor",
 ];
 
 /**

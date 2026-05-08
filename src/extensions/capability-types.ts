@@ -359,6 +359,85 @@ export function intersectPermissions(
     if (list.length > 0) out.eventSubscriptions = list;
   }
 
+  // ── Phase 53 capability tiers (`llm`, `memory`, `lessons`, `schedule`).
+  // These survive when both sides declare them. Bundled extension
+  // ceilings are written in `bundled-ceiling.ts` to mirror the install
+  // grant verbatim, so the intersection should be a no-op for the
+  // happy path. The intersection rule is "narrower of the two" on
+  // each numeric ceiling and "intersection of provider/category lists"
+  // on the array fields. Today only bundled extensions reach this
+  // code path through `clampToBundledCeiling`, but the rule is
+  // future-proof for user-installed exts that gain LLM access.
+  if (a.llm && b.llm) {
+    // Provider intersection — both sides always have `providers` (required
+    // on the granted shape). Empty intersection is allowed (zero providers
+    // means "no LLM access", a valid clamped state).
+    const aProviders = new Set(a.llm.providers);
+    const providers = b.llm.providers.filter((p) => aProviders.has(p));
+    const llmOut: NonNullable<ExtensionPermissions["llm"]> = {
+      providers,
+      maxCallsPerHour: Math.min(a.llm.maxCallsPerHour, b.llm.maxCallsPerHour),
+      maxCallsPerDay: Math.min(a.llm.maxCallsPerDay, b.llm.maxCallsPerDay),
+    };
+    // Optional numeric ceilings — narrower of the two when both present,
+    // pass-through when only one side declares.
+    const tokensPerCall =
+      a.llm.maxTokensPerCall !== undefined && b.llm.maxTokensPerCall !== undefined
+        ? Math.min(a.llm.maxTokensPerCall, b.llm.maxTokensPerCall)
+        : (a.llm.maxTokensPerCall ?? b.llm.maxTokensPerCall);
+    if (tokensPerCall !== undefined) llmOut.maxTokensPerCall = tokensPerCall;
+    if (a.llm.allowedModels || b.llm.allowedModels) {
+      llmOut.allowedModels = intersectAllowedModels(a.llm.allowedModels, b.llm.allowedModels);
+    }
+    out.llm = llmOut;
+  }
+  if (a.memory && b.memory) {
+    out.memory = {
+      access: a.memory.access === "write" && b.memory.access === "write" ? "write" : "read",
+      maxWritesPerDay: Math.min(a.memory.maxWritesPerDay, b.memory.maxWritesPerDay),
+      // selfOnly is OR — the more restrictive setting wins (false ∩
+      // true → true, the safer default for any user-installed
+      // extension reaching this path). Bundled-only `selfOnly: false`
+      // is preserved when BOTH sides explicitly opt out (memory-extractor's
+      // ceiling matches its declaration verbatim — see bundled-ceiling.ts).
+      selfOnly: a.memory.selfOnly || b.memory.selfOnly,
+      ...(a.memory.categories && b.memory.categories
+        ? {
+            categories: a.memory.categories.filter((c) => b.memory!.categories!.includes(c)),
+          }
+        : a.memory.categories
+          ? { categories: a.memory.categories }
+          : b.memory.categories
+            ? { categories: b.memory.categories }
+            : {}),
+    };
+  }
+  if (a.lessons && b.lessons) {
+    out.lessons = {
+      access: a.lessons.access === "write" && b.lessons.access === "write" ? "write" : "read",
+      maxWritesPerDay: Math.min(a.lessons.maxWritesPerDay, b.lessons.maxWritesPerDay),
+      maxVisibility:
+        a.lessons.maxVisibility === "project" && b.lessons.maxVisibility === "project"
+          ? "project"
+          : "user",
+    };
+  }
+  if (a.schedule && b.schedule) {
+    // Crons must be the same set (or a strict intersection); for a
+    // bundled-ceiling clamp the ceiling mirrors the install verbatim,
+    // so the intersection equals the input. For other callers we
+    // intersect by exact-match.
+    const crons = a.schedule.crons.filter((c) => b.schedule!.crons.includes(c));
+    out.schedule = {
+      crons,
+      maxRunsPerDay: Math.min(a.schedule.maxRunsPerDay, b.schedule.maxRunsPerDay),
+      maxRunDurationMs: Math.min(a.schedule.maxRunDurationMs, b.schedule.maxRunDurationMs),
+      // Tighter missed-run policy wins: skip < fire-once < fire-all.
+      missedRunPolicy: tighterMissedRunPolicy(a.schedule.missedRunPolicy, b.schedule.missedRunPolicy),
+      maxRetries: Math.min(a.schedule.maxRetries, b.schedule.maxRetries),
+    };
+  }
+
   // grantedAt — keep keys whose corresponding permission survived;
   // prefer the older grant timestamp (more conservative audit trail).
   const aAt = a.grantedAt ?? {};
@@ -374,7 +453,11 @@ export function intersectPermissions(
       (key === "agentConfig" && out.agentConfig) ||
       (key === "spawnAgents" && out.spawnAgents) ||
       (key === "appendMessages" && out.appendMessages) ||
-      (key === "eventSubscriptions" && out.eventSubscriptions);
+      (key === "eventSubscriptions" && out.eventSubscriptions) ||
+      (key === "llm" && out.llm) ||
+      (key === "memory" && out.memory) ||
+      (key === "lessons" && out.lessons) ||
+      (key === "schedule" && out.schedule);
     if (!survived) continue;
     const ta = typeof aAt[key] === "number" ? aAt[key] : undefined;
     const tb = typeof bAt[key] === "number" ? bAt[key] : undefined;
@@ -466,6 +549,37 @@ export function grantsToCapabilitySet(
   }
 
   return caps;
+}
+
+// ── Phase 53 helpers for `intersectPermissions` ────────────────────
+
+/** Intersect two `allowedModels` maps. The result keeps a provider
+ *  only if BOTH sides list it; the per-provider model list is the
+ *  set intersection. Used for LLM permission intersection. */
+function intersectAllowedModels(
+  a: Record<string, string[]> | undefined,
+  b: Record<string, string[]> | undefined,
+): Record<string, string[]> {
+  if (!a || !b) return a ?? b ?? {};
+  const out: Record<string, string[]> = {};
+  for (const provider of Object.keys(a)) {
+    const aModels = a[provider];
+    const bModels = b[provider];
+    if (!aModels || !bModels) continue;
+    const intersection = aModels.filter((m) => bModels.includes(m));
+    if (intersection.length > 0) out[provider] = intersection;
+  }
+  return out;
+}
+
+/** Tighter missed-run policy wins: `skip` ≺ `fire-once` ≺ `fire-all`.
+ *  Used for schedule permission intersection. */
+function tighterMissedRunPolicy(
+  a: "skip" | "fire-once" | "fire-all",
+  b: "skip" | "fire-once" | "fire-all",
+): "skip" | "fire-once" | "fire-all" {
+  const order: Record<string, number> = { skip: 0, "fire-once": 1, "fire-all": 2 };
+  return order[a]! <= order[b]! ? a : b;
 }
 
 /** Map manifest-level custom keys to namespaced capability kinds. */

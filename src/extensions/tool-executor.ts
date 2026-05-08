@@ -862,6 +862,11 @@ export class ToolExecutor {
       // is NOT consulted on the runtime-invoke fast path.
       const ctx = {
         extensionId: callerExtId,
+        // Phase 53.4: thread the manifest name so `runtime.memory.compact`
+        // / `runtime.memory.dedupMemoryWrite` can enforce their bundled-
+        // only gate. Filled from the registry; never read from the
+        // calling extension's params (spoofing defense).
+        ...(manifest?.name ? { extensionName: manifest.name } : {}),
         userId: this.currentUserId ?? null,
         currentConversationId: this.currentConversationId ?? null,
         granted,

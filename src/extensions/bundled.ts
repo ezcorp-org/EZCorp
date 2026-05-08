@@ -337,6 +337,59 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
       },
     },
   },
+  {
+    // Phase 53 Stage 1 — bundled port of the legacy memory pipeline
+    // (src/memory/extraction.ts + src/memory/compaction.ts). Mirrors
+    // the lessons-distiller layout: `extensions/<name>/` with
+    // ezcorp.config.ts manifest, package.json, and an event-handler
+    // entrypoint. Stage 2 (a separate atomic commit gated on UAT
+    // signoff) deletes the legacy extraction.ts; compaction.ts stays
+    // host-side because it's the implementation behind the
+    // `runtime.memory.compact` invoke handler.
+    //
+    // `permissions.memory.selfOnly = false` is intentional: see the
+    // file-leading comment in `extensions/memory-extractor/ezcorp.config.ts`
+    // for the cross-extension dedup rationale. Bundled-trust is the
+    // approval gate; this exception is reviewed at code-review time.
+    name: "memory-extractor",
+    path: "extensions/memory-extractor",
+    permissions: {
+      llm: {
+        providers: ["google", "openai", "anthropic", "ollama"],
+        maxCallsPerHour: 30,
+        maxCallsPerDay: 200,
+        maxTokensPerCall: 2048,
+        allowedModels: {
+          google: ["gemini-2.0-flash-lite"],
+          openai: ["gpt-4o-mini"],
+          anthropic: ["claude-haiku-4-5-20250514"],
+          ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
+        },
+      },
+      memory: {
+        access: "write",
+        categories: ["preferences", "biographical", "technical", "decisions_goals"],
+        maxWritesPerDay: 100,
+        selfOnly: false,
+      },
+      eventSubscriptions: ["run:complete"],
+      schedule: {
+        crons: ["0 */6 * * *"],
+        maxRunsPerDay: 4,
+        missedRunPolicy: "fire-once",
+        maxRunDurationMs: 5 * 60 * 1000,
+        maxRetries: 0,
+      },
+      storage: true,
+      grantedAt: {
+        llm: Date.now(),
+        memory: Date.now(),
+        eventSubscriptions: Date.now(),
+        schedule: Date.now(),
+        storage: Date.now(),
+      },
+    },
+  },
 ];
 
 /** Opt-OUT switches: each maps a bundled-extension name to the env var that
@@ -630,6 +683,48 @@ export async function ensureBundledExtensions(): Promise<void> {
   } catch (migrationErr) {
     log.warn(
       "lessons-distiller wiring migration threw during ensureBundledExtensions",
+      { error: String(migrationErr) },
+    );
+  }
+
+  // Phase 53.4 Stage 1: migrate `global:memoryEnabled` into the
+  // bundled memory-extractor's per-extension `enabled` setting.
+  // Idempotent via a sibling sentinel
+  // (`global:memoryEnabled.migrated_at`). Mirrors the distiller
+  // settings migration; safe on every boot.
+  try {
+    const memoryExtractorRow = await getExtensionByName("memory-extractor");
+    if (memoryExtractorRow) {
+      const { migrateMemoryExtractorEnabledSetting } = await import(
+        "./migrations/memory-extractor-enabled"
+      );
+      await migrateMemoryExtractorEnabledSetting(memoryExtractorRow.id);
+    }
+  } catch (migrationErr) {
+    log.warn(
+      "memory-extractor settings migration threw during ensureBundledExtensions",
+      { error: String(migrationErr) },
+    );
+  }
+
+  // Phase 53.4 Stage 1: backfill `conversation_extensions` rows for
+  // the bundled memory-extractor across every existing conversation.
+  // Sibling of the lessons-distiller wiring backfill; sentinel-gated
+  // so user-driven unwirings stick. Without this, the dispatcher's
+  // wired-set gate would silently drop `run:complete` for legacy
+  // conversations once Stage 2 deletes the host-side
+  // `registerExtractionListener`.
+  try {
+    const memoryExtractorRow = await getExtensionByName("memory-extractor");
+    if (memoryExtractorRow) {
+      const { migrateMemoryExtractorConversationWiring } = await import(
+        "./migrations/memory-extractor-conversation-wiring"
+      );
+      await migrateMemoryExtractorConversationWiring(memoryExtractorRow.id);
+    }
+  } catch (migrationErr) {
+    log.warn(
+      "memory-extractor wiring migration threw during ensureBundledExtensions",
       { error: String(migrationErr) },
     );
   }

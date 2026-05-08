@@ -42,6 +42,11 @@
       "entrypoint": "./index.ts",
       "toolsHash": "sha256-T1PNoYwrqgwDVLtfmj7L5e0Sq02OEbqHPC8RFhICuUU="
     },
+    "lessons-distiller": {
+      "version": "1.0.0",
+      "entrypoint": "./index.ts",
+      "toolsHash": "sha256-glO+sQhrOm8Idmpde4Kpnmp/ajh7tiYyCEBLQbrFk9w="
+    },
     "log-analyzer": {
       "version": "1.0.0",
       "entrypoint": "./index.ts",
@@ -51,6 +56,11 @@
       "version": "1.0.0",
       "entrypoint": "./index.ts",
       "toolsHash": "sha256-5cI0VNksrUVJgFNO/lOsM7M1pDlMrHYfbMETLOD/z0Q="
+    },
+    "memory-extractor": {
+      "version": "1.0.0",
+      "entrypoint": "./index.ts",
+      "toolsHash": "sha256-T1PNoYwrqgwDVLtfmj7L5e0Sq02OEbqHPC8RFhICuUU="
     },
     "multi-agent-orchestrator": {
       "version": "1.0.0",

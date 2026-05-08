@@ -14,7 +14,9 @@ beforeEach(() => {
 });
 
 import {
-  checkPermission,
+  // Phase 6 deletes the dead `checkPermission` boolean helper. PDP unit
+  // coverage lives in `permission-engine.test.ts`; this file keeps the
+  // remaining helpers (diff, getRequired, sensitive-confirmation).
   getRequiredPermissions,
   diffPermissions,
   isSensitiveOperation,
@@ -62,112 +64,12 @@ function makeManifest(overrides: Partial<ExtensionManifestV2> = {}): ExtensionMa
 // ════════════════════════════════════════════════════════════════════
 // 1. permissions.ts
 // ════════════════════════════════════════════════════════════════════
-
-describe("checkPermission", () => {
-  // ── network ───────────────────────────────────────────────────────
-
-  describe("network", () => {
-    test("returns true when domain is in granted.network", () => {
-      const granted: ExtensionPermissions = {
-        network: ["api.example.com", "cdn.example.com"],
-        grantedAt: {},
-      };
-      expect(checkPermission("network", "api.example.com", granted)).toBe(true);
-    });
-
-    test("returns false when domain is NOT in granted.network", () => {
-      const granted: ExtensionPermissions = {
-        network: ["api.example.com"],
-        grantedAt: {},
-      };
-      expect(checkPermission("network", "evil.com", granted)).toBe(false);
-    });
-
-    test("returns false when granted.network is undefined", () => {
-      const granted: ExtensionPermissions = { grantedAt: {} };
-      expect(checkPermission("network", "anything.com", granted)).toBe(false);
-    });
-  });
-
-  // ── filesystem ────────────────────────────────────────────────────
-
-  describe("filesystem", () => {
-    test("returns true for exact path match", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/home/user/docs"],
-        grantedAt: {},
-      };
-      expect(checkPermission("filesystem", "/home/user/docs", granted)).toBe(true);
-    });
-
-    test("returns true for subdirectory match (prefix + /)", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/home/user/docs"],
-        grantedAt: {},
-      };
-      expect(checkPermission("filesystem", "/home/user/docs/report.txt", granted)).toBe(true);
-      expect(checkPermission("filesystem", "/home/user/docs/sub/deep/file.md", granted)).toBe(true);
-    });
-
-    test("returns false for non-matching path", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/home/user/docs"],
-        grantedAt: {},
-      };
-      expect(checkPermission("filesystem", "/etc/passwd", granted)).toBe(false);
-    });
-
-    test("returns false for partial prefix match without / (e.g. /home matching /homeuser)", () => {
-      const granted: ExtensionPermissions = {
-        filesystem: ["/home"],
-        grantedAt: {},
-      };
-      // "/homeuser" starts with "/home" but is NOT "/home" and does NOT start with "/home/"
-      expect(checkPermission("filesystem", "/homeuser", granted)).toBe(false);
-    });
-  });
-
-  // ── shell ─────────────────────────────────────────────────────────
-
-  describe("shell", () => {
-    test("returns true when granted.shell is true", () => {
-      const granted: ExtensionPermissions = { shell: true, grantedAt: {} };
-      expect(checkPermission("shell", true, granted)).toBe(true);
-    });
-
-    test("returns false when granted.shell is false", () => {
-      const granted: ExtensionPermissions = { shell: false, grantedAt: {} };
-      expect(checkPermission("shell", true, granted)).toBe(false);
-    });
-
-    test("returns false when granted.shell is undefined", () => {
-      const granted: ExtensionPermissions = { grantedAt: {} };
-      expect(checkPermission("shell", true, granted)).toBe(false);
-    });
-  });
-
-  // ── env ───────────────────────────────────────────────────────────
-
-  describe("env", () => {
-    test("returns true when var is in granted.env", () => {
-      const granted: ExtensionPermissions = { env: ["API_KEY", "HOME"], grantedAt: {} };
-      expect(checkPermission("env", "API_KEY", granted)).toBe(true);
-    });
-
-    test("returns false when var is not in granted.env", () => {
-      const granted: ExtensionPermissions = { env: ["API_KEY"], grantedAt: {} };
-      expect(checkPermission("env", "SECRET", granted)).toBe(false);
-    });
-  });
-
-  // ── unknown type ──────────────────────────────────────────────────
-
-  test("unknown type returns false", () => {
-    const granted: ExtensionPermissions = { grantedAt: {} };
-    // Cast to bypass TS type checking for the unknown type
-    expect(checkPermission("database" as any, "something", granted)).toBe(false);
-  });
-});
+//
+// `checkPermission` (the dead sync boolean helper) was removed in
+// Phase 6 — PDP coverage lives in `permission-engine.test.ts` and the
+// boolean-shape edge cases (network/filesystem/shell/env subset
+// matching) are exercised through the engine's `firstMissingCapability`
+// + `capabilityCovers` unit tests in the same file.
 
 // ── getRequiredPermissions ──────────────────────────────────────────
 

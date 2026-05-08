@@ -7,45 +7,13 @@ import { getSetting, upsertSetting } from "../db/queries/settings";
 import { realpath } from "node:fs/promises";
 import { resolve as pathResolve } from "node:path";
 
-// ── Permission Check ────────────────────────────────────────────────
-
-/**
- * @deprecated Phase 6 removal. Sync entry-point pre-dating the PDP at
- * `./permission-engine.ts`. Production callers were retired in Phase 1
- * — `ToolExecutor` and the reverse-RPC handlers now consult the engine
- * via `engine.authorize`. Tests still import this for unit-level
- * coverage of the legacy boolean shape; the symbol stays exported so
- * those tests keep working until Phase 6 deletes them.
- */
-export function checkPermission(
-  type: "network" | "filesystem" | "shell" | "env" | "storage",
-  value: string | boolean,
-  granted: ExtensionPermissions,
-): boolean {
-  switch (type) {
-    case "network":
-      return granted.network?.includes(value as string) ?? false;
-
-    case "filesystem": {
-      const path = value as string;
-      return granted.filesystem?.some((prefix) => path === prefix || path.startsWith(prefix + "/")) ?? false;
-    }
-
-    case "shell":
-      return granted.shell === true;
-
-    case "env":
-      return granted.env?.includes(value as string) ?? false;
-
-    case "storage":
-      return granted.storage === true;
-
-    default:
-      return false;
-  }
-}
-
 // ── Secure Filesystem Permission Check (realpath-resolved) ─────────
+//
+// The Phase 1 `checkPermission` sync boolean helper was deleted in
+// Phase 6. Production callers consult the PDP at
+// `./permission-engine.ts` via `engine.authorize`; the deprecated
+// boolean shape had no remaining production references, only legacy
+// unit tests (since rolled into PDP coverage).
 
 export type FilesystemMode = "read" | "write";
 

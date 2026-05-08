@@ -9,7 +9,7 @@ import { loadManifestFresh } from "./loader";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS, type ExtensionAuditMetadata } from "./audit-actions";
 import { clampToBundledCeiling, getCeiling } from "./bundled-ceiling";
-import { verifyManifestAgainstLock } from "./bundled-lock";
+import { canonicalizeAndHash, verifyManifestAgainstLock } from "./bundled-lock";
 import { join, dirname } from "node:path";
 import { logger } from "../logger";
 const log = logger.child("extensions");
@@ -764,21 +764,27 @@ async function detectAndLogManifestDrift(
 }
 
 /**
- * Re-approval gate (S9). Compares on-disk manifest `version` and
- * `permissions` against the DB-stored copy. Returns `true` if the gate
- * engaged (version changed AND permissions changed), meaning the
- * caller should disable the extension and leave it disabled until an
- * admin re-approves. Also writes an `UPDATE_BLOCKED` audit row per
- * differing permission field so the admin UI can show exactly what
- * changed.
+ * Re-approval gate (S9). Compares on-disk manifest `version`,
+ * `permissions`, and tool-list signature against the DB-stored copy.
+ * Returns `true` if the gate engaged, meaning the caller should
+ * disable the extension and leave it disabled until an admin
+ * re-approves. Also writes an `UPDATE_BLOCKED` audit row per
+ * differing field so the admin UI can show exactly what changed.
  *
- * Why gate on BOTH version and permissions changing? A pure version
- * bump with no permission change is a normal upgrade — no user-visible
- * security impact, so interrupting the upgrade with a manual approval
- * would just be friction. A pure permissions change with no version
- * bump is already caught by drift detection (S6). The pairing here
- * catches the specific attack: a dependency release that claims to be
- * a new version while quietly widening its permission surface.
+ * Trigger conditions (any one suffices):
+ *   1. Version changed AND permissions changed (the original S9
+ *      gate — catches a dependency release that quietly widens
+ *      its permission surface under a new version number).
+ *   2. Tool-list signature changed (Phase 5, regardless of version
+ *      or permissions). Adding, removing, renaming, or modifying
+ *      a tool's `inputSchema` requires explicit re-approval — a
+ *      new tool that exercises existing grants in unforeseen ways
+ *      is exactly the supply-chain attack Phase 5 closes.
+ *
+ * A pure version bump with no permission AND no tool change is a
+ * normal upgrade and does NOT engage the gate. A pure permissions
+ * change with no version bump is caught by drift detection (S6).
+ * Tool-list signature drift is caught here.
  */
 async function detectVersionBumpRequiringReapproval(
   entry: BundledExtension,
@@ -794,7 +800,15 @@ async function detectVersionBumpRequiringReapproval(
     return false;
   }
 
-  if (diskManifest.version === dbManifest.version) return false;
+  // Tool-list signature: canonical-JSON SHA-256. Drift on this signal
+  // is independent of the version-vs-permissions trigger and ALWAYS
+  // requires re-approval (Phase 5).
+  const dbToolHash = canonicalizeAndHash(dbManifest.tools ?? []);
+  const diskToolHash = canonicalizeAndHash(diskManifest.tools ?? []);
+  const toolListChanged = dbToolHash !== diskToolHash;
+
+  // Version + permissions trigger (legacy S9).
+  const versionChanged = diskManifest.version !== dbManifest.version;
 
   const diskPerms = diskManifest.permissions ?? {};
   const dbPerms = dbManifest.permissions ?? {};
@@ -804,6 +818,22 @@ async function detectVersionBumpRequiringReapproval(
     const a = dbPerms[f];
     const b = diskPerms[f];
     if (JSON.stringify(a) !== JSON.stringify(b)) diffs.push({ field: f, oldValue: a, newValue: b });
+  }
+
+  // No trigger: pure version bump, pure cosmetic refresh, or a
+  // permission-only change that's already caught by drift detection.
+  if (!toolListChanged && (!versionChanged || diffs.length === 0)) {
+    return false;
+  }
+
+  // Tool-list change adds a synthetic diff entry so the admin UI
+  // surfaces it next to the permissions diffs.
+  if (toolListChanged) {
+    diffs.push({
+      field: "tools",
+      oldValue: dbToolHash,
+      newValue: diskToolHash,
+    });
   }
   if (diffs.length === 0) return false;
 

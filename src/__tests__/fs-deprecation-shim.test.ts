@@ -21,7 +21,13 @@
  *      PDP once).
  */
 
-import { test, expect, describe, beforeEach, afterEach, mock, spyOn } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach, afterAll, mock, spyOn } from "bun:test";
+import { restoreModuleMocks } from "./helpers/mock-cleanup";
+
+// Restore in afterAll so the DB mocks below don't leak into subsequent
+// test files. Mirrors `ext-registry-executor.test.ts` /
+// `fs-handler.test.ts`.
+afterAll(() => restoreModuleMocks());
 
 // DB mocks so denyAndDisable / audit-log writes don't trip
 // "Database not initialized" in test mode (mirrors fs-handler.test.ts).

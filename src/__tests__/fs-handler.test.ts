@@ -17,12 +17,19 @@ import {
   describe,
   beforeEach,
   afterEach,
+  afterAll,
   mock,
 } from "bun:test";
+import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 // Mock DB so denyAndDisable / audit-log writes don't trip "Database
 // not initialized" in unit-test mode. Mirrors the pattern in
-// `ext-registry-executor.test.ts`.
+// `ext-registry-executor.test.ts` — and crucially, restoreModuleMocks()
+// in afterAll keeps these mocks from leaking into subsequent test
+// files (e.g. permission-engine.test.ts which DOES use the real DB
+// stack).
+afterAll(() => restoreModuleMocks());
+
 mock.module("../db/connection", () => ({
   getDb: () => ({
     insert: () => ({ values: async () => {} }),

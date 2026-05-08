@@ -25,8 +25,14 @@ import {
   describe,
   beforeEach,
   afterEach,
+  afterAll,
   mock,
 } from "bun:test";
+import { restoreModuleMocks } from "./helpers/mock-cleanup";
+
+// Restore in afterAll so the DB mocks below don't leak into subsequent
+// test files.
+afterAll(() => restoreModuleMocks());
 
 mock.module("../db/connection", () => ({
   getDb: () => ({

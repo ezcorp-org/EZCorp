@@ -939,10 +939,10 @@ export function deriveCapsFromExtensionPerms(
  * `migrateManifestV2ToV3` and `deriveCapsFromExtensionPerms` both
  * consume this map so the translation is anchored in exactly one place.
  */
-export const NAMESPACE_MAP: Readonly<Record<string, string>> = {
+export const NAMESPACE_MAP = {
   appendMessages: "ezcorp:chat:append",
   agentConfig: "ezcorp:agent:config",
   taskEvents: "ezcorp:tasks:emit",
   spawnAgents: "ezcorp:agent:spawn",
   eventSubscriptions: "ezcorp:events:subscribe",
-};
+} as const;

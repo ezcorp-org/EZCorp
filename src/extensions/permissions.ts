@@ -219,6 +219,85 @@ function legacyAlwaysAllowKey(extensionId: string, operationType: string): strin
 }
 
 /**
+ * Persisted always-allow row value shape.
+ *
+ * Phase 1 of the capability-expiry milestone widens the value from a
+ * bare `boolean` to `{allowed, grantedAt}` so a future sweep (Phase 2)
+ * can age out grants by their grant timestamp. Backwards compat:
+ *
+ *   • Legacy `true`  → treated as "allowed, never expires" (no
+ *     `grantedAt` available, so the sweep skips it). NOT auto-rewritten
+ *     on read — lazy upgrade per locked decision §A.2.
+ *   • Legacy `false` → treated as "needs_confirmation". Same lazy
+ *     posture — read-only, no rewrite.
+ *   • New `{allowed: true,  grantedAt: <ms>}` → "allowed".
+ *   • New `{allowed: false, grantedAt: <ms>}` → "needs_confirmation".
+ *   • Anything else (malformed JSON, wrong types) → fail-closed to
+ *     "needs_confirmation". The sweep ignores malformed rows; orphan
+ *     cleanup is deferred to v1.5.
+ *
+ * The Phase 2 sweep will read `grantedAt` to compute age, compare
+ * against the per-capability TTL from `./perm-expiry-config.ts`, and
+ * write `false` (with a fresh `grantedAt`) on revoke. Phase 1 ships
+ * only the value-shape change; no sweep yet.
+ */
+export interface AlwaysAllowRecord {
+  allowed: boolean;
+  /** Unix-ms timestamp at which the grant was last confirmed. */
+  grantedAt: number;
+}
+
+/**
+ * Parse a raw `settings` value into an effective allow/deny decision.
+ * Pure: takes a value, returns a decision; no DB I/O. Exported so the
+ * PDP (`permission-engine.ts`) can apply the same parsing logic to
+ * values it reads directly via `getSetting`.
+ *
+ * Returns `"allowed"` for legacy `true` AND for new
+ * `{allowed: true, grantedAt: <number>}`. Everything else (including
+ * legacy `false`, new `{allowed: false}`, malformed objects, undefined,
+ * arrays, strings) collapses to `"needs_confirmation"` — fail-closed.
+ */
+export function parseAlwaysAllowValue(
+  value: unknown,
+): "allowed" | "needs_confirmation" {
+  // Legacy boolean shape — pre-Phase-1 rows that haven't been rewritten.
+  if (value === true) return "allowed";
+  if (value === false) return "needs_confirmation";
+
+  // New shape — `{allowed: boolean, grantedAt: number}`. Reject any
+  // value that doesn't match the contract exactly. `allowed` MUST be
+  // a boolean (not "true"/"yes"/1) and `grantedAt` MUST be a number.
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  ) {
+    const v = value as Record<string, unknown>;
+    if (typeof v.allowed === "boolean" && typeof v.grantedAt === "number") {
+      return v.allowed ? "allowed" : "needs_confirmation";
+    }
+  }
+
+  // Anything else (undefined, malformed shapes, wrong types) — fail
+  // closed. Sweep rev'd the row to a bogus value? User re-prompts.
+  return "needs_confirmation";
+}
+
+/**
+ * Build the canonical new-shape value for a write. Always emits the
+ * `{allowed, grantedAt}` form; legacy boolean is never written by new
+ * code (Phase 1 contract). Exported so the PDP and other writers stay
+ * consistent without re-implementing the shape.
+ */
+export function buildAlwaysAllowValue(
+  allowed: boolean,
+  now: number = Date.now(),
+): AlwaysAllowRecord {
+  return { allowed, grantedAt: now };
+}
+
+/**
  * Check if a sensitive operation has been granted always-allow for
  * the given scope tuple. Phase 1: callers are migrating to the
  * scoped key — pass `userId/scope/scopeId` to opt in. Legacy callers
@@ -226,6 +305,9 @@ function legacyAlwaysAllowKey(extensionId: string, operationType: string): strin
  * lookup against the legacy key (for back-compat with the dead
  * `setPermissionChecker` block in `setup-tools.ts`, which is
  * removed in the same Phase 1 commit series).
+ *
+ * Cap-expiry Phase 1: read accepts BOTH legacy `boolean` and new
+ * `{allowed, grantedAt}` shapes via {@link parseAlwaysAllowValue}.
  */
 export async function checkSensitiveConfirmation(
   extensionId: string,
@@ -246,12 +328,16 @@ export async function checkSensitiveConfirmation(
       })
     : legacyAlwaysAllowKey(extensionId, operationType);
   const value = await getSetting(key);
-  return value === true ? "allowed" : "needs_confirmation";
+  return parseAlwaysAllowValue(value);
 }
 
 /**
  * Persist an always-allow grant. Phase 1 callers (PDP) pass full
  * scope args; legacy callers fall back to the unscoped key.
+ *
+ * Cap-expiry Phase 1: writes the `{allowed, grantedAt}` shape every
+ * time. Existing legacy-boolean rows are NOT rewritten unless they
+ * pass through this function (lazy upgrade — locked decision §A.2).
  */
 export async function setSensitiveAlwaysAllow(
   extensionId: string,
@@ -272,5 +358,5 @@ export async function setSensitiveAlwaysAllow(
         capability: operationType === "shell" ? "shell" : "fs.write",
       })
     : legacyAlwaysAllowKey(extensionId, operationType);
-  await upsertSetting(key, allowed);
+  await upsertSetting(key, buildAlwaysAllowValue(allowed));
 }

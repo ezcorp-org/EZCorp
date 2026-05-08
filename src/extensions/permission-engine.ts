@@ -42,6 +42,8 @@ import {
 import { insertAuditEntry } from "../db/queries/audit-log";
 import {
   alwaysAllowSettingKey,
+  buildAlwaysAllowValue,
+  parseAlwaysAllowValue,
   type AlwaysAllowScope,
 } from "./permissions";
 import { getSetting, upsertSetting } from "../db/queries/settings";
@@ -267,7 +269,10 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
       scopeId,
       capability: capabilityKeyForSetting(pending.capability),
     });
-    await upsertSetting(settingKey, true);
+    // Cap-expiry Phase 1: write the `{allowed, grantedAt}` shape so a
+    // future sweep can age this row out. Legacy boolean is never
+    // written by new code.
+    await upsertSetting(settingKey, buildAlwaysAllowValue(true));
 
     // Update cache for this exact tuple so the next authorize call
     // sees the new value without a DB round-trip.
@@ -465,7 +470,10 @@ async function isAlwaysAllowed(
       capability: capabilityKeyForSetting(cap),
     });
     const value = await getSetting(settingKey);
-    const allowed = value === true;
+    // Cap-expiry Phase 1: read accepts BOTH legacy `boolean` and the
+    // new `{allowed, grantedAt}` shape. Legacy `true` is treated as
+    // "allowed, never expires" (Phase 2 sweep skips it).
+    const allowed = parseAlwaysAllowValue(value) === "allowed";
     cache.set(key, allowed);
     if (allowed) return true;
   }

@@ -710,7 +710,11 @@
 	{:else}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			{#each visibleExtensions as ext (ext.id)}
-				<div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-4">
+				<div
+					class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] p-4"
+					data-testid="ext-card"
+					data-ext-id={ext.id}
+				>
 					<div class="mb-2 flex items-start justify-between">
 						<a href="/extensions/{ext.id}" class="group">
 							<div class="flex items-center gap-2">
@@ -783,6 +787,7 @@
 								<span
 									class="rounded-md bg-[var(--color-surface-tertiary)] px-2 py-1 text-xs text-[var(--color-text-muted)]"
 									title="Built-in — uninstall is not available"
+									data-testid="ext-card-builtin-badge"
 								>
 									Built-in
 								</span>

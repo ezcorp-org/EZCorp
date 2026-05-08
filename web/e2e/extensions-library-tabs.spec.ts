@@ -135,11 +135,11 @@ test.describe("Extensions Library tabs", () => {
 
 		await page.goto("/extensions");
 		await page.getByTestId("ext-tab-builtins").click();
-		await expect(page.getByText("core-ext")).toBeVisible();
 
 		// Uninstall is replaced by a "Built-in" badge.
-		const card = page.getByText("core-ext").locator("..").locator("..").locator("..");
-		await expect(card.getByText("Built-in")).toBeVisible();
+		const card = page.locator('[data-testid="ext-card"][data-ext-id="b-1"]');
+		await expect(card).toBeVisible();
+		await expect(card.getByTestId("ext-card-builtin-badge")).toBeVisible();
 		await expect(card.getByText("Uninstall")).toHaveCount(0);
 	});
 });

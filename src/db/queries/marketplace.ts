@@ -142,3 +142,40 @@ export async function getFeaturedListings(limit = 6): Promise<MarketplaceListing
     .orderBy(desc(marketplaceListings.featured), desc(marketplaceListings.installCount))
     .limit(limit);
 }
+
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
+/**
+ * Phase 49.3 — aggregate active-listing tag counts for the marketplace
+ * category sidebar. Results are sorted by descending count, then tag
+ * name asc so the chip order is stable across requests.
+ *
+ * Uses Postgres' `jsonb_array_elements_text` to unnest the `tags`
+ * array column. Cheaper than pulling every row's tags into the app
+ * and counting in JS — the SQL engine groups + sorts in one pass and
+ * we ship only the aggregate.
+ */
+export async function getMarketplaceTagCounts(): Promise<TagCount[]> {
+  const rows = await getDb().execute(
+    sql`
+      SELECT tag, COUNT(*)::int AS count
+      FROM ${marketplaceListings},
+           jsonb_array_elements_text(${marketplaceListings.tags}) AS tag
+      WHERE ${marketplaceListings.status} = 'active'
+      GROUP BY tag
+      ORDER BY count DESC, tag ASC
+    `,
+  );
+  // PGlite occasionally returns COUNT as a string — coerce defensively.
+  // Drizzle's `execute()` returns either an array (postgres-js) or
+  // `{ rows: [...] }` (PGlite); normalise so the caller always gets a
+  // flat array. Cast through `unknown` because the return type from
+  // `execute()` varies by adapter.
+  type Row = { tag: string; count: string | number };
+  const result = rows as unknown as Row[] | { rows: Row[] };
+  const list: Row[] = Array.isArray(result) ? result : (result.rows ?? []);
+  return list.map((r) => ({ tag: r.tag, count: Number(r.count) }));
+}

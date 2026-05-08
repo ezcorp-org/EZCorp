@@ -3,6 +3,8 @@
  */
 
 import type { ExtensionManifestV2, ExtensionPermissions } from "./types";
+import type { ExtensionRegistry } from "./registry";
+import type { ExtensionProcess } from "./subprocess";
 import { getExtensionByName, updateExtension } from "../db/queries/extensions";
 import { installFromLocal } from "./installer";
 import { loadManifestFresh } from "./loader";
@@ -19,6 +21,31 @@ interface BundledExtension {
   name: string;
   path: string;
   permissions: ExtensionPermissions;
+  /**
+   * Phase 53 fix: when true, the host spawns this extension's subprocess
+   * during boot (after `ensureBundledExtensions` + `registry.loadFromDb`
+   * + `eventSubscriptionDispatcher.start`). Required for bundled
+   * extensions whose ONLY entrypoint is event subscription — without a
+   * running subprocess, `EventSubscriptionDispatcher.dispatch` silently
+   * drops every wired event because `getProcessIfRunning` returns null
+   * (it's documented as "Never starts a new process").
+   *
+   * Set this ONLY for extensions that:
+   *   - declare `eventSubscriptions` AND
+   *   - have no LLM-callable tools (so the tool-executor never spawns
+   *     them) AND
+   *   - have no manual trigger (no on-mention auto-wire, no extension
+   *     command).
+   *
+   * Extensions that ship with tools, agent mentions, or on-first-use
+   * wiring (most of the bundled list) MUST NOT set this — they spawn
+   * lazily when invoked, which is the intended pattern.
+   *
+   * Boot-spawn failures are logged + swallowed by
+   * `bootSpawnFlaggedBundledExtensions` so a flaky extension cannot
+   * brick host startup; the next boot retries.
+   */
+  bootSpawn?: boolean;
 }
 
 /** Resolve project root — works in both direct Bun execution and SvelteKit bundled contexts. */
@@ -309,6 +336,11 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     // pipelines produce identical outcomes during Stage 1.
     name: "lessons-distiller",
     path: "extensions/lessons-distiller",
+    // Event-only extension (no tools, no manual triggers post-53.3).
+    // Without bootSpawn, `run:complete` is silently dropped by
+    // `EventSubscriptionDispatcher.dispatch` because the subprocess
+    // never starts — see `bootSpawnFlaggedBundledExtensions`.
+    bootSpawn: true,
     permissions: {
       llm: {
         providers: ["google", "openai", "anthropic", "ollama"],
@@ -353,6 +385,12 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     // approval gate; this exception is reviewed at code-review time.
     name: "memory-extractor",
     path: "extensions/memory-extractor",
+    // Event-only extension (no tools, no manual triggers). The cron
+    // schedule fires periodically but the run:complete handler is the
+    // primary auto-extraction path. Without bootSpawn, `run:complete`
+    // is silently dropped because the subprocess never starts — see
+    // `bootSpawnFlaggedBundledExtensions`.
+    bootSpawn: true,
     permissions: {
       llm: {
         providers: ["google", "openai", "anthropic", "ollama"],
@@ -1129,4 +1167,110 @@ async function writeBundledManifestTamperAudit(
   try {
     await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_MANIFEST_TAMPER, extensionId, meta);
   } catch { /* audit write failure is non-fatal */ }
+}
+
+/**
+ * Phase 53 fix — boot-spawn bundled extensions whose only entrypoint is
+ * event subscription.
+ *
+ * `EventSubscriptionDispatcher.dispatch` calls
+ * `registry.getProcessIfRunning(extId)` and silently drops the event
+ * when the process isn't already running (the docstring on
+ * `getProcessIfRunning` reads "Never starts a new process"). Bundled
+ * extensions that ONLY subscribe to events (no LLM-callable tools, no
+ * manual triggers, no on-mention auto-wire) therefore never receive any
+ * events — UAT for Phase 53.5 caught this for memory-extractor (100%
+ * broken since cf189b2) and lessons-distiller (auto-distill broken
+ * post-3aa48e6).
+ *
+ * This helper iterates `BUNDLED_EXTENSIONS`, picks every entry with
+ * `bootSpawn: true`, and:
+ *   1. Looks up the DB row by manifest name (to get the assigned extId).
+ *   2. Skips when the row is missing (install failed earlier in
+ *      `ensureBundledExtensions`) or disabled (operator opt-out).
+ *   3. Calls `registry.getProcess(extId)` — the registry's only spawn
+ *      API; this is the same call path used by `tool-executor.ts:592`
+ *      for tool dispatch, so the subprocess gets the same env / sandbox
+ *      / rate-limit setup.
+ *   4. Calls the supplied `wireRpc(extId, proc)` callback to install
+ *      the JSON-RPC handlers (ezcorp/invoke, ezcorp/storage,
+ *      ezcorp/memory, ezcorp/lessons, etc.) — without this, any
+ *      reverse-RPC the extension issues (e.g. `ctx.memory.write` from
+ *      memory-extractor's `run:complete` handler) would error with
+ *      "Method not found".
+ *
+ * `wireRpc` is injected (rather than imported directly) for two reasons:
+ *   - Avoid the circular-import hazard between `bundled.ts` and
+ *     `tool-executor.ts` (the latter imports `ExtensionRegistry` and a
+ *     dozen other extension internals).
+ *   - Tests can inject a no-op stub or a mock that asserts the call.
+ *
+ * Failure semantics: per-entry try/catch. A spawn or RPC-wiring failure
+ * is logged and swallowed; the next entry still attempts to boot. The
+ * host startup MUST NOT abort because one extension is broken — the
+ * dispatcher's event-drop is preferable to an unbootable server.
+ *
+ * Idempotent: subsequent calls to `getProcess` on an already-running
+ * extension return the same `ExtensionProcess`; `ensureSubprocessRpcWired`
+ * (the typical implementation behind `wireRpc`) is also idempotent via
+ * its internal `wiredExtensions` Set.
+ */
+export async function bootSpawnFlaggedBundledExtensions(
+  registry: ExtensionRegistry,
+  wireRpc: (extensionId: string, proc: ExtensionProcess) => Promise<void>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ spawned: string[]; failed: string[] }> {
+  const spawned: string[] = [];
+  const failed: string[] = [];
+
+  for (const entry of resolveBundledExtensions(env)) {
+    if (entry.bootSpawn !== true) continue;
+
+    let row: Awaited<ReturnType<typeof getExtensionByName>> | null = null;
+    try {
+      row = await getExtensionByName(entry.name);
+    } catch (lookupErr) {
+      log.warn(
+        "boot-spawn lookup failed; event-only handlers will not fire until next boot",
+        { name: entry.name, error: String(lookupErr) },
+      );
+      failed.push(entry.name);
+      continue;
+    }
+    if (!row) {
+      log.warn(
+        "boot-spawn skipped: bundled extension row missing — install must have failed earlier",
+        { name: entry.name },
+      );
+      failed.push(entry.name);
+      continue;
+    }
+    if (!row.enabled) {
+      // Operator-disabled (or fail-closed via tamper / version gate).
+      // Don't auto-spawn a disabled extension — re-enable goes through
+      // the normal admin path. This matches `EventSubscriptionDispatcher`
+      // which would also skip a disabled extension's events because the
+      // subscription registration only runs on enabled rows.
+      log.info("boot-spawn skipped: bundled extension disabled", { name: entry.name });
+      continue;
+    }
+
+    try {
+      const proc = await registry.getProcess(row.id);
+      await wireRpc(row.id, proc);
+      log.info("boot-spawned bundled extension", {
+        name: entry.name,
+        extensionId: row.id,
+      });
+      spawned.push(entry.name);
+    } catch (err) {
+      log.warn(
+        "boot-spawn failed; event-only handlers will not fire until next boot",
+        { name: entry.name, extensionId: row.id, error: String(err) },
+      );
+      failed.push(entry.name);
+    }
+  }
+
+  return { spawned, failed };
 }

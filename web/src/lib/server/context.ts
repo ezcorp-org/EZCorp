@@ -7,8 +7,13 @@ import { initDb } from "$server/db/connection";
 import { validateEnv } from "$server/env-validation";
 import { loadDbPipelines } from "$server/db/queries/pipelines";
 import { startBackups, stopBackups } from "$server/db/backup";
-import { ensureBundledExtensions } from "$server/extensions/bundled";
+import {
+  bootSpawnFlaggedBundledExtensions,
+  ensureBundledExtensions,
+} from "$server/extensions/bundled";
 import { ExtensionRegistry } from "$server/extensions/registry";
+import { ToolExecutor } from "$server/extensions/tool-executor";
+import { getPermissionEngine } from "$server/extensions/permission-engine";
 import { bootstrapBundledCredentials } from "$lib/server/security/bundled-creds";
 import { wireOpenAIExtensionCredentials } from "$lib/server/security/openai-extension-creds";
 import { ExtensionStateMediator } from "$server/extensions/state-mediator";
@@ -114,6 +119,46 @@ export async function ensureInitialized(): Promise<void> {
     }
   }
   eventSubscriptionDispatcher.start();
+
+  // Phase 53 fix — boot-spawn bundled extensions whose ONLY entrypoint
+  // is event subscription. `EventSubscriptionDispatcher.dispatch` calls
+  // `registry.getProcessIfRunning(extId)` and silently drops the event
+  // when the process isn't already running (it's documented "Never
+  // starts a new process"). Event-only bundled extensions
+  // (lessons-distiller post-Phase-53.3, memory-extractor since
+  // Phase-53.4) therefore need an explicit boot-time spawn — without
+  // it, every `run:complete` hand-off goes nowhere. UAT for Phase 53.5
+  // caught this; see `bundled.ts:bootSpawnFlaggedBundledExtensions` for
+  // the full rationale.
+  //
+  // Construct a boot-only ToolExecutor solely to expose
+  // `ensureSubprocessRpcWired` — the per-turn ToolExecutor instances
+  // built in `setup-tools.ts` use the same wiring path, so the
+  // subprocess gets identical handlers either way. The boot-only
+  // engine deps (`db: {_token: "boot-spawn"}`) match the lazy-cold-
+  // start pattern at `web/src/routes/api/ez-actions/[name]/+server.ts`.
+  try {
+    const bootEngine = getPermissionEngine({
+      registry,
+      bus,
+      db: { _token: "boot-spawn" },
+    });
+    const bootExecutor = new ToolExecutor(registry, bootEngine, { bus });
+    await bootSpawnFlaggedBundledExtensions(
+      registry,
+      (extId, proc) => bootExecutor.ensureSubprocessRpcWired(extId, proc),
+    );
+  } catch (bootSpawnErr) {
+    // Boot-spawn failures are individually logged inside the helper.
+    // Anything escaping here is a wiring-bootstrap failure (engine /
+    // executor construction) — log + continue so the host still boots
+    // (event-only extensions are degraded but the rest of the system
+    // is functional).
+    console.warn(
+      "boot-spawn bootstrap failed; event-only bundled extensions degraded",
+      bootSpawnErr,
+    );
+  }
 
   // Register memory extraction listener (fire-and-forget on run:complete)
   extractionUnsub = registerExtractionListener(bus);

@@ -47,20 +47,42 @@ export function checkPermission(
 
 // ── Secure Filesystem Permission Check (realpath-resolved) ─────────
 
+export type FilesystemMode = "read" | "write";
+
 export interface FilesystemPermissionResult {
   allowed: boolean;
   resolvedPath: string;
+  /**
+   * The mode the caller requested. Mirrors the input for callers that
+   * persist the result and need a self-describing record (e.g. audit).
+   * Phase 3: introduced alongside the explicit-mode signature.
+   */
+  mode: FilesystemMode;
 }
 
 /**
  * Check filesystem access using realpath resolution to prevent traversal and symlink escapes.
  * Resolves both the requested path and granted prefixes via realpath before comparing.
  * Implicitly allows access to the extension's own install directory.
+ *
+ * Phase 3 — explicit `mode` parameter:
+ *   - `mode: "read"`  (default, back-compat) — allow when the path is in
+ *     the granted prefix tree.
+ *   - `mode: "write"` — additionally requires that the matching tool's
+ *     manifest declared `capabilities.filesystem.mode` includes `"write"`.
+ *     The check itself only prefix-matches; the per-tool mode gate is
+ *     enforced by the host fs handlers (`./fs-handler.ts`) via the PDP
+ *     before this function is called. This signature retains the
+ *     prefix check so the realpath resolution stays in one place.
+ *
+ * The `mode` field is mirrored back on the result so callers can audit
+ * what was asked for.
  */
 export async function checkFilesystemPermission(
   requestedPath: string,
   granted: ExtensionPermissions,
   extensionInstallDir: string,
+  mode: FilesystemMode = "read",
 ): Promise<FilesystemPermissionResult> {
   // Resolve requested path via realpath
   let resolvedPath: string;
@@ -68,7 +90,7 @@ export async function checkFilesystemPermission(
     resolvedPath = await realpath(requestedPath);
   } catch {
     // Path doesn't exist -- deny
-    return { allowed: false, resolvedPath: requestedPath };
+    return { allowed: false, resolvedPath: requestedPath, mode };
   }
 
   // Resolve install dir via realpath
@@ -81,7 +103,7 @@ export async function checkFilesystemPermission(
 
   // Implicit access: extension's own install directory
   if (resolvedPath === resolvedInstallDir || resolvedPath.startsWith(resolvedInstallDir + "/")) {
-    return { allowed: true, resolvedPath };
+    return { allowed: true, resolvedPath, mode };
   }
 
   // Check granted filesystem prefixes
@@ -99,11 +121,11 @@ export async function checkFilesystemPermission(
     }
 
     if (resolvedPath === resolvedPrefix || resolvedPath.startsWith(resolvedPrefix + "/")) {
-      return { allowed: true, resolvedPath };
+      return { allowed: true, resolvedPath, mode };
     }
   }
 
-  return { allowed: false, resolvedPath };
+  return { allowed: false, resolvedPath, mode };
 }
 
 // ── Permission Display ──────────────────────────────────────────────

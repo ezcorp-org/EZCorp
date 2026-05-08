@@ -274,6 +274,78 @@ describe("filesystem permission - unresolvable manifest prefix paths", () => {
   });
 });
 
+// ── Phase 3: explicit `mode` parameter ────────────────────────────
+//
+// `checkFilesystemPermission` was extended (Phase 3) with a fourth
+// `mode: "read" | "write"` argument. Defaults to `"read"` for back-compat;
+// the fs-handler RPC dispatch (`./fs-handler.ts`) passes the explicit
+// mode based on the verb (read/list/stat → read, write/mkdir/unlink → write).
+// The PDP gates per-tool mode separately (capability-types.ts only emits
+// `fs.write` caps when the tool's manifest declared write mode); this
+// function's prefix check stays the same — it just mirrors the mode
+// back on the result for self-describing audit rows.
+
+describe("filesystem permission - explicit mode parameter", () => {
+  test("defaults to mode='read' for back-compat (3-arg call)", async () => {
+    const granted: ExtensionPermissions = {
+      filesystem: [allowedDir],
+      grantedAt: {},
+    };
+    const result = await checkFilesystemPermission(
+      join(allowedDir, "ok.txt"),
+      granted,
+      installDir,
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.mode).toBe("read");
+  });
+
+  test("mirrors mode='write' back on the result", async () => {
+    const granted: ExtensionPermissions = {
+      filesystem: [allowedDir],
+      grantedAt: {},
+    };
+    const result = await checkFilesystemPermission(
+      join(allowedDir, "ok.txt"),
+      granted,
+      installDir,
+      "write",
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.mode).toBe("write");
+  });
+
+  test("mode is preserved on deny path too", async () => {
+    const granted: ExtensionPermissions = {
+      filesystem: [],
+      grantedAt: {},
+    };
+    const result = await checkFilesystemPermission(
+      join(outsideDir, "secret.txt"),
+      granted,
+      installDir,
+      "write",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.mode).toBe("write");
+  });
+
+  test("mode is preserved on non-existent path (realpath fails)", async () => {
+    const granted: ExtensionPermissions = {
+      filesystem: [allowedDir],
+      grantedAt: {},
+    };
+    const result = await checkFilesystemPermission(
+      "/this/path/does/not/exist",
+      granted,
+      installDir,
+      "write",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.mode).toBe("write");
+  });
+});
+
 // ── Environment Isolation ────────────────────────────────────────
 
 describe("env isolation - buildAllowedEnv", () => {

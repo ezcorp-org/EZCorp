@@ -11,8 +11,10 @@
  *
  * Enforcement ladder (strict order):
  *   1. Kill-switch (`EZCORP_DISABLE_CAPABILITY_TOOLS=1`)
- *   2. `granted.spawnAgents` present + `maxPerHour > 0`  — same gate
- *      as spawn: an extension that can spawn can cancel its own spawns.
+ *   2. PDP gate via `engine.authorize` for `ezcorp:agent:spawn` (Phase 6).
+ *      Quota validity (`spawnAgents.maxPerHour > 0`) is a separate
+ *      rate-limit check that stays — same gate as spawn: an extension
+ *      that can spawn can cancel its own spawns.
  *   3. Payload validation — non-empty `agentRunId` string.
  *   4. Ownership — `agentRunId` must be in the caller's live
  *      reservation set. Cross-extension cancel is rejected with
@@ -35,6 +37,7 @@ import type {
 } from "./types";
 import type { AgentExecutor } from "../runtime/executor";
 import type { SpawnQuota } from "./spawn-quota";
+import type { PermissionEngine } from "./permission-engine";
 import { capabilityToolsDisabled } from "./capability-flags";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
@@ -46,9 +49,18 @@ export interface CancelRunContext {
   grantedPermissions: ExtensionPermissions;
   executor: AgentExecutor;
   quota: SpawnQuota;
+  /** Phase 6: PDP. Optional for back-compat with pre-PDP unit tests. */
+  engine?: PermissionEngine;
+  /** Phase 6: conversation scope for the PDP's always-allow lookup. */
+  conversationId?: string;
 }
 
-type CancelReason = "cancelled" | "not-owned" | "missing-run" | "permission-missing";
+type CancelReason =
+  | "cancelled"
+  | "not-owned"
+  | "missing-run"
+  | "permission-missing"
+  | "quota-invalid";
 
 async function auditCancel(
   extensionId: string,
@@ -91,13 +103,41 @@ export async function handleCancelRunRpc(
     return rpcError(req.id, -32001, "spawnAgents permission not granted");
   }
 
-  // 2. Permission check — structural (spawnAgents is an object, not a bool).
+  // 2. Permission check — Phase 6 PDP is the sole gate for the
+  // boolean "spawnAgents granted" decision. Structural quota
+  // validity (maxPerHour > 0) stays as a separate rate-limit check.
+  if (ctx.engine) {
+    const decision = await ctx.engine.authorize(
+      {
+        extensionId,
+        userId: auditUser,
+        conversationId:
+          ctx.conversationId && ctx.conversationId !== "unknown"
+            ? ctx.conversationId
+            : null,
+        toolName: "ezcorp/cancel-run",
+      },
+      [{ kind: "ezcorp:agent:spawn" }],
+    );
+    if (decision.decision === "deny") {
+      await auditCancel(extensionId, auditUser, "permission-missing", {
+        agentRunId: typeof params.agentRunId === "string" ? params.agentRunId : null,
+      });
+      return rpcError(req.id, -32001, "spawnAgents permission not granted");
+    }
+  }
+  // Quota validity (rate-limit shape, NOT permission). Mirrors the
+  // spawn-assignment-handler equivalent — the PDP gate above already
+  // proved the boolean grant; this branch only fires when the grant
+  // blob is structurally malformed. Reviewer S1: audit reason renamed
+  // to `quota-invalid` so analytics can separate "permission denied"
+  // from "config malformed".
   const granted = ctx.grantedPermissions.spawnAgents;
   if (!granted || typeof granted.maxPerHour !== "number" || granted.maxPerHour <= 0) {
-    await auditCancel(extensionId, auditUser, "permission-missing", {
+    await auditCancel(extensionId, auditUser, "quota-invalid", {
       agentRunId: typeof params.agentRunId === "string" ? params.agentRunId : null,
     });
-    return rpcError(req.id, -32001, "spawnAgents permission not granted");
+    return rpcError(req.id, -32001, "spawnAgents quota config invalid");
   }
 
   // 3. Payload validation.

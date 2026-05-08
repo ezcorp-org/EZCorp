@@ -35,6 +35,7 @@ afterAll(() => restoreModuleMocks());
 // ── Imports (after mocks) ────────────────────────────────────────
 
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { ExtensionRegistry } from "../extensions/registry";
 
 // ── Fixtures ─────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ beforeEach(() => {
   });
   registry.setInstallPathForTest(EXT_ID, installDir);
 
-  executor = new ToolExecutor(registry);
+  executor = new ToolExecutor(registry, createStubPermissionEngine());
 });
 
 afterEach(() => {

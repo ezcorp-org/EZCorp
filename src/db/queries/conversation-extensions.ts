@@ -1,7 +1,8 @@
 import { getDb } from "../connection";
 import { conversationExtensions } from "../schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ExtensionRegistry } from "../../extensions/registry";
+import type { ExtensionPermissions } from "../../extensions/types";
 
 export async function getConversationExtensionIds(conversationId: string): Promise<string[]> {
   const rows = await getDb()
@@ -11,9 +12,67 @@ export async function getConversationExtensionIds(conversationId: string): Promi
   return rows.map((r: { extensionId: string }) => r.extensionId);
 }
 
+/**
+ * Phase 4: read the per-conversation effective grant override (if set)
+ * for a given (conversation, extension) pair. Returns `null` when no
+ * override exists — callers should fall back to the extension's
+ * `grantedPermissions` blob.
+ *
+ * The spawn-assignment handler writes here so a sub-conversation's PDP
+ * sees the intersected (parent ∩ child-agent) grants instead of the
+ * extension's full installed grants.
+ */
+export async function getConversationExtensionEffectiveGrants(
+  conversationId: string,
+  extensionId: string,
+): Promise<ExtensionPermissions | null> {
+  const rows = await getDb()
+    .select({
+      effective: conversationExtensions.effectiveGrantedPermissions,
+    })
+    .from(conversationExtensions)
+    .where(
+      and(
+        eq(conversationExtensions.conversationId, conversationId),
+        eq(conversationExtensions.extensionId, extensionId),
+      ),
+    );
+  return rows[0]?.effective ?? null;
+}
+
+/**
+ * Phase 4 §M7 — return the effective grants the PDP sees for an
+ * extension within a given conversation:
+ *   1. Per-conversation override on `conversation_extensions`
+ *      (written by spawn-assignment when it clipped the parent's
+ *      grants by intersecting with the child agent config's manifest).
+ *   2. Registry-installed grants (fallback when no override exists).
+ *
+ * Used by `handleSpawnAssignmentRpc` when computing a CHILD spawn's
+ * effective grants: nested spawns must read the parent conversation's
+ * already-clipped grants, NOT the extension's full installed grants —
+ * otherwise cap inheritance silently widens at every spawn level.
+ *
+ * The caller passes `registryGrants` so this helper stays testable
+ * without a registry singleton; production callers fetch it via
+ * `registry.getGrantedPermissions(extensionId)`.
+ */
+export async function getEffectiveGrantsForConversation(
+  conversationId: string,
+  extensionId: string,
+  registryGrants: ExtensionPermissions | null,
+): Promise<ExtensionPermissions> {
+  const override = await getConversationExtensionEffectiveGrants(
+    conversationId,
+    extensionId,
+  );
+  if (override) return override;
+  return registryGrants ?? { grantedAt: {} };
+}
+
 export async function addConversationExtensions(
   conversationId: string,
-  entries: { extensionId: string; messageId?: string }[],
+  entries: { extensionId: string; messageId?: string; effectiveGrantedPermissions?: ExtensionPermissions }[],
 ): Promise<void> {
   if (entries.length === 0) return;
   const db = getDb();
@@ -22,6 +81,9 @@ export async function addConversationExtensions(
       conversationId,
       extensionId: e.extensionId,
       addedByMessageId: e.messageId,
+      ...(e.effectiveGrantedPermissions !== undefined
+        ? { effectiveGrantedPermissions: e.effectiveGrantedPermissions }
+        : {}),
     })))
     .onConflictDoNothing();
 }

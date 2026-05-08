@@ -32,23 +32,33 @@ export async function insertAuditEntry(
   action: string,
   target?: string,
   metadata?: Record<string, unknown>,
-): Promise<void> {
+): Promise<string> {
+  // Phase 4 §M2 — return the inserted row's id so callers chaining
+  // audit rows (spawn-assignment seeding the child's parentAuditId)
+  // don't need a follow-up SELECT. Existing void-return callers
+  // simply ignore the returned id (back-compat: TS accepts ignoring
+  // a non-void Promise).
+  //
+  // Phase 50 §M2 — metadata is ALWAYS routed through `redactForAudit`
+  // and the insert is wrapped in try/catch so audit-write failures
+  // never abort the caller. On failure the audit hiccup is logged
+  // via `persistError` (fire-and-forget) and we return "" so callers
+  // chaining on the id get a sentinel they can ignore.
   const safeMetadata = metadata
     ? (redactForAudit(metadata).redacted as Record<string, unknown> | null)
     : null;
   try {
-    await getDb().insert(auditLog).values({
-      userId,
-      action,
-      target: target ?? null,
-      metadata: safeMetadata,
-    });
+    const inserted = await getDb()
+      .insert(auditLog)
+      .values({
+        userId,
+        action,
+        target: target ?? null,
+        metadata: safeMetadata,
+      })
+      .returning({ id: auditLog.id });
+    return inserted[0]?.id ?? "";
   } catch (err) {
-    // Pitfall #2: audit-write failure must not propagate to the
-    // caller. Route to `persistError` so the failure is still
-    // observable in the error_logs table (and `persistError` itself
-    // is fire-and-forget, so a cascading DB outage cannot re-throw
-    // here either). No re-throw.
     await persistError({
       level: "warn",
       message: "audit-write-failed: audit_log",
@@ -60,6 +70,7 @@ export async function insertAuditEntry(
         error: String(err),
       },
     });
+    return "";
   }
 }
 

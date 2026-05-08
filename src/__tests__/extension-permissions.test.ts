@@ -1,7 +1,8 @@
 import { test, expect, describe, beforeEach, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import {
-  checkPermission,
+  // Phase 6 deletes the dead `checkPermission` boolean helper. PDP unit
+  // coverage lives in `permission-engine.test.ts`.
   getRequiredPermissions,
   diffPermissions,
   isSensitiveOperation,
@@ -22,53 +23,8 @@ mock.module("../db/queries/settings", () => ({
 
 afterAll(() => restoreModuleMocks());
 
-describe("checkPermission", () => {
-  const granted: ExtensionPermissions = {
-    network: ["api.weather.com", "api.github.com"],
-    filesystem: ["/home/user/docs", "/tmp"],
-    shell: true,
-    env: ["API_KEY", "HOME"],
-    grantedAt: {},
-  };
-
-  test("allows network access for granted domain", () => {
-    expect(checkPermission("network", "api.weather.com", granted)).toBe(true);
-  });
-
-  test("denies network access for non-granted domain", () => {
-    expect(checkPermission("network", "evil.com", granted)).toBe(false);
-  });
-
-  test("allows filesystem access for path within granted prefix", () => {
-    expect(checkPermission("filesystem", "/home/user/docs/file.txt", granted)).toBe(true);
-  });
-
-  test("denies filesystem access for path outside granted prefix", () => {
-    expect(checkPermission("filesystem", "/etc/passwd", granted)).toBe(false);
-  });
-
-  test("allows shell when shell is granted", () => {
-    expect(checkPermission("shell", true, granted)).toBe(true);
-  });
-
-  test("denies shell when shell is not granted", () => {
-    const noShell: ExtensionPermissions = { ...granted, shell: false };
-    expect(checkPermission("shell", true, noShell)).toBe(false);
-  });
-
-  test("allows env access for granted variable", () => {
-    expect(checkPermission("env", "API_KEY", granted)).toBe(true);
-  });
-
-  test("denies env access for non-granted variable", () => {
-    expect(checkPermission("env", "SECRET_TOKEN", granted)).toBe(false);
-  });
-
-  test("denies network when no network permissions granted", () => {
-    const noNet: ExtensionPermissions = { grantedAt: {} };
-    expect(checkPermission("network", "api.weather.com", noNet)).toBe(false);
-  });
-});
+// `checkPermission` (the dead sync boolean helper) was removed in
+// Phase 6. PDP unit coverage lives in `permission-engine.test.ts`.
 
 describe("getRequiredPermissions", () => {
   test("extracts flat permission list from manifest", () => {

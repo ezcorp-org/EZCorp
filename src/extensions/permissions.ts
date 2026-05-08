@@ -7,52 +7,50 @@ import { getSetting, upsertSetting } from "../db/queries/settings";
 import { realpath } from "node:fs/promises";
 import { resolve as pathResolve } from "node:path";
 
-// ── Permission Check ────────────────────────────────────────────────
-
-export function checkPermission(
-  type: "network" | "filesystem" | "shell" | "env" | "storage",
-  value: string | boolean,
-  granted: ExtensionPermissions,
-): boolean {
-  switch (type) {
-    case "network":
-      return granted.network?.includes(value as string) ?? false;
-
-    case "filesystem": {
-      const path = value as string;
-      return granted.filesystem?.some((prefix) => path === prefix || path.startsWith(prefix + "/")) ?? false;
-    }
-
-    case "shell":
-      return granted.shell === true;
-
-    case "env":
-      return granted.env?.includes(value as string) ?? false;
-
-    case "storage":
-      return granted.storage === true;
-
-    default:
-      return false;
-  }
-}
-
 // ── Secure Filesystem Permission Check (realpath-resolved) ─────────
+//
+// The Phase 1 `checkPermission` sync boolean helper was deleted in
+// Phase 6. Production callers consult the PDP at
+// `./permission-engine.ts` via `engine.authorize`; the deprecated
+// boolean shape had no remaining production references, only legacy
+// unit tests (since rolled into PDP coverage).
+
+export type FilesystemMode = "read" | "write";
 
 export interface FilesystemPermissionResult {
   allowed: boolean;
   resolvedPath: string;
+  /**
+   * The mode the caller requested. Mirrors the input for callers that
+   * persist the result and need a self-describing record (e.g. audit).
+   * Phase 3: introduced alongside the explicit-mode signature.
+   */
+  mode: FilesystemMode;
 }
 
 /**
  * Check filesystem access using realpath resolution to prevent traversal and symlink escapes.
  * Resolves both the requested path and granted prefixes via realpath before comparing.
  * Implicitly allows access to the extension's own install directory.
+ *
+ * Phase 3 — explicit `mode` parameter:
+ *   - `mode: "read"`  (default, back-compat) — allow when the path is in
+ *     the granted prefix tree.
+ *   - `mode: "write"` — additionally requires that the matching tool's
+ *     manifest declared `capabilities.filesystem.mode` includes `"write"`.
+ *     The check itself only prefix-matches; the per-tool mode gate is
+ *     enforced by the host fs handlers (`./fs-handler.ts`) via the PDP
+ *     before this function is called. This signature retains the
+ *     prefix check so the realpath resolution stays in one place.
+ *
+ * The `mode` field is mirrored back on the result so callers can audit
+ * what was asked for.
  */
 export async function checkFilesystemPermission(
   requestedPath: string,
   granted: ExtensionPermissions,
   extensionInstallDir: string,
+  mode: FilesystemMode = "read",
 ): Promise<FilesystemPermissionResult> {
   // Resolve requested path via realpath
   let resolvedPath: string;
@@ -60,7 +58,7 @@ export async function checkFilesystemPermission(
     resolvedPath = await realpath(requestedPath);
   } catch {
     // Path doesn't exist -- deny
-    return { allowed: false, resolvedPath: requestedPath };
+    return { allowed: false, resolvedPath: requestedPath, mode };
   }
 
   // Resolve install dir via realpath
@@ -73,7 +71,7 @@ export async function checkFilesystemPermission(
 
   // Implicit access: extension's own install directory
   if (resolvedPath === resolvedInstallDir || resolvedPath.startsWith(resolvedInstallDir + "/")) {
-    return { allowed: true, resolvedPath };
+    return { allowed: true, resolvedPath, mode };
   }
 
   // Check granted filesystem prefixes
@@ -91,11 +89,11 @@ export async function checkFilesystemPermission(
     }
 
     if (resolvedPath === resolvedPrefix || resolvedPath.startsWith(resolvedPrefix + "/")) {
-      return { allowed: true, resolvedPath };
+      return { allowed: true, resolvedPath, mode };
     }
   }
 
-  return { allowed: false, resolvedPath };
+  return { allowed: false, resolvedPath, mode };
 }
 
 // ── Permission Display ──────────────────────────────────────────────
@@ -183,22 +181,96 @@ export function isSensitiveOperation(_type: "shell" | "filesystem"): boolean {
   return true; // shell and filesystem are always sensitive
 }
 
-function alwaysAllowKey(extensionId: string, operationType: string): string {
+/**
+ * Scope namespace for always-allow grants. Phase 1 ships with two
+ * effective scopes (conversation + forever); session and project are
+ * declared so Phase 6's UI scope chooser doesn't need a schema change.
+ *   • `session`      — until the user logs out / restarts the server
+ *   • `conversation` — until this conversation is deleted
+ *   • `project`      — until the project is deleted
+ *   • `forever`      — until manually revoked from the admin UI
+ */
+export type AlwaysAllowScope = "session" | "conversation" | "project" | "forever";
+
+/**
+ * Settings key for always-allow grants, scoped per (user, scope,
+ * scopeId, capability). Closes finding H2 (multi-user collision):
+ * before this commit, two users on the same extension shared a single
+ * always-allow row.
+ *
+ * Migration note: existing rows use the legacy `ext:<id>:always_allow:
+ * <op>` shape. Those rows become orphaned after this change — users
+ * will be re-prompted on the next sensitive op. The orphans aren't
+ * deleted; admin UI cleanup is deferred to Phase 6.
+ */
+export function alwaysAllowSettingKey(args: {
+  extensionId: string;
+  userId: string;
+  scope: AlwaysAllowScope;
+  scopeId: string;
+  capability: string;
+}): string {
+  return `ext:${args.extensionId}:${args.userId}:${args.scope}:${args.scopeId}:always_allow:${args.capability}`;
+}
+
+/** @deprecated Phase 6 removal. Pre-PDP wrapper kept for legacy callers. */
+function legacyAlwaysAllowKey(extensionId: string, operationType: string): string {
   return `ext:${extensionId}:always_allow:${operationType}`;
 }
 
+/**
+ * Check if a sensitive operation has been granted always-allow for
+ * the given scope tuple. Phase 1: callers are migrating to the
+ * scoped key — pass `userId/scope/scopeId` to opt in. Legacy callers
+ * that pass only `extensionId + operationType` get the unscoped
+ * lookup against the legacy key (for back-compat with the dead
+ * `setPermissionChecker` block in `setup-tools.ts`, which is
+ * removed in the same Phase 1 commit series).
+ */
 export async function checkSensitiveConfirmation(
   extensionId: string,
   operationType: "shell" | "filesystem",
+  scopeArgs?: {
+    userId: string;
+    scope: AlwaysAllowScope;
+    scopeId: string;
+  },
 ): Promise<"allowed" | "needs_confirmation"> {
-  const value = await getSetting(alwaysAllowKey(extensionId, operationType));
+  const key = scopeArgs
+    ? alwaysAllowSettingKey({
+        extensionId,
+        userId: scopeArgs.userId,
+        scope: scopeArgs.scope,
+        scopeId: scopeArgs.scopeId,
+        capability: operationType === "shell" ? "shell" : "fs.write",
+      })
+    : legacyAlwaysAllowKey(extensionId, operationType);
+  const value = await getSetting(key);
   return value === true ? "allowed" : "needs_confirmation";
 }
 
+/**
+ * Persist an always-allow grant. Phase 1 callers (PDP) pass full
+ * scope args; legacy callers fall back to the unscoped key.
+ */
 export async function setSensitiveAlwaysAllow(
   extensionId: string,
   operationType: "shell" | "filesystem",
   allowed: boolean,
+  scopeArgs?: {
+    userId: string;
+    scope: AlwaysAllowScope;
+    scopeId: string;
+  },
 ): Promise<void> {
-  await upsertSetting(alwaysAllowKey(extensionId, operationType), allowed);
+  const key = scopeArgs
+    ? alwaysAllowSettingKey({
+        extensionId,
+        userId: scopeArgs.userId,
+        scope: scopeArgs.scope,
+        scopeId: scopeArgs.scopeId,
+        capability: operationType === "shell" ? "shell" : "fs.write",
+      })
+    : legacyAlwaysAllowKey(extensionId, operationType);
+  await upsertSetting(key, allowed);
 }

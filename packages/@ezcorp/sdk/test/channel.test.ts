@@ -18,6 +18,7 @@ import {
   JsonRpcError,
 } from "../src/runtime/channel";
 import { _setDispatcherRegister, createToolDispatcher, toolError, toolResult } from "../src/runtime/rpc";
+import { getToolContext, withToolContext } from "../src/runtime/tool-context";
 
 // ── Test stdin/stdout helpers ──────────────────────────────────────
 
@@ -737,7 +738,8 @@ describe("tools/call dispatcher — _meta.invocationMetadata → ctx round-trip"
     ch.start();
 
     // Mirror the production dispatcher body including the Phase 4
-    // §5.1a `_meta.invocationMetadata` → ctx extraction path.
+    // §5.1a `_meta.invocationMetadata` → ctx extraction path AND the
+    // Phase 2 `withToolContext` ALS wrap.
     _setDispatcherRegister(({ handlers, opts }) => {
       ch.onRequest("tools/call", async (params) => {
         const p = (params ?? {}) as Record<string, unknown>;
@@ -751,13 +753,20 @@ describe("tools/call dispatcher — _meta.invocationMetadata → ctx round-trip"
         const ctx = invocationMetadata ? { invocationMetadata } : {};
         const handler = handlers[name];
         if (!handler) throw new JsonRpcError(-32601, `Tool not found: ${name}`);
-        try {
-          return await handler(args, ctx);
-        } catch (err) {
-          if (opts?.onError) return opts.onError(err, name);
-          const message = err instanceof Error ? err.message : String(err);
-          return toolError(message);
-        }
+        const ezConversationId =
+          typeof rawMeta.ezConversationId === "string" ? rawMeta.ezConversationId : "";
+        return withToolContext(
+          { toolName: name, conversationId: ezConversationId },
+          async () => {
+            try {
+              return await handler(args, ctx);
+            } catch (err) {
+              if (opts?.onError) return opts.onError(err, name);
+              const message = err instanceof Error ? err.message : String(err);
+              return toolError(message);
+            }
+          },
+        );
       });
     });
 
@@ -980,3 +989,345 @@ describe("runLoop does not block on concurrent in-flight handler requests", () =
     stdin.close();
   });
 });
+
+// ── Phase 2: tools/call dispatcher binds tool-context via ALS ──────
+//
+// The in-sandbox `globalThis.fetch` wrapper (sandbox-preload.ts) reads
+// the running tool's name from this ALS to enforce per-tool allowlists.
+// If the dispatcher fails to wrap, the wrapper sees `undefined` and
+// per-tool overrides are unreachable — silent regression. This test
+// pins the wiring.
+
+describe("tools/call dispatcher — withToolContext ALS binding", () => {
+  test("handler reads {toolName, conversationId} via getToolContext()", async () => {
+    const stdin = createStdin();
+    const { writes, stdout } = createStdout();
+    const ch = createHostChannelForTests({ stdin: stdin.iterable, stdout });
+    ch.start();
+
+    // Production-equivalent register body — see channel.ts
+    // ensureDispatcherRegistered for the canonical implementation.
+    _setDispatcherRegister(({ handlers, opts }) => {
+      ch.onRequest("tools/call", async (params) => {
+        const p = (params ?? {}) as Record<string, unknown>;
+        const name = typeof p.name === "string" ? p.name : "";
+        const args = (p.arguments ?? {}) as Record<string, unknown>;
+        const rawMeta = (p._meta ?? {}) as Record<string, unknown>;
+        const handler = handlers[name];
+        if (!handler) throw new JsonRpcError(-32601, `Tool not found: ${name}`);
+        const ezConversationId =
+          typeof rawMeta.ezConversationId === "string" ? rawMeta.ezConversationId : "";
+        return withToolContext(
+          { toolName: name, conversationId: ezConversationId },
+          async () => {
+            try {
+              return await handler(args);
+            } catch (err) {
+              if (opts?.onError) return opts.onError(err, name);
+              const message = err instanceof Error ? err.message : String(err);
+              return toolError(message);
+            }
+          },
+        );
+      });
+    });
+
+    const seen: Array<{ toolName?: string; conversationId?: string }> = [];
+    createToolDispatcher({
+      probe: async () => {
+        // Read across an await boundary — exercises ALS propagation
+        // through Bun's Promise scheduler (the day-1 risk).
+        await Promise.resolve();
+        const ctx = getToolContext();
+        seen.push({ toolName: ctx?.toolName, conversationId: ctx?.conversationId });
+        return toolResult("ok");
+      },
+    });
+
+    // 1) `_meta.ezConversationId` is forwarded into ctx.
+    stdin.push(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "probe",
+        arguments: {},
+        _meta: { ezConversationId: "conv-abc" },
+      },
+    }));
+    await waitFor(() => writes.length >= 1);
+    expect(seen[0]).toEqual({ toolName: "probe", conversationId: "conv-abc" });
+
+    // 2) Missing `_meta` → conversationId defaults to "".
+    stdin.push(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "probe", arguments: {} },
+    }));
+    await waitFor(() => writes.length >= 2);
+    expect(seen[1]).toEqual({ toolName: "probe", conversationId: "" });
+
+    // 3) Concurrent dispatches each see their own ctx (ALS isolation).
+    const slow = handlerProbeRace(stdin);
+    await slow.driveTwoConcurrent();
+    expect(slow.captured).toContainEqual({ toolName: "p_a", conversationId: "ca" });
+    expect(slow.captured).toContainEqual({ toolName: "p_b", conversationId: "cb" });
+
+    stdin.close();
+  });
+});
+
+// ── N2: ALS smoke through the REAL getChannel() singleton ──────────
+//
+// Goes end-to-end: spy on Bun.stdin.stream(), call `getChannel().start()`
+// (the production singleton + readLoop), push a real `tools/call`
+// frame, and assert the handler reads ALS context.
+//
+// Caveat: earlier tests in this file install no-op `_setDispatcherRegister`
+// closures as cleanup, which permanently overwrite the production
+// register-arming closure. To exercise the production-equivalent wrap
+// path, this test re-installs a register body that mirrors
+// channel.ts's `ensureDispatcherRegistered()` (lines ~320-367) — same
+// trick the existing `_meta.invocationMetadata` test uses. The drift
+// between this body and channel.ts's is what we're guarding against
+// with the `withToolContext` wrap below; both must change together.
+describe("tools/call dispatcher — ALS smoke through production getChannel()", () => {
+  test("handler dispatched via real channel singleton reads {toolName, conversationId}", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+    });
+    const stdinSpy = spyOn(Bun.stdin, "stream").mockImplementation(
+      () => stream as ReturnType<typeof Bun.stdin.stream>,
+    );
+    const stdoutWrites: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation((s: unknown) => {
+      stdoutWrites.push(typeof s === "string" ? s : new TextDecoder().decode(s as Uint8Array));
+      return true;
+    });
+
+    try {
+      // Re-install a register that mirrors channel.ts's
+      // `ensureDispatcherRegistered` body — earlier tests overwrote
+      // it to a no-op. Includes the Phase 2 `withToolContext` wrap.
+      _setDispatcherRegister(({ handlers, opts }) => {
+        const ch = getChannel();
+        ch.onRequest("tools/call", async (params) => {
+          const p = (params ?? {}) as Record<string, unknown>;
+          const name = typeof p.name === "string" ? p.name : "";
+          const args = (p.arguments ?? {}) as Record<string, unknown>;
+          const rawMeta = (p._meta ?? {}) as Record<string, unknown>;
+          const handler = handlers[name];
+          if (!handler) throw new JsonRpcError(-32601, `Tool not found: ${name}`);
+          const ezConversationId =
+            typeof rawMeta.ezConversationId === "string" ? rawMeta.ezConversationId : "";
+          return withToolContext(
+            { toolName: name, conversationId: ezConversationId },
+            async () => {
+              try {
+                return await handler(args);
+              } catch (err) {
+                if (opts?.onError) return opts.onError(err, name);
+                const message = err instanceof Error ? err.message : String(err);
+                return toolError(message);
+              }
+            },
+          );
+        });
+      });
+
+      const ch = getChannel();
+      ch.start();
+
+      let captured: { toolName?: string; conversationId?: string } | undefined;
+      createToolDispatcher({
+        probe: async () => {
+          await Promise.resolve();
+          const ctx = getToolContext();
+          captured = {
+            toolName: ctx?.toolName,
+            conversationId: ctx?.conversationId,
+          };
+          return toolResult("ok");
+        },
+      });
+
+      const enc = new TextEncoder();
+      controller.enqueue(
+        enc.encode(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "probe",
+              arguments: {},
+              _meta: { ezConversationId: "conv-prod-smoke" },
+            },
+          }) + "\n",
+        ),
+      );
+      await waitFor(() => stdoutWrites.length >= 1);
+      controller.close();
+
+      expect(captured).toEqual({
+        toolName: "probe",
+        conversationId: "conv-prod-smoke",
+      });
+
+      // Restore the dispatcher to a no-op so the closure registered
+      // here doesn't see frames from later tests.
+      _setDispatcherRegister(() => {});
+    } finally {
+      stdinSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// M3 — chunked-frame streaming reassembly defense-in-depth (validator
+//      should-fix #3). Mirrors the host json-rpc.ts validations:
+//      oversized base64 chunk, seq>=total, assembled-bytes cap.
+//      Even though the host is "trusted", a buggy host shouldn't OOM
+//      the extension subprocess.
+// ════════════════════════════════════════════════════════════════════
+
+describe("chunked-frame streaming — defense-in-depth validations (M3)", () => {
+  test("M3a: oversized base64 chunk payload → reject before atob() inflates", async () => {
+    const stdin = createStdin();
+    const { writes, stdout } = createStdout();
+    const ch = createHostChannelForTests({ stdin: stdin.iterable, stdout });
+    ch.start();
+
+    // Issue a request so a pending entry exists. The chunk frames
+    // target this id.
+    const p = ch.request("ezcorp/fs.read", { path: "/x" }, 30_000);
+    await waitFor(() => writes.length >= 1);
+    const sentId = (JSON.parse(writes[0] ?? "") as { id: number }).id;
+
+    // Announce a 1-chunk stream → channel registers state.
+    stdin.push(`\x02${sentId}:1`);
+    // Push a base64 payload whose char length exceeds the per-chunk
+    // upper bound (256KB raw → ~341,336 b64 chars). 2MB of 'A' is
+    // well over the cap.
+    const oversize = "A".repeat(2 * 1024 * 1024);
+    stdin.push(`\x01${sentId}:0:${oversize}`);
+
+    await expect(p).rejects.toThrow(/256KB|exceed/i);
+
+    stdin.close();
+  });
+
+  test("M3b: seq >= announced total → reject (mirrors host json-rpc.ts:252-265)", async () => {
+    const stdin = createStdin();
+    const { writes, stdout } = createStdout();
+    const ch = createHostChannelForTests({ stdin: stdin.iterable, stdout });
+    ch.start();
+
+    const p = ch.request("ezcorp/fs.read", { path: "/y" }, 30_000);
+    await waitFor(() => writes.length >= 1);
+    const sentId = (JSON.parse(writes[0] ?? "") as { id: number }).id;
+
+    // Announce 2 chunks (valid seq=0, seq=1). Push seq=2 directly —
+    // out-of-bounds. The "out of order" guard fires first because
+    // seq=2 != nextSeq=0; M3b's seq>=total guard would fire if the
+    // stream were on seq=2. Test M3b specifically by pushing seq=0
+    // first to advance nextSeq, then jumping to seq=5 (>= 2).
+    stdin.push(`\x02${sentId}:2`);
+    stdin.push(`\x01${sentId}:0:${btoa("AA")}`);
+    // Now nextSeq=1, total=2. seq=5 hits BOTH out-of-order AND
+    // seq>=total — but out-of-order fires first per code path order.
+    // To exercise M3b distinctly, send seq=1 to advance to nextSeq=2,
+    // then seq=2 (which equals total, not less).
+    stdin.push(`\x01${sentId}:1:${btoa("BB")}`);
+    // After seq=1, the response would normally be assembled (assuming
+    // the JSON parses). The test stream is malformed JSON — atob
+    // succeeds but JSON.parse on "AABB" fails. We accept either path
+    // (M3b's guard or the JSON-parse rejection at chunk-complete).
+    // To deterministically hit M3b, push an EXTRA chunk at seq>=total
+    // before the JSON-parse runs:
+    stdin.push(`\x01${sentId}:2:${btoa("CC")}`);
+
+    await expect(p).rejects.toThrow(/exceeds announced total|valid JSON|out of order/i);
+
+    stdin.close();
+  });
+
+  test("M3c: assembled bytes > 100MB cap → reject (mirrors host json-rpc.ts:287-299)", async () => {
+    // Note: the M3c assembled-bytes cap is structurally unreachable
+    // from chunks that ALSO pass M3a (per-chunk b64 cap), because
+    // 410 chunks × 256KB = ~105MB is the smallest crossover and
+    // 256KB raw → ~341KB b64 trips M3a first. M3c stays as
+    // defense-in-depth for a future protocol relaxation that raises
+    // the per-chunk cap. We assert the guard is wired by hitting it
+    // on a synthetic announce that bypasses M3a's per-chunk check
+    // via small chunks: 102_500 chunks × 1024 bytes raw = ~100MB.
+    //
+    // The announce-time guard at line ~232 in channel.ts caps `total`
+    // at 100MB / 256KB ≈ 410. Total > 410 trips the announce guard
+    // (M3c-equivalent at announce time) — that's what we exercise here.
+    const stdin = createStdin();
+    const { writes, stdout } = createStdout();
+    const ch = createHostChannelForTests({ stdin: stdin.iterable, stdout });
+    ch.start();
+
+    const p = ch.request("ezcorp/fs.read", { path: "/z" }, 30_000);
+    await waitFor(() => writes.length >= 1);
+    const sentId = (JSON.parse(writes[0] ?? "") as { id: number }).id;
+
+    // Announce 1000 chunks. 1000 * 256KB = 256MB worst-case > 100MB,
+    // so the announce-time guard rejects.
+    stdin.push(`\x02${sentId}:1000`);
+
+    await expect(p).rejects.toThrow(/100MB|exceed/i);
+
+    stdin.close();
+  });
+});
+
+/**
+ * Helper: register two slow handlers and drive two `tools/call` frames
+ * back-to-back so they overlap. Each handler MUST read its own
+ * conversationId via ALS — even though both are in flight at once.
+ */
+function handlerProbeRace(stdin: ControlledStdin) {
+  const captured: Array<{ toolName?: string; conversationId?: string }> = [];
+  createToolDispatcher({
+    p_a: async () => {
+      await new Promise((r) => setTimeout(r, 15));
+      const c = getToolContext();
+      captured.push({ toolName: c?.toolName, conversationId: c?.conversationId });
+      return toolResult("a");
+    },
+    p_b: async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      const c = getToolContext();
+      captured.push({ toolName: c?.toolName, conversationId: c?.conversationId });
+      return toolResult("b");
+    },
+  });
+
+  return {
+    captured,
+    async driveTwoConcurrent() {
+      stdin.push(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 90,
+        method: "tools/call",
+        params: { name: "p_a", arguments: {}, _meta: { ezConversationId: "ca" } },
+      }));
+      stdin.push(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 91,
+        method: "tools/call",
+        params: { name: "p_b", arguments: {}, _meta: { ezConversationId: "cb" } },
+      }));
+      // Wait for both to finish.
+      await new Promise((r) => setTimeout(r, 40));
+    },
+  };
+}

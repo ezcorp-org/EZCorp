@@ -26,6 +26,13 @@
 // array form before the intersection (the dispatcher reads the
 // includeFullPayload flag separately at install time).
 //
+// ── Phase 4 deputy / orchestration flags ──
+// `acceptsCallerCaps` and `escalateChildCaps` are extension-level
+// boolean elevations declared at the manifest's TOP LEVEL (not under
+// `permissions`). The clamp respects the same rule: an admin can only
+// grant what the manifest authored, and the user must explicitly
+// consent — silent declines reset the field to false.
+//
 // ── Phase 51 capability surfaces (llm / memory / lessons / schedule) ──
 // These delegate to the canonical clamp helpers in
 // `src/extensions/clamp-permissions.ts` so the validation logic lives
@@ -71,6 +78,7 @@ export function manifestEventsIncludeFullPayload(
 export function clampExtensionPermissions(
   submitted: Partial<ExtensionPermissions>,
   manifest: ExtensionManifestV2["permissions"],
+  manifestTopLevel?: Pick<ExtensionManifestV2, "acceptsCallerCaps" | "escalateChildCaps">,
 ): ExtensionPermissions {
   const clamped: ExtensionPermissions = { grantedAt: {} };
 
@@ -165,6 +173,24 @@ export function clampExtensionPermissions(
       manifest.schedule,
     );
     if (schedule) clamped.schedule = schedule;
+  }
+
+  // Phase 4 deputy / orchestration flags. Both are top-level manifest
+  // declarations gated on user consent: an admin can grant TRUE only
+  // when the manifest declared TRUE. Submission omitting or setting
+  // the field to false leaves the grant absent (treated as opted-out
+  // at runtime).
+  if (
+    submitted.acceptsCallerCaps === true &&
+    manifestTopLevel?.acceptsCallerCaps === true
+  ) {
+    clamped.acceptsCallerCaps = true;
+  }
+  if (
+    submitted.escalateChildCaps === true &&
+    manifestTopLevel?.escalateChildCaps === true
+  ) {
+    clamped.escalateChildCaps = true;
   }
 
   // Preserve any prior grantedAt timestamps the caller passed for permissions

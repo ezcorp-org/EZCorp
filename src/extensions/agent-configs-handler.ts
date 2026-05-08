@@ -18,6 +18,7 @@ import type {
   JsonRpcResponse,
   ExtensionPermissions,
 } from "./types";
+import type { PermissionEngine } from "./permission-engine";
 import {
   listAgentConfigs,
   type DbAgentConfig,
@@ -32,6 +33,10 @@ const consumeTokens = createRateLimiter(MAX_OPS_PER_SECOND);
 export interface AgentConfigsContext {
   userId: string;
   grantedPermissions: ExtensionPermissions;
+  /** Phase 6: PDP. Optional for back-compat with pre-PDP unit tests. */
+  engine?: PermissionEngine;
+  /** Phase 6: conversation scope used by the PDP for always-allow lookup. */
+  conversationId?: string;
 }
 
 export interface AgentConfigSummary {
@@ -88,8 +93,26 @@ export async function handleAgentConfigsRpc(
     return rpcError(req.id, -32001, "agentConfig permission not granted");
   }
 
-  // Permission check.
-  if (ctx.grantedPermissions.agentConfig !== "read") {
+  // Phase 6: PDP is the sole gate. Delegate the permission decision
+  // to `engine.authorize` when wired; otherwise fall back to the
+  // legacy boolean check for back-compat with pre-PDP unit tests.
+  if (ctx.engine) {
+    const decision = await ctx.engine.authorize(
+      {
+        extensionId,
+        userId: ctx.userId && ctx.userId !== "unknown" ? ctx.userId : null,
+        conversationId:
+          ctx.conversationId && ctx.conversationId !== "unknown"
+            ? ctx.conversationId
+            : null,
+        toolName: "ezcorp/agent-configs",
+      },
+      [{ kind: "ezcorp:agent:config" }],
+    );
+    if (decision.decision === "deny") {
+      return rpcError(req.id, -32001, "agentConfig permission not granted");
+    }
+  } else if (ctx.grantedPermissions.agentConfig !== "read") {
     return rpcError(req.id, -32001, "agentConfig permission not granted");
   }
 

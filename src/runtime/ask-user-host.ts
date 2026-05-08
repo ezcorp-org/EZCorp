@@ -24,6 +24,7 @@ import { conversationExtensions } from "../db/schema";
 import { getExtensionByName } from "../db/queries/extensions";
 import type { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor, extensionToAgentTool } from "../extensions/tool-executor";
+import { getPermissionEngine } from "../extensions/permission-engine";
 import type { EventBus } from "./events";
 import type { AgentEvents } from "../types";
 import { logger } from "../logger";
@@ -153,7 +154,18 @@ export async function wireAskUserToolForTurn(
     return;
   }
 
-  const toolExec = new ToolExecutor(registry, bus ? { bus } : undefined);
+  // Phase 1: PDP is required at every ToolExecutor site. The
+  // executor boot in runtime/executor.ts is the canonical initializer
+  // (it has the real bus + registry refs). We pass NO deps here so a
+  // placeholder bus/db can never silently lose to the boot caller in
+  // an init race; the factory throws with a clear message if the
+  // singleton isn't pre-init, making any boot-order regression loud.
+  const engine = getPermissionEngine();
+  const toolExec = new ToolExecutor(
+    registry,
+    engine,
+    bus ? { bus } : undefined,
+  );
   if (userId) toolExec.setCurrentUserId(userId);
 
   // Per-turn invocationMetadata. `toolCallId` is added by

@@ -1,7 +1,15 @@
-import { test, expect, describe, mock } from "bun:test";
+import { test, expect, describe, mock, beforeEach } from "bun:test";
 import type { RegisteredTool } from "../extensions/registry";
-import { ToolExecutor } from "../extensions/tool-executor";
+import { ToolExecutor, _resetToolCallsCounterForTests } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import type { ToolCallResult } from "../extensions/types";
+
+// Reset Phase 6's process-global per-conversation tool-call counter so
+// each test starts fresh — otherwise the 11th case on conv-1 trips
+// MaxToolCallsExceededError.
+beforeEach(() => {
+  _resetToolCallsCounterForTests();
+});
 
 // ── Mock Registry ───────────────────────────────────────────────────────
 
@@ -93,7 +101,7 @@ const multiSharedTool: RegisteredTool = {
 describe("ToolExecutor shared variable injection", () => {
   test("injects project.cwd when sourcePath is missing", async () => {
     const registry = createMockRegistry([fileRefactorTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "file-refactor.rename-files",
@@ -110,7 +118,7 @@ describe("ToolExecutor shared variable injection", () => {
 
   test("injects project.cwd when sourcePath is empty string", async () => {
     const registry = createMockRegistry([fileRefactorTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "file-refactor.rename-files",
@@ -126,7 +134,7 @@ describe("ToolExecutor shared variable injection", () => {
 
   test("does NOT overwrite user-provided sourcePath", async () => {
     const registry = createMockRegistry([fileRefactorTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "file-refactor.rename-files",
@@ -142,7 +150,7 @@ describe("ToolExecutor shared variable injection", () => {
 
   test("tools without x-shared are unaffected", async () => {
     const registry = createMockRegistry([noSharedTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "markdown.format",
@@ -158,7 +166,7 @@ describe("ToolExecutor shared variable injection", () => {
 
   test("resolves multiple x-shared fields in one call", async () => {
     const registry = createMockRegistry([multiSharedTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "analyzer.analyze",
@@ -177,7 +185,7 @@ describe("ToolExecutor shared variable injection", () => {
 
   test("shared vars still injected with cross-extension depth", async () => {
     const registry = createMockRegistry([fileRefactorTool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall(
       "file-refactor.rename-files",
@@ -196,8 +204,13 @@ describe("ToolExecutor shared variable injection", () => {
   test("event bus receives original input (not resolved)", async () => {
     const registry = createMockRegistry([fileRefactorTool]);
     const emitted: Array<{ event: string; data: any }> = [];
-    const bus = { emit(event: string, data: any) { emitted.push({ event, data }); } };
-    const executor = new ToolExecutor(registry as any, { bus: bus as any });
+    // Phase 6 ToolExecutor wires bus.on("run:complete"/...) for counter
+    // cleanup; provide a no-op `on` so the constructor doesn't throw.
+    const bus = {
+      emit(event: string, data: any) { emitted.push({ event, data }); },
+      on: () => () => {},
+    };
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine(), { bus: bus as any });
 
     await executor.executeToolCall(
       "file-refactor.rename-files",

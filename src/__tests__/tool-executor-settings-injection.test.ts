@@ -52,6 +52,7 @@ afterAll(() => restoreModuleMocks());
 const { ToolExecutor } = await import("../extensions/tool-executor");
 import type { ExtensionRegistry } from "../extensions/registry";
 import type { ExtensionManifestV2, ToolCallResult } from "../extensions/types";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 
 interface CapturedCall {
   toolName: string;
@@ -143,7 +144,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
       speed: 1.2,
     }));
 
-    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest), createStubPermissionEngine());
     execu.setCurrentUserId("user-1");
 
     await execu.executeToolCall("speak", { text: "hello" }, "conv-1", "msg-1");
@@ -163,7 +164,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
   });
 
   test("manifest with no settings block → resolver NOT called and invocationMetadata absent", async () => {
-    const execu = new ToolExecutor(makeFakeRegistry(captured, baseManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, baseManifest), createStubPermissionEngine());
     execu.setCurrentUserId("user-1");
 
     await execu.executeToolCall("speak", { text: "hello" }, "conv-1", "msg-1");
@@ -179,7 +180,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
       speed: 1.0,
     }));
 
-    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest), createStubPermissionEngine());
     execu.setCurrentUserId("user-1");
 
     // Caller pre-binds an override for `voice`; resolved value should
@@ -202,7 +203,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
   test("caller-supplied invocationMetadata.settings preserved when resolver returns {}", async () => {
     mockResolve.mockImplementationOnce(async () => ({}));
 
-    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest), createStubPermissionEngine());
     execu.setCurrentUserId("user-1");
 
     await execu.executeToolCall(
@@ -223,7 +224,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
   test("non-settings keys in caller invocationMetadata pass through alongside settings", async () => {
     mockResolve.mockImplementationOnce(async () => ({ voice: "af_bella" }));
 
-    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest), createStubPermissionEngine());
     execu.setCurrentUserId("user-1");
 
     await execu.executeToolCall(
@@ -246,7 +247,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
   test("resolver receives null userId when no current user is set", async () => {
     mockResolve.mockImplementationOnce(async () => ({ voice: "af_bella" }));
 
-    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest), createStubPermissionEngine());
     // No setCurrentUserId() call.
 
     await execu.executeToolCall("speak", { text: "hello" }, "conv-1", "msg-1");
@@ -267,7 +268,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
       speed: 1.0,
     }));
 
-    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest));
+    const execu = new ToolExecutor(makeFakeRegistry(captured, settingsManifest), createStubPermissionEngine());
     execu.setCurrentUserId("user-1");
 
     await execu.executeToolCall(
@@ -312,7 +313,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
         prefix: "",
       }));
 
-      const execu = new ToolExecutor(makeFakeRegistry(captured, FALSY_MANIFEST));
+      const execu = new ToolExecutor(makeFakeRegistry(captured, FALSY_MANIFEST), createStubPermissionEngine());
       execu.setCurrentUserId("user-1");
 
       await execu.executeToolCall(
@@ -337,7 +338,7 @@ describe("ToolExecutor — _meta.invocationMetadata.settings injection", () => {
         retries: 5,
       }));
 
-      const execu = new ToolExecutor(makeFakeRegistry(captured, FALSY_MANIFEST));
+      const execu = new ToolExecutor(makeFakeRegistry(captured, FALSY_MANIFEST), createStubPermissionEngine());
       execu.setCurrentUserId("user-1");
 
       await execu.executeToolCall(

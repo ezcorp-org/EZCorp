@@ -1,5 +1,30 @@
 // ── V2 Component Definitions ─────────────────────────────────────
 
+/**
+ * Per-tool capability declaration (Phase 1, manifest schemaVersion 3).
+ *
+ * Tools opt into specific runtime capabilities here; the host's PDP
+ * (`./permission-engine.ts`) intersects the declaration with the
+ * extension-wide grant at every tool call. v2 manifests auto-promote
+ * via `migrateManifestV2ToV3`: each tool inherits the extension-wide
+ * ceiling, and the result is flagged `_inheritedFromV2: true` so the
+ * audit log can distinguish authored vs inherited declarations.
+ *
+ * `custom` accepts namespaced capability names (e.g. `ezcorp:chat:append`)
+ * for caps that don't fit the network/fs/shell/env/storage primitives.
+ * Phase 6 will migrate the legacy boolean fields (`appendMessages`,
+ * `agentConfig`, `taskEvents`, `spawnAgents`, `eventSubscriptions`) onto
+ * this surface.
+ */
+export interface CapabilityDeclaration {
+  network?: { hosts: string[] };
+  filesystem?: { paths: string[]; mode: ("read" | "write")[] };
+  shell?: boolean;
+  env?: string[];
+  storage?: boolean;
+  custom?: Record<string, string[] | boolean>;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -25,6 +50,14 @@ export interface ToolDefinition {
    * Default `false`.
    */
   requiresUserInput?: boolean;
+  /**
+   * Per-tool capability declaration (Phase 1, manifest v3 only).
+   *
+   * Optional on v2 manifests — `migrateManifestV2ToV3` synthesizes a
+   * declaration from the extension-wide `permissions` block when this
+   * field is absent. The PDP uses the FINAL post-migration value.
+   */
+  capabilities?: CapabilityDeclaration;
 }
 
 export interface SkillDefinition {
@@ -203,10 +236,19 @@ export type SettingsField =
  *  /^[a-z][a-z0-9_]{0,63}$/ (filesystem-safe identifier). */
 export type SettingsSchema = Record<string, SettingsField>;
 
-// ── Extension Manifest V2 ────────────────────────────────────────
+// ── Extension Manifest V2/V3 ──────────────────────────────────────
+//
+// Phase 1 introduces v3, which adds optional per-tool `capabilities` on
+// `ToolDefinition`. The structural shape of the manifest itself is
+// unchanged — only the `schemaVersion` literal widens to `2 | 3`. The
+// validator (`./manifest.ts`) still gates which version is accepted.
+//
+// Loaders run `migrateManifestV2ToV3` after validation so every
+// downstream consumer (registry, tool-executor, PDP) sees v3 shape
+// regardless of the manifest's authored version.
 
 export interface ExtensionManifestV2 {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   name: string; // Also serves as namespace prefix
   version: string; // semver
   description: string;
@@ -388,10 +430,54 @@ export interface ExtensionManifestV2 {
   category?: string;
   checksum?: string;
   packageChecksums?: Record<string, string>;
+
+  // ── Phase 4 deputy / orchestration opt-in flags ───────────────────
+  /**
+   * When `true`, this extension's tools accept caller capabilities via
+   * `ezcorp/invoke` and run with `intersect(callerCaps, ownCaps)`.
+   * Default `false` — pre-Phase-4 behavior, callee runs with its own
+   * caps as-is. Bundled "deputy" extensions (e.g. ai-kit) opt in;
+   * the install-time UI surfaces the elevated-trust nature.
+   *
+   * The runtime check is `=== true` — v2 manifests that don't carry
+   * this field are treated as opted-out.
+   *
+   * Granted at install time on the `extensions.grantedPermissions`
+   * blob — the runtime consults the GRANT, not the manifest. A
+   * manifest declaring `acceptsCallerCaps: true` without user consent
+   * is treated as if the flag were absent.
+   */
+  acceptsCallerCaps?: boolean;
+  /**
+   * When `true`, this extension's `ezcorp/spawn-assignment` calls do
+   * NOT cap the child conversation by parent capabilities. The child
+   * runs with its own agent-config-declared caps (still intersected
+   * with the child manifest's declared permissions). Default `false`
+   * — child caps are clipped by `intersect(parentGrants,
+   * childManifestPerms)`. Only orchestration extensions whose entire
+   * purpose is delegation should set this; the install-time UI
+   * requires explicit consent.
+   *
+   * Like `acceptsCallerCaps`, the runtime consults the GRANT (not the
+   * manifest) so a manifest without user consent is treated as
+   * opted-out.
+   */
+  escalateChildCaps?: boolean;
 }
 
 // Backward compat alias -- plan 03 will clean up remaining usages
 export type ExtensionManifest = ExtensionManifestV2;
+
+/**
+ * Internal manifest shape after `migrateManifestV2ToV3` runs. Only the
+ * loader / registry produce this — extension authors never write
+ * `_inheritedFromV2` themselves. The flag drives audit-log
+ * disambiguation between authored v3 declarations and v2-inherited
+ * ones.
+ */
+export interface ExtensionManifestInternal extends ExtensionManifestV2 {
+  _inheritedFromV2?: boolean;
+}
 
 // ── Package Type Inference ───────────────────────────────────────
 
@@ -484,6 +570,15 @@ export interface ExtensionPermissions {
   /** Grants the `ezcorp/append-message` reverse RPC. See the matching
    *  field on `ExtensionManifestV2.permissions`. */
   appendMessages?: { excludedDefault: boolean };
+  /**
+   * Phase 4 deputy/orchestration opt-in flags persisted on install.
+   * Mirrors the manifest declaration of the same names — the runtime
+   * check is `=== true`. The user MUST consent at install time for
+   * either to be honored at runtime; absence on either side defaults
+   * to "opted-out".
+   */
+  acceptsCallerCaps?: boolean;
+  escalateChildCaps?: boolean;
 
   // ── Phase 51 capability surfaces (granted = clamped manifest) ───
   llm?: {

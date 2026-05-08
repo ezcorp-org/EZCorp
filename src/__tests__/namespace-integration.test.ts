@@ -1,8 +1,15 @@
-import { test, expect, describe, mock, afterAll } from "bun:test";
+import { test, expect, describe, mock, beforeEach, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import type { RegisteredTool } from "../extensions/registry";
-import { ToolExecutor, PermissionDeniedError } from "../extensions/tool-executor";
+import { ToolExecutor, PermissionDeniedError, _resetToolCallsCounterForTests } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import type { ToolCallResult, ToolDefinition } from "../extensions/types";
+
+// Phase 6's per-conversation tool-call cap is process-global; reuse of
+// conv-1 across the file would otherwise trip MaxToolCallsExceededError.
+beforeEach(() => {
+  _resetToolCallsCounterForTests();
+});
 
 // ── Mock DB (suppress real DB writes) ────────────────────────────────
 
@@ -210,7 +217,7 @@ describe("Executor namespace stripping", () => {
 
   test("executeToolCall calls proc.callTool with originalName, not namespaced", async () => {
     const registry = createMockRegistry([searchA]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("ext-a__search", { q: "test" }, "conv-1", "msg-1");
 
@@ -239,7 +246,7 @@ afterAll(() => restoreModuleMocks());
     // Re-import to pick up the new mock
     const { ToolExecutor: FreshExecutor } = await import("../extensions/tool-executor");
     const registry = createMockRegistry([searchA]);
-    const executor = new FreshExecutor(registry as any);
+    const executor = new FreshExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("ext-a__search", { q: "test" }, "conv-1", "msg-1");
 
@@ -248,7 +255,7 @@ afterAll(() => restoreModuleMocks());
 
   test("error messages include namespaced name for unknown tools", async () => {
     const registry = createMockRegistry([searchA]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     const result = await executor.executeToolCall("nonexistent__tool", {}, "conv-1", "msg-1");
 
@@ -258,7 +265,7 @@ afterAll(() => restoreModuleMocks());
 
   test("unknown namespaced tool returns proper error shape", async () => {
     const registry = createMockRegistry([searchA]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     const result = await executor.executeToolCall("ext-a__missing", {}, "conv-1", "msg-1");
 
@@ -268,27 +275,24 @@ afterAll(() => restoreModuleMocks());
     expect(result.content[0]!.text).toContain("ext-a__missing");
   });
 
-  test("permission checker receives namespaced name, not stripped name", async () => {
+  test("PDP receives the namespaced toolName in its ctx, not stripped", async () => {
     const registry = createMockRegistry([searchA]);
-    const checkerCalls: Array<{ extensionId: string; toolName: string }> = [];
-    const checker = async (extensionId: string, toolName: string, _input: Record<string, unknown>) => {
-      checkerCalls.push({ extensionId, toolName });
-      return true;
-    };
-
-    const executor = new ToolExecutor(registry as any, { permissionChecker: checker });
+    const engine = createStubPermissionEngine();
+    const executor = new ToolExecutor(registry as any, engine);
 
     await executor.executeToolCall("ext-a__search", { q: "x" }, "conv-1", "msg-1");
 
-    expect(checkerCalls).toHaveLength(1);
-    expect(checkerCalls[0]!.toolName).toBe("ext-a__search");
-    expect(checkerCalls[0]!.extensionId).toBe("id-a");
+    // The PDP's ctx.toolName is the ORIGINAL name (post-strip) because
+    // that's what the manifest declares, but the routing identity is
+    // the extensionId — both are surfaced.
+    expect(engine.calls).toHaveLength(1);
+    expect(engine.calls[0]!.ctx.extensionId).toBe("id-a");
+    expect(engine.calls[0]!.ctx.toolName).toBe("search");
   });
 
-  test("permission denial throws PermissionDeniedError with namespaced name", async () => {
+  test("PDP deny throws PermissionDeniedError with namespaced name", async () => {
     const registry = createMockRegistry([searchA]);
-    const denier = async () => false;
-    const executor = new ToolExecutor(registry as any, { permissionChecker: denier });
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine("deny-all"));
 
     try {
       await executor.executeToolCall("ext-a__search", {}, "conv-1", "msg-1");
@@ -303,8 +307,14 @@ afterAll(() => restoreModuleMocks());
   test("event bus receives namespaced name on success", async () => {
     const registry = createMockRegistry([searchA]);
     const emitted: Array<{ event: string; data: any }> = [];
-    const bus = { emit: (event: string, data: any) => emitted.push({ event, data }) };
-    const executor = new ToolExecutor(registry as any, { bus: bus as any });
+    // Phase 6 ToolExecutor wires bus.on("run:complete"/...) to clear
+    // its per-conversation tool-call counter; provide a no-op `on` so
+    // the constructor doesn't blow up on `this.bus.on is not a function`.
+    const bus = {
+      emit: (event: string, data: any) => emitted.push({ event, data }),
+      on: () => () => {},
+    };
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine(), { bus: bus as any });
 
     await executor.executeToolCall("ext-a__search", {}, "conv-1", "msg-1");
 
@@ -323,8 +333,14 @@ afterAll(() => restoreModuleMocks());
     });
 
     const emitted: Array<{ event: string; data: any }> = [];
-    const bus = { emit: (event: string, data: any) => emitted.push({ event, data }) };
-    const executor = new ToolExecutor(registry as any, { bus: bus as any });
+    // Phase 6 ToolExecutor wires bus.on("run:complete"/...) to clear
+    // its per-conversation tool-call counter; provide a no-op `on` so
+    // the constructor doesn't blow up on `this.bus.on is not a function`.
+    const bus = {
+      emit: (event: string, data: any) => emitted.push({ event, data }),
+      on: () => () => {},
+    };
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine(), { bus: bus as any });
 
     await executor.executeToolCall("ext-a__search", {}, "conv-1", "msg-1");
 
@@ -345,7 +361,7 @@ describe("End-to-end namespace flow", () => {
 
   test("ext-a.search routes to ext-a process with originalName 'search'", async () => {
     const registry = createMockRegistry([extASearch, extBSearch, extAFormat]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("ext-a__search", { q: "hello" }, "conv-1", "msg-1");
 
@@ -359,7 +375,7 @@ describe("End-to-end namespace flow", () => {
 
   test("ext-b.search routes to ext-b process with originalName 'search'", async () => {
     const registry = createMockRegistry([extASearch, extBSearch, extAFormat]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("ext-b__search", { q: "world" }, "conv-1", "msg-1");
 
@@ -373,7 +389,7 @@ describe("End-to-end namespace flow", () => {
 
   test("calling both ext-a.search and ext-b.search dispatches to different processes", async () => {
     const registry = createMockRegistry([extASearch, extBSearch]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("ext-a__search", { q: "a" }, "conv-1", "msg-1");
     await executor.executeToolCall("ext-b__search", { q: "b" }, "conv-1", "msg-2");
@@ -421,7 +437,7 @@ describe("End-to-end namespace flow", () => {
 
   test("multiple tools from same extension each route correctly", async () => {
     const registry = createMockRegistry([extASearch, extBSearch, extAFormat]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("ext-a__search", { q: "s" }, "conv-1", "msg-1");
     await executor.executeToolCall("ext-a__format", { data: "d" }, "conv-1", "msg-2");
@@ -467,7 +483,7 @@ describe("Namespace edge cases", () => {
       originalName: "file.read",
     };
     const registry = createMockRegistry([tool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("myext.file.read", { path: "/tmp" }, "conv-1", "msg-1");
 
@@ -503,7 +519,7 @@ describe("Namespace edge cases", () => {
       originalName: "search",
     };
     const registry = createMockRegistry([tool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     await executor.executeToolCall("@scope/my-ext.search", {}, "conv-1", "msg-1");
 
@@ -522,7 +538,7 @@ describe("Namespace edge cases", () => {
       originalName: "",
     };
     const registry = createMockRegistry([tool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     // The registry DOES contain "myext." so it resolves, but originalName is ""
     await executor.executeToolCall("myext.", {}, "conv-1", "msg-1");
@@ -535,7 +551,7 @@ describe("Namespace edge cases", () => {
   test("bare tool name (no namespace) returns unknown tool error", async () => {
     const tools = [makeTool("ext-a", "search", "id-a")];
     const registry = createMockRegistry(tools);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     const result = await executor.executeToolCall("search", {}, "conv-1", "msg-1");
 
@@ -564,7 +580,7 @@ describe("Namespace edge cases", () => {
   test("createToolsContext.invoke passes namespaced name through executeToolCall", async () => {
     const tool = makeTool("ext-a", "search", "id-a");
     const registry = createMockRegistry([tool]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     const ctx = executor.createToolsContext("conv-1", "msg-1");
     const result = await ctx.invoke("ext-a__search", { q: "test" });
@@ -577,7 +593,7 @@ describe("Namespace edge cases", () => {
 
   test("createToolsContext.invoke throws on unknown namespaced tool", async () => {
     const registry = createMockRegistry([]);
-    const executor = new ToolExecutor(registry as any);
+    const executor = new ToolExecutor(registry as any, createStubPermissionEngine());
 
     const ctx = executor.createToolsContext("conv-1", "msg-1");
     await expect(ctx.invoke("fake__tool", {})).rejects.toThrow("Unknown tool: fake__tool");

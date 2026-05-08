@@ -30,8 +30,102 @@ import type { SpawnQuota } from "./spawn-quota";
 import { getConversation, getConversationSpawnDepth } from "../db/queries/conversations";
 import { persistToolCall } from "../db/queries/tool-calls";
 import { resolveExtensionSettings } from "../db/queries/extension-settings";
+import type { PermissionEngine } from "./permission-engine";
+import { capabilityDeclarationToSet, grantsToCapabilitySet, intersect, type CapabilitySet } from "./capability-types";
+import { getRuntimeToolContext, withRuntimeToolContext } from "./runtime-tool-context";
+import {
+  createExtensionPermissionGate,
+  type ApprovalResolution,
+} from "../runtime/tools/permissions";
+import { setSensitiveAlwaysAllow } from "./permissions";
+import { handleNetworkInternalRpc, type NetworkInternalContext } from "./network-handler";
+import {
+  handleFsReadRpc,
+  handleFsWriteRpc,
+  handleFsListRpc,
+  handleFsStatRpc,
+  handleFsExistsRpc,
+  handleFsMkdirRpc,
+  handleFsUnlinkRpc,
+  type FsHandlerContext,
+  type FsRpcResponse,
+} from "./fs-handler";
 
 export const MAX_TOOL_CALLS_PER_TURN = 10;
+
+/**
+ * Phase 6 (finding M3) — process-singleton per-conversation per-turn
+ * counter. A single LLM turn that fans out >10 tool calls in the same
+ * conversation throws on the 11th, preventing runaway loops in a
+ * compromised or buggy extension chain.
+ *
+ * Reset on `run:complete` for the conversation (wired below in
+ * `wireMaxToolCallsCounter`). The counter is in-memory only — process
+ * restart clears it, which is fine; a runaway turn that survives a
+ * restart restarts at zero anyway because `run:complete` would have
+ * fired during shutdown.
+ *
+ * Module-level singleton because `ToolExecutor` is constructed per-turn
+ * by `setup-tools.ts`; a per-instance Map would reset on every turn
+ * and never trigger the cap. The bus subscription (also process
+ * singleton, attached on first `wireMaxToolCallsCounter` call) clears
+ * the count when the run completes.
+ */
+const toolCallsThisTurn = new Map<string, number>();
+let toolCallsCounterWired = false;
+
+/** Test-only: reset the per-turn counter + un-wire the bus listener. */
+export function _resetToolCallsCounterForTests(): void {
+  toolCallsThisTurn.clear();
+  toolCallsCounterWired = false;
+}
+
+/** Read-only test peek at the per-conversation tool call count. */
+export function _getToolCallsThisTurnForTests(conversationId: string): number {
+  return toolCallsThisTurn.get(conversationId) ?? 0;
+}
+
+/**
+ * Phase 6 — error type thrown when a single LLM turn exceeds the
+ * `MAX_TOOL_CALLS_PER_TURN` cap. Carries the conversationId + count so
+ * the audit row + UI surface name the offending conversation.
+ */
+export class MaxToolCallsExceededError extends Error {
+  constructor(public readonly conversationId: string, public readonly count: number) {
+    super(
+      `Max tool calls per turn exceeded for conversation "${conversationId}" ` +
+        `(count=${count}, limit=${MAX_TOOL_CALLS_PER_TURN})`,
+    );
+    this.name = "MaxToolCallsExceededError";
+  }
+}
+
+/**
+ * Phase 3: tracks which extensions have already received the
+ * `ezcorp/fs` deprecation warning. The shim emits exactly ONE warn
+ * per extension per process — repeat calls are silent.
+ *
+ * Cleared per-extension when the registry's `cleanupExtTmpDir(extId)`
+ * runs (on uninstall) so a reinstalled extension gets a fresh warning
+ * on its next legacy-shim call (validator nit #5 / N2). Cleared
+ * wholesale by `_resetFsDeprecationWarningsForTests` for unit tests.
+ */
+const fsDeprecationWarned = new Set<string>();
+
+/** Test-only: clear the deprecation-warning tracker. */
+export function _resetFsDeprecationWarningsForTests(): void {
+  fsDeprecationWarned.clear();
+}
+
+/**
+ * Drop the deprecation-warning entry for one extension. Called from
+ * `registry.cleanupExtTmpDir` (uninstall path) so a reinstalled
+ * extension warns afresh on its first legacy-shim call instead of
+ * staying silently in the Set forever.
+ */
+export function clearFsDeprecationForExtension(extensionId: string): void {
+  fsDeprecationWarned.delete(extensionId);
+}
 
 /**
  * Wraps a pi extension tool definition + ToolExecutor into an AgentTool
@@ -87,6 +181,12 @@ export function extensionToAgentTool(
   };
 }
 
+/**
+ * @deprecated Phase 6 removal. Pre-PDP per-call hook replaced by the
+ * `PermissionEngine` injected at `ToolExecutor` construction. The type
+ * is retained briefly for any out-of-tree caller that referenced it;
+ * production wires the engine directly.
+ */
 export type PermissionChecker = (
   extensionId: string,
   toolName: string,
@@ -97,22 +197,29 @@ export class PermissionDeniedError extends Error {
   constructor(
     public readonly extensionId: string,
     public readonly toolName: string,
+    public readonly reason?: string,
   ) {
-    super(`Permission denied for tool "${toolName}" from extension "${extensionId}"`);
+    const detail = reason ? ` — ${reason}` : "";
+    super(`Permission denied for tool "${toolName}" from extension "${extensionId}"${detail}`);
     this.name = "PermissionDeniedError";
   }
 }
 
 /**
  * Orchestrates tool calls between LLM and extension subprocesses.
- * Permission checking is injectable (not hard-imported from permissions.ts).
+ * Every call routes through the `PermissionEngine` (Phase 1 PDP)
+ * supplied at construction time. The engine is required — fail-closed
+ * by design (closes finding C6).
  */
 export type ArgsResolver = (
   input: Record<string, unknown>,
 ) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
+export interface ToolExecutorOptions {
+  bus?: EventBus<AgentEvents>;
+}
+
 export class ToolExecutor {
-  private permissionChecker?: PermissionChecker;
   private bus?: EventBus<AgentEvents>;
   private stateMediator?: ExtensionStateMediator;
   private wiredExtensions = new Set<string>();
@@ -128,15 +235,45 @@ export class ToolExecutor {
 
   constructor(
     private registry: ExtensionRegistry,
-    options?: { permissionChecker?: PermissionChecker; bus?: EventBus<AgentEvents> },
+    private engine: PermissionEngine,
+    options?: ToolExecutorOptions,
   ) {
-    this.permissionChecker = options?.permissionChecker;
+    if (!engine) {
+      throw new Error(
+        "ToolExecutor requires a PermissionEngine (Phase 1 fail-closed contract)",
+      );
+    }
     this.bus = options?.bus;
-  }
-
-  /** Set or update the permission checker (for deferred wiring). */
-  setPermissionChecker(checker: PermissionChecker): void {
-    this.permissionChecker = checker;
+    // Phase 6 (M3): wire the per-turn counter to reset on run:complete.
+    // Idempotent — module-level flag ensures a single bus subscription
+    // even though many ToolExecutor instances are constructed per-turn.
+    //
+    // NOTE (reviewer S2): the module-level `toolCallsCounterWired`
+    // binds to the FIRST `bus` instance that gets here. Production is
+    // single-bus by design (one `host.bus` lives on `setup-tools.ts`'s
+    // shared host), so this is a documentation requirement, not a code
+    // change. If the runtime ever transitions to multi-bus topology
+    // (e.g. per-tenant or per-process buses), this single-flag pattern
+    // would silently bind the counter to one bus and orphan the rest.
+    // Test-only `_resetToolCallsCounterForTests` resets the flag so
+    // each test's `makeBus()` rewires correctly.
+    if (this.bus && !toolCallsCounterWired) {
+      toolCallsCounterWired = true;
+      this.bus.on("run:complete", (data) => {
+        const cid = (data as { conversationId?: string } | null | undefined)?.conversationId;
+        if (cid) toolCallsThisTurn.delete(cid);
+      });
+      // Also clear on cancel/error so a turn aborted mid-flight
+      // doesn't keep its stale count tying up the next turn's budget.
+      this.bus.on("run:cancel", (data) => {
+        const cid = (data as { conversationId?: string } | null | undefined)?.conversationId;
+        if (cid) toolCallsThisTurn.delete(cid);
+      });
+      this.bus.on("run:error", (data) => {
+        const cid = (data as { conversationId?: string } | null | undefined)?.conversationId;
+        if (cid) toolCallsThisTurn.delete(cid);
+      });
+    }
   }
 
   /** Set the state mediator for routing extension notifications. */
@@ -209,7 +346,15 @@ export class ToolExecutor {
     input: Record<string, unknown>,
     conversationId: string,
     messageId: string | null,
-    _opts?: { callerExtensionId?: string; _callDepth?: number; metadata?: { invocationId?: string; source?: 'inline' | 'agent-run' } },
+    _opts?: {
+      callerExtensionId?: string;
+      _callDepth?: number;
+      metadata?: { invocationId?: string; source?: "inline" | "agent-run" };
+      /** Phase 4: caller∩callee intersected cap set for cross-ext invokes. */
+      capContext?: CapabilitySet;
+      /** Phase 1: parent audit row for the chain — set by `handlePiInvoke` etc. */
+      parentAuditId?: string;
+    },
     invocationMetadata?: Record<string, unknown>,
   ): Promise<ToolCallResult> {
     const registered = this.registry.getRegisteredTool(toolName);
@@ -223,28 +368,211 @@ export class ToolExecutor {
     const extensionId = registered.extensionId;
     const originalName = registered.originalName;
 
+    // Phase 6 (M3) — per-conversation per-turn tool-call cap. Increment
+    // BEFORE the PDP gate so a denied call still counts against the
+    // budget; this prevents an attacker who keeps tripping deny from
+    // exhausting the engine and stalling the turn. The bus listener in
+    // the constructor resets the counter on `run:complete`/`:cancel`/
+    // `:error`. Cross-ext synthetic ids (`"cross-ext"` from the legacy
+    // `handlePiInvoke` path — replaced with the real parent
+    // conversationId in the same Phase 6 commit, see M4) DON'T count
+    // against the budget so their nested calls don't double-charge the
+    // parent's quota.
+    if (conversationId && conversationId !== "cross-ext") {
+      const next = (toolCallsThisTurn.get(conversationId) ?? 0) + 1;
+      if (next > MAX_TOOL_CALLS_PER_TURN) {
+        throw new MaxToolCallsExceededError(conversationId, next);
+      }
+      toolCallsThisTurn.set(conversationId, next);
+    }
+
     // Resolve symbolic arg references (e.g. attachment handles → data URIs)
-    // before permission checks + subprocess dispatch. A resolver failure
-    // should not silently drop args, so any error propagates.
+    // BEFORE the PDP check. The post-resolved args are what the
+    // subprocess actually receives, so the PDP sees the same shape it
+    // is enforcing on. (Closes finding C5: pre-resolver schemes like
+    // `ez-attachment://` cannot launder into `file://` because the PDP
+    // gate runs after the resolver.)
     if (this.argsResolver) {
       input = await this.argsResolver(input);
     }
 
-    // Permission check (if checker is set)
-    if (this.permissionChecker) {
-      const allowed = await this.permissionChecker(extensionId, toolName, input);
-      if (!allowed) {
-        throw new PermissionDeniedError(extensionId, toolName);
+    // Compute the tool's required capability set from its manifest
+    // declaration. v2 manifests run through `migrateManifestV2ToV3` at
+    // load time — every tool now has a `capabilities` declaration.
+    const manifest = this.registry.getManifest(extensionId);
+    const tool = manifest?.tools?.find((t) => t.name === originalName);
+    const needed = capabilityDeclarationToSet(tool?.capabilities, input);
+
+    // Phase 1 PDP gate. Fail-closed if the engine isn't wired —
+    // constructor already enforces that, but the typecheck here is
+    // additional belt-and-braces.
+    //
+    // Runtime fail-closed: if `engine.authorize` itself throws (DB
+    // blip in `getSetting`, malformed cap, transient bug), convert to
+    // PermissionDeniedError so the caller still rejects rather than
+    // silently allowing the dispatch on the existing try/catch's
+    // success path. The thrown error propagates up the same reject
+    // path as a normal deny.
+    // Phase 4 §M1/M2 — chain `parentAuditId` from the upstream
+    // runtime context (set by the previous authorize() in this call
+    // chain) when the caller didn't supply one explicitly. Top-level
+    // dispatches see `getRuntimeToolContext() === undefined` and pass
+    // `parentAuditId` as undefined; nested invokes pick it up from
+    // the surrounding ALS scope.
+    const upstreamCtx = getRuntimeToolContext();
+    const inheritedParentAuditId =
+      _opts?.parentAuditId ?? upstreamCtx?.currentAuditId;
+
+    let decision: Awaited<ReturnType<typeof this.engine.authorize>>;
+    try {
+      decision = await this.engine.authorize(
+        {
+          extensionId,
+          // Phase 6: null is the canonical "no user" signal — the
+          // PDP serializes it as JSON null in the audit row instead
+          // of the literal string "unknown".
+          userId: this.currentUserId ?? null,
+          conversationId: conversationId ?? null,
+          toolName: originalName,
+          callerExtensionId: _opts?.callerExtensionId,
+          capContext: _opts?.capContext,
+          ...(inheritedParentAuditId !== undefined ? { parentAuditId: inheritedParentAuditId } : {}),
+        },
+        needed,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new PermissionDeniedError(
+        extensionId,
+        toolName,
+        `engine error: ${msg}`,
+      );
+    }
+
+    if (decision.decision === "deny") {
+      throw new PermissionDeniedError(extensionId, toolName, decision.reason);
+    }
+    if (decision.decision === "prompt") {
+      // Phase 6 — sensitive-cap UI gate. The PDP returned a `prompt`
+      // decision (every needed cap is granted, but a sensitive cap
+      // — `shell` or `fs.write` — lacks an always-allow row for the
+      // (user, scope, scopeId, capability) tuple). We open an
+      // extension-scoped permission gate, emit `tool:permission_request`
+      // for the originating user's UI, and AWAIT the user's
+      // `{allowed, scope}` decision. The user's chosen scope is
+      // persisted via `setSensitiveAlwaysAllow` so the next call to
+      // the same sensitive cap inside the same scope auto-allows.
+      //
+      // The PDP path also wrote a `PERM_PROMPTED` audit row before
+      // returning; we don't write a second row here. On user decline
+      // we throw `PermissionDeniedError` to mirror the deny path.
+      const sensitive = decision.sensitive;
+      const capabilityKind: "shell" | "fs.write" =
+        sensitive.kind === "shell" ? "shell" : "fs.write";
+
+      // Surface the prompt to the originating user's UI session only.
+      // `userId` is the H7-scoped delivery key — the SSE filter at
+      // `sse-conversation-filter.ts:shouldDeliverEvent` enforces that
+      // only the matching subscriber sees the event.
+      this.bus?.emit("tool:permission_request", {
+        conversationId,
+        toolCallId: decision.promptId,
+        toolName: originalName,
+        input,
+        userId: this.currentUserId,
+        extensionId,
+        capabilityKind,
+        ...(sensitive.value !== undefined ? { capabilityValue: sensitive.value } : {}),
+        promptId: decision.promptId,
+      });
+
+      let resolution: ApprovalResolution;
+      try {
+        resolution = await createExtensionPermissionGate({
+          promptId: decision.promptId,
+          conversationId,
+          userId: this.currentUserId ?? "",
+          extensionId,
+          toolName: originalName,
+          capabilityKind,
+          ...(sensitive.value !== undefined ? { capabilityValue: sensitive.value } : {}),
+        });
+      } catch (err) {
+        // The gate's promise resolves with `{allowed: false}` on
+        // decline; reaching the catch arm means a transport-level
+        // failure (e.g. server restart). Treat as deny.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new PermissionDeniedError(
+          extensionId,
+          toolName,
+          `permission gate error: ${msg}`,
+        );
       }
+
+      if (!resolution.allowed) {
+        throw new PermissionDeniedError(
+          extensionId,
+          toolName,
+          "User declined permission prompt",
+        );
+      }
+
+      // Persist always-allow at the user-chosen scope (default session
+      // — least surprise; the gate falls back to "session" when no
+      // scope is supplied, matching the spec's locked default).
+      const scope = resolution.scope ?? "session";
+      const scopeId =
+        scope === "conversation"
+          ? conversationId
+          : scope === "session"
+            ? `session:${this.currentUserId ?? ""}`
+            : scope === "project"
+              ? // Project scopeId resolution is deferred — we use the
+                // conversationId as a stable key for now; a future
+                // commit can map conversation→project when the PDP
+                // gains project-aware lookups (the cache key already
+                // accommodates it).
+                conversationId
+              : "*";
+      await setSensitiveAlwaysAllow(
+        extensionId,
+        capabilityKind === "shell" ? "shell" : "filesystem",
+        true,
+        this.currentUserId
+          ? { userId: this.currentUserId, scope, scopeId }
+          : undefined,
+      );
+      // Resolve the engine's pending prompt registry so its in-memory
+      // cache reflects the new always-allow row without a DB round-trip
+      // on the next call.
+      try {
+        await this.engine.resolvePrompt(decision.promptId, true, scope, scopeId);
+      } catch {
+        // resolvePrompt is best-effort cache update; persistence is
+        // already on disk via setSensitiveAlwaysAllow above.
+      }
+      // Fall through to dispatch — the user authorized this call.
     }
 
     // Track current call context for reverse RPC handlers (e.g. ezcorp/storage)
     this.currentConversationId = conversationId;
 
+    // Phase 4 §M1/M2 — establish the runtime tool context for the
+    // remainder of this dispatch. Any nested `handlePiInvoke` reads
+    // `currentCapContext` (the post-intersection set this call ran
+    // with) and `currentAuditId` (this authorize's row id). Inherits
+    // unspecified fields from any surrounding scope so nested
+    // invocations stack chained-deputy intersections correctly.
+    const runtimeCtxForCall: import("./runtime-tool-context").RuntimeToolContext = {
+      ...(_opts?.capContext !== undefined ? { currentCapContext: _opts.capContext } : {}),
+      currentAuditId: decision.auditId,
+    };
+
     const startTime = Date.now();
     const meta = _opts?.metadata;
     this.bus?.emit("tool:start", { conversationId, extensionId, toolName, input, timestamp: startTime, ...(registered.cardType && { cardType: registered.cardType }), ...(meta?.source && { source: meta.source }), ...(meta?.invocationId && { invocationId: meta.invocationId }) });
 
+    return withRuntimeToolContext(runtimeCtxForCall, async () => {
     try {
       // Resolve shared variables (x-shared) before dispatching to either
       // subprocess or MCP client.
@@ -366,17 +694,45 @@ export class ToolExecutor {
 
       return errorResult;
     }
+    });
   }
 
   /**
-   * Handle a ezcorp/fs reverse RPC request from a subprocess.
-   * Mediates filesystem operations through checkFilesystemPermission.
-   * Calls denyAndDisable on violations, disabling the extension.
+   * @deprecated Phase 3: replaced by `ezcorp/fs.{read,write,list,stat,
+   * exists,mkdir,unlink}` host-mediated handlers (`./fs-handler.ts`).
+   * The path-check shim stays for one release so existing extensions
+   * keep working unchanged. Phase 6 deletes it.
+   *
+   * Behavior:
+   *  - Validates params (path, operation).
+   *  - Runs `checkFilesystemPermission` (default mode "read") for the
+   *    same allow/deny decision the old handler returned.
+   *  - On allow: returns `{allowed, resolvedPath}` — IDENTICAL to the
+   *    pre-Phase-3 shape. The subprocess still does the actual IO,
+   *    using the now-poisoned `Bun.file` / `node:fs` primitives — which
+   *    means **bundled extensions still calling this shim will have to
+   *    route their reads through `ezcorp/fs.read` once they're
+   *    migrated**. The shim itself doesn't fail; it just prints a
+   *    warning so authors know to migrate.
+   *  - On deny: same `denyAndDisable` + -32001 as before.
+   *  - One-time `console.warn` per extension on FIRST call only (a
+   *    Set tracks which extensions have already warned). Stops noisy
+   *    repeated warns at runtime; tests reset via
+   *    `_resetDeprecationWarningsForTests`.
    */
   async handlePiFs(
     extensionId: string,
     req: JsonRpcRequest,
   ): Promise<JsonRpcResponse> {
+    if (!fsDeprecationWarned.has(extensionId)) {
+      fsDeprecationWarned.add(extensionId);
+      console.warn(
+        `[ezcorp/fs] deprecated: extension "${extensionId}" called the path-check shim. ` +
+          "Migrate to ezcorp/fs.read | write | list | stat | exists | mkdir | unlink " +
+          "(host-mediated; SDK helpers in @ezcorp/sdk/runtime). " +
+          "This shim is removed in milestone v2.",
+      );
+    }
     const params = (req.params ?? {}) as Record<string, unknown>;
     const operation = params.operation as string;
     const path = params.path as string;
@@ -408,6 +764,54 @@ export class ToolExecutor {
       id: req.id,
       result: { allowed: true, resolvedPath: result.resolvedPath },
     };
+  }
+
+  // ── Phase 3: per-operation `ezcorp/fs.*` handlers ─────────────────
+
+  /** Build the FsHandlerContext shared by every fs.* handler. */
+  private buildFsHandlerCtx(extensionId: string): FsHandlerContext {
+    return {
+      extensionId,
+      conversationId: this.currentConversationId ?? "unknown",
+      userId: this.currentUserId ?? "unknown",
+      engine: this.engine,
+      registry: this.registry,
+    };
+  }
+
+  /** `ezcorp/fs.read` — host-mediated read. Streams >1MB responses. */
+  async handlePiFsRead(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsReadRpc(req, this.buildFsHandlerCtx(extensionId));
+  }
+
+  /** `ezcorp/fs.write` — host-mediated write. */
+  async handlePiFsWrite(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsWriteRpc(req, this.buildFsHandlerCtx(extensionId));
+  }
+
+  /** `ezcorp/fs.list` — host-mediated directory list. */
+  async handlePiFsList(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsListRpc(req, this.buildFsHandlerCtx(extensionId));
+  }
+
+  /** `ezcorp/fs.stat` — host-mediated stat. */
+  async handlePiFsStat(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsStatRpc(req, this.buildFsHandlerCtx(extensionId));
+  }
+
+  /** `ezcorp/fs.exists` — host-mediated existence check. */
+  async handlePiFsExists(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsExistsRpc(req, this.buildFsHandlerCtx(extensionId));
+  }
+
+  /** `ezcorp/fs.mkdir` — host-mediated mkdir. */
+  async handlePiFsMkdir(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsMkdirRpc(req, this.buildFsHandlerCtx(extensionId));
+  }
+
+  /** `ezcorp/fs.unlink` — host-mediated unlink. */
+  async handlePiFsUnlink(extensionId: string, req: JsonRpcRequest): Promise<FsRpcResponse> {
+    return handleFsUnlinkRpc(req, this.buildFsHandlerCtx(extensionId));
   }
 
   /**
@@ -469,13 +873,78 @@ export class ToolExecutor {
       };
     }
 
+    // Phase 4 §M1 — full-chain chained-deputy attribution.
+    //
+    // When the callee's INSTALL-TIME GRANT carries
+    // `acceptsCallerCaps: true`, run the callee's tool with
+    // `intersect(callerCaps, calleeGrants)` where `callerCaps` is the
+    // UPSTREAM caller's effective set:
+    //
+    //   - If we're inside a runtime tool-context (a previous invoke
+    //     in the chain authorized this dispatch with a `capContext`),
+    //     the upstream `capContext` IS the caller's effective caps.
+    //     This makes A → B → C with all `acceptsCallerCaps: true`
+    //     yield `intersect(intersect(A, B), C)` — the spec-locked
+    //     full-chain semantics from
+    //     `tasks/phase-4-cross-ext-attribution.md:331`.
+    //   - If there's no upstream context (top-level LLM call coming
+    //     in via this invoke path), fall back to the immediate
+    //     caller's INSTALLED grants. Top-level can't be a chain.
+    //
+    // Without the upstream view, a chain A=[] → B=[evil] → C=[evil]
+    // with all deputies would let evil reach C even though A
+    // authorized nothing. The upstream context closes that gap.
+    //
+    // The check is `=== true` on the callee's GRANT, not its
+    // manifest — a manifest declaring the flag without user consent
+    // is treated as opted-out (spec lock-in: "runtime checks consult
+    // the grant").
+    const calleeGrants = this.registry.getGrantedPermissions(resolved.extensionId);
+    const upstreamRuntimeCtx = getRuntimeToolContext();
+
+    let capContext: CapabilitySet | undefined;
+    if (calleeGrants?.acceptsCallerCaps === true) {
+      // Caller side: prefer the upstream effective caps when we're
+      // inside a chain; fall back to caller's installed grants for
+      // top-level invokes.
+      const callerCaps: CapabilitySet =
+        upstreamRuntimeCtx?.currentCapContext ??
+        grantsToCapabilitySet(this.registry.getGrantedPermissions(callerExtId) ?? null);
+      const calleeCaps = grantsToCapabilitySet(calleeGrants);
+      capContext = intersect(callerCaps, calleeCaps);
+    }
+
+    // Phase 6 (finding M4) — propagate the real parent conversationId
+    // through `ezcorp/invoke`. Pre-Phase-6 we passed the synthetic
+    // `"cross-ext"` sentinel, which broke conversation-scoped checks
+    // (storage scope, always-allow lookups, audit lineage) for any
+    // cross-ext call. The parent's conversationId is whichever scope
+    // we're already wired into — `currentConversationId` (set in
+    // `executeToolCall` immediately before dispatch). We fall back to
+    // a synthetic id only when there's truly no parent (event-driven
+    // dispatch — never observed in production today).
+    const parentConvId = this.currentConversationId ?? `cross-ext-${req.id}`;
+    const messageIdForCross = `cross-ext-${req.id}`;
     try {
       const result = await this.executeToolCall(
         resolved.name,
         args,
-        "cross-ext",
-        `cross-ext-${req.id}`,
-        { callerExtensionId: callerExtId, _callDepth: depth + 1 },
+        parentConvId,
+        messageIdForCross,
+        {
+          callerExtensionId: callerExtId,
+          _callDepth: depth + 1,
+          ...(capContext !== undefined ? { capContext } : {}),
+          // Phase 4 §M2 — chain the audit id from the upstream
+          // authorize. The inner executeToolCall will use it as
+          // `parentAuditId` if `_opts.parentAuditId` isn't set. We
+          // pass it explicitly so spawn-assignment + invoke chains
+          // both flow through the same audit lineage even when the
+          // ALS scope is dropped between async boundaries.
+          ...(upstreamRuntimeCtx?.currentAuditId !== undefined
+            ? { parentAuditId: upstreamRuntimeCtx.currentAuditId }
+            : {}),
+        },
       );
 
       return {
@@ -532,6 +1001,10 @@ export class ToolExecutor {
       userId: this.currentUserId ?? "unknown",
       manifest,
       grantedPermissions: granted,
+      // Phase 6: thread the PDP so the handler delegates the
+      // permission decision to `engine.authorize` (audit log + scope
+      // semantics applied uniformly).
+      engine: this.engine,
     };
 
     return handleStorageRpc(extensionId, req, ctx);
@@ -557,6 +1030,10 @@ export class ToolExecutor {
     const ctx: AgentConfigsContext = {
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
+      // Phase 6: thread the PDP. The engine reuses the same audit-log
+      // + always-allow infrastructure as every other dispatch.
+      engine: this.engine,
+      conversationId: this.currentConversationId ?? "unknown",
     };
     return handleAgentConfigsRpc(extensionId, req, ctx);
   }
@@ -585,6 +1062,8 @@ export class ToolExecutor {
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
       bus: this.bus,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
     };
     return handleEmitTaskEventRpc(extensionId, req, ctx);
   }
@@ -639,6 +1118,12 @@ export class ToolExecutor {
       bus: this.bus,
       quota: this.spawnQuota,
       spawnDepth,
+      // Phase 4: thread the registry so the handler can compute child
+      // effective grants from each shared extension's installed grants
+      // + manifest, and persist them on conversation_extensions.
+      registry: this.registry,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
       ...(this.currentModel !== undefined ? { parentModel: this.currentModel } : {}),
       ...(this.currentProvider !== undefined ? { parentProvider: this.currentProvider } : {}),
     };
@@ -676,8 +1161,50 @@ export class ToolExecutor {
       grantedPermissions: granted,
       executor: this.executor,
       quota: this.spawnQuota,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
+      conversationId: this.currentConversationId ?? "unknown",
     };
     return handleCancelRunRpc(extensionId, req, ctx);
+  }
+
+  /**
+   * Handle a `ezcorp/network.internal` reverse RPC request (Phase 2).
+   *
+   * The in-sandbox fetch wrapper (sandbox-preload.ts) forwards every
+   * fetch to a localhost / RFC-1918 / link-local hostname here so the
+   * host PDP can SSRF-gate per-host. Manifests must declare the
+   * specific internal host (e.g. `localhost`) — the engine's existing
+   * `network` capability check enforces that.
+   *
+   * The handler performs the fetch host-side and returns a JSON-shaped
+   * Response (status, headers, base64 body) capped at 10MB. See
+   * network-handler.ts for the full contract.
+   */
+  async handlePiNetworkInternal(
+    extensionId: string,
+    req: JsonRpcRequest,
+  ): Promise<JsonRpcResponse> {
+    const granted = this.registry.getGrantedPermissions(extensionId);
+    if (!granted) {
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32603, message: "Extension not found in registry" },
+      };
+    }
+    const ctx: NetworkInternalContext = {
+      extensionId,
+      conversationId: this.currentConversationId ?? "unknown",
+      userId: this.currentUserId ?? "unknown",
+      // Reuse the Phase 1 PDP singleton — wired at runtime boot. The
+      // ToolExecutor's own `this.engine` field already holds the same
+      // reference, but referring to the singleton keeps the handler
+      // independently testable.
+      engine: this.engine,
+      registry: this.registry,
+    };
+    return handleNetworkInternalRpc(req, ctx);
   }
 
   /**
@@ -718,6 +1245,33 @@ export class ToolExecutor {
       if (req.method === "ezcorp/invoke") {
         return this.handlePiInvoke(extensionId, req);
       }
+      // Phase 3: per-operation fs.* handlers come BEFORE the legacy
+      // path-check `ezcorp/fs` shim. Method strings are exact-match
+      // (no fallthrough), so this ordering is just for readability.
+      if (req.method === "ezcorp/fs.read") {
+        return this.handlePiFsRead(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      if (req.method === "ezcorp/fs.write") {
+        return this.handlePiFsWrite(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      if (req.method === "ezcorp/fs.list") {
+        return this.handlePiFsList(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      if (req.method === "ezcorp/fs.stat") {
+        return this.handlePiFsStat(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      if (req.method === "ezcorp/fs.exists") {
+        return this.handlePiFsExists(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      if (req.method === "ezcorp/fs.mkdir") {
+        return this.handlePiFsMkdir(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      if (req.method === "ezcorp/fs.unlink") {
+        return this.handlePiFsUnlink(extensionId, req) as unknown as Promise<JsonRpcResponse>;
+      }
+      // Legacy path-check shim — see `handlePiFs` JSDoc for the
+      // deprecation roadmap. Emits a one-time console.warn per
+      // extension on first call.
       if (req.method === "ezcorp/fs") {
         return this.handlePiFs(extensionId, req);
       }
@@ -738,6 +1292,9 @@ export class ToolExecutor {
       }
       if (req.method === "ezcorp/finalize-tool-call") {
         return this.handlePiFinalizeToolCall(extensionId, req);
+      }
+      if (req.method === "ezcorp/network.internal") {
+        return this.handlePiNetworkInternal(extensionId, req);
       }
       if (req.method === "ezcorp/storage") {
         return this.handlePiStorage(extensionId, req);
@@ -882,6 +1439,8 @@ export class ToolExecutor {
       conversationId: this.currentConversationId ?? "unknown",
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
     };
     const response = await handleAppendMessageRpc(extensionId, req, ctx);
 
@@ -944,6 +1503,8 @@ export class ToolExecutor {
       conversationId: this.currentConversationId ?? "unknown",
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
     };
     return handleFinalizeToolCallRpc(extensionId, req, ctx);
   }

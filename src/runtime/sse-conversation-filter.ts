@@ -289,6 +289,22 @@ export async function shouldDeliverEvent(
   const convId = (payload as { conversationId?: unknown } | null | undefined)?.conversationId;
   if (typeof convId !== "string" || !convId) return true;
 
+  // Phase 6 H7: `tool:permission_request` carries an OPTIONAL `userId`
+  // that names the originating user. When present, deliver the event
+  // ONLY to that user — even users authorized for the same conversation
+  // (admins, future team-shares) should not see another user's
+  // permission prompt. This closes the leak where extensions emit
+  // permission events that fan out to every SSE subscriber.
+  //
+  // Backwards-compat: legacy emits without `userId` fall through to
+  // the conversation-scoped check, matching pre-Phase-6 behavior.
+  if (eventType === "tool:permission_request") {
+    const eventUserId = (payload as { userId?: unknown } | null | undefined)?.userId;
+    if (typeof eventUserId === "string" && eventUserId.length > 0) {
+      if (eventUserId !== subscriber.userId) return false;
+    }
+  }
+
   // Filter: subscriber must be authorized for the event's conversation.
   return isAuthorizedForConversation(subscriber.userId, convId, getConversation);
 }

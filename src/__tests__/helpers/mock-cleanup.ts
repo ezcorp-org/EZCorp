@@ -63,6 +63,8 @@ const MODULE_PATHS = [
   "../../extensions/manifest",
   "../../extensions/checksum",
   "../../extensions/bundled",
+  "../../extensions/bundled-ceiling",
+  "../../extensions/bundled-lock",
   "../../extensions/loader",
   "../../extensions/audit-actions",
   "../../extensions/storage-handler",

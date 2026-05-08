@@ -26,10 +26,10 @@ describe("extension audit action constants", () => {
     }
   });
 
-  test("constant set is exhaustive for the audit paths", () => {
+  test("constant set is exhaustive — covers every audit-emit site through Phase 7 + SDK Phase 50/51", () => {
     const keys = new Set(Object.keys(EXT_AUDIT_ACTIONS));
     expect(keys).toEqual(new Set([
-      // Phase 1
+      // Original Phase 1 (admin-driven grant/revoke + bundled lifecycle)
       "PERMISSION_GRANTED",
       "PERMISSION_REVOKED",
       "PERMISSION_REJECTED",
@@ -42,15 +42,27 @@ describe("extension audit action constants", () => {
       "CAPABILITY_REVOKED",
       "SPAWN_QUOTA_EXCEEDED",
       "EMIT_EVENT_REJECTED",
-      // Phase 4 — ezcorp/cancel-run RPC
-      "SPAWN_CANCELLED",
       // Phase 2c — server→extension subscription delivery
       "EVENT_SUBSCRIPTION_DENIED",
+      // Phase 4 — ezcorp/cancel-run RPC + spawn-assignment chain
+      "SPAWN_CANCELLED",
+      "SPAWN_AUTHORIZED",
       // Bundled-grant backfill for eventSubscriptions (auto-heal policy)
       "BUNDLED_EVENT_SUBSCRIPTIONS_BACKFILLED",
       // Per-extension settings (lazy-foraging-hammock)
       "SETTINGS_USER_UPDATED",
       "SETTINGS_USER_RESET",
+      // Phase 1 PDP — every authorize() decision lands here
+      "PERM_ALLOWED",
+      "PERM_DENIED",
+      "PERM_PROMPTED",
+      // Phase 5 — bundled cap-ceiling clamp + manifest tamper detection
+      "BUNDLED_CEILING_CLAMP",
+      "BUNDLED_MANIFEST_TAMPER",
+      // Phase 7 — MCP isolation (forward proxy + Linux netns)
+      "MCP_NETNS_CREATED",
+      "MCP_NETNS_FALLBACK",
+      "MCP_HOST_BLOCKED",
       // Phase 50 — SDK capability tier (audit-actions for Phase 51 handlers)
       "SDK_LLM_CALL",
       "SDK_LLM_REJECTED",

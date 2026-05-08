@@ -19,8 +19,17 @@
 
 import type { JsonRpcRequest, JsonRpcResponse } from "../types";
 import { _setDispatcherRegister, toolError } from "./rpc";
+import { withToolContext } from "./tool-context";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+// Phase 3 chunked-frame caps (mirrors host's json-rpc.ts).
+const STREAM_CHUNK_MAX_BYTES = 256 * 1024;
+const STREAM_TOTAL_CAP = 100 * 1024 * 1024;
+// Base64 inflates ~33%, so a 256KB raw chunk → ~341,336 base64 chars.
+// Match the host's pre-decode guard so the rejection fires before
+// `atob()` allocates.
+const STREAM_CHUNK_MAX_B64 = (STREAM_CHUNK_MAX_BYTES * 4) / 3 + 4;
 
 // ── JsonRpcError ────────────────────────────────────────────────
 //
@@ -154,9 +163,40 @@ class HostChannelImpl implements HostChannel {
     void this.stdout.write(JSON.stringify(msg) + "\n");
   }
 
+  // Phase 3 chunked-frame state (host → SDK only). Mirror of the
+  // host's json-rpc.ts streaming protocol.
+  //
+  // Symmetric to host json-rpc.ts:
+  //   • announce ≤ 100MB worth of chunks (rejected up-front).
+  //   • each chunk's base64 payload ≤ 256KB * 4/3 + 4 (post-encoding
+  //     upper bound for a 256KB raw chunk).
+  //   • assembled bytes ≤ 100MB hard cap.
+  //   • seq must equal nextSeq AND seq < total.
+  private streams = new Map<
+    number | string,
+    { total: number; pieces: string[]; nextSeq: number; assembledBytes: number }
+  >();
+
   private async runLoop(): Promise<void> {
     for await (const rawLine of this.stdin) {
       if (this.stopped) break;
+      // Phase 3: route on the FIRST byte. Sentinel `\x01` (chunk),
+      // `\x02` (announce), `\x03` (cancel) for streamed responses;
+      // anything else is the legacy line-delimited JSON path.
+      if (rawLine.length === 0) continue;
+      const first = rawLine.charCodeAt(0);
+      if (first === 0x01) {
+        this.handleChunkFrame(rawLine);
+        continue;
+      }
+      if (first === 0x02) {
+        this.handleAnnounceFrame(rawLine);
+        continue;
+      }
+      if (first === 0x03) {
+        this.handleCancelFrame(rawLine);
+        continue;
+      }
       const line = rawLine.trim();
       if (!line) continue;
       let msg: Record<string, unknown>;
@@ -179,6 +219,181 @@ class HostChannelImpl implements HostChannel {
       } else if (msg.id !== undefined && msg.id !== null) {
         this.handleResponse(msg);
       }
+    }
+  }
+
+  // ── Chunked-frame protocol (host → SDK) ─────────────────────────
+
+  private handleAnnounceFrame(line: string): void {
+    const body = line.slice(1);
+    const colon = body.indexOf(":");
+    if (colon === -1) return;
+    const idRaw = body.slice(0, colon);
+    const totalRaw = body.slice(colon + 1);
+    const id = parseRpcId(idRaw);
+    const total = Number(totalRaw);
+    if (id === null || !Number.isFinite(total) || total <= 0) return;
+
+    // Hard cap @ 100MB / 256KB per chunk = 410 chunks
+    const HARD = (100 * 1024 * 1024) / (256 * 1024);
+    if (total > HARD) {
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming response exceeds 100MB cap (announced ${total} chunks)`,
+          ),
+        );
+      }
+      return;
+    }
+
+    this.streams.set(id, {
+      total,
+      pieces: new Array(total),
+      nextSeq: 0,
+      assembledBytes: 0,
+    });
+  }
+
+  private handleChunkFrame(line: string): void {
+    const body = line.slice(1);
+    const c1 = body.indexOf(":");
+    if (c1 === -1) return;
+    const c2 = body.indexOf(":", c1 + 1);
+    if (c2 === -1) return;
+    const idRaw = body.slice(0, c1);
+    const seqRaw = body.slice(c1 + 1, c2);
+    const b64 = body.slice(c2 + 1);
+    const id = parseRpcId(idRaw);
+    const seq = Number(seqRaw);
+    if (id === null || !Number.isFinite(seq) || seq < 0) return;
+
+    const state = this.streams.get(id);
+    if (!state) return;
+
+    // M3 (validator should-fix #3): symmetric defense-in-depth with
+    // the host's json-rpc.ts. Even though the host is "trusted", a
+    // bug there shouldn't OOM the extension subprocess.
+
+    // M3a — oversized base64 payload: reject before atob() inflates.
+    if (b64.length > STREAM_CHUNK_MAX_B64) {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming chunk exceeds 256KB cap (id=${id}, seq=${seq}, ${b64.length} b64 chars)`,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (seq !== state.nextSeq) {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming chunk out of order: id=${id}, expected seq=${state.nextSeq}, got ${seq}`,
+          ),
+        );
+      }
+      return;
+    }
+
+    // M3b — seq beyond announced total: reject (mirrors host line 252-265).
+    if (seq >= state.total) {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming chunk seq=${seq} exceeds announced total=${state.total} (id=${id})`,
+          ),
+        );
+      }
+      return;
+    }
+
+    let piece: string;
+    try {
+      piece = atob(b64);
+    } catch {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(new Error(`[@ezcorp/sdk] streaming chunk invalid base64 (id=${id}, seq=${seq})`));
+      }
+      return;
+    }
+    state.pieces[seq] = piece;
+    state.nextSeq = seq + 1;
+    state.assembledBytes += piece.length;
+
+    // M3c — running total exceeds 100MB cap (mirrors host line 287-299).
+    if (state.assembledBytes > STREAM_TOTAL_CAP) {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming response exceeds 100MB cap (id=${id}, assembled=${state.assembledBytes})`,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (state.nextSeq === state.total) {
+      this.streams.delete(id);
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(state.pieces.join("")) as Record<string, unknown>;
+      } catch (e) {
+        const entry = this.pending.get(id);
+        if (entry) {
+          if (entry.timer) clearTimeout(entry.timer);
+          this.pending.delete(id);
+          entry.reject(
+            new Error(
+              `[@ezcorp/sdk] streaming response is not valid JSON (id=${id}): ${e instanceof Error ? e.message : String(e)}`,
+            ),
+          );
+        }
+        return;
+      }
+      this.handleResponse(parsed);
+    }
+  }
+
+  private handleCancelFrame(line: string): void {
+    const body = line.slice(1);
+    const colon = body.indexOf(":");
+    const idRaw = colon === -1 ? body : body.slice(0, colon);
+    const reason = colon === -1 ? "unknown" : body.slice(colon + 1);
+    const id = parseRpcId(idRaw);
+    if (id === null) return;
+    const hadStream = this.streams.delete(id);
+    const entry = this.pending.get(id);
+    if (!entry && !hadStream) return;
+    if (entry) {
+      if (entry.timer) clearTimeout(entry.timer);
+      this.pending.delete(id);
+      entry.reject(new Error(`[@ezcorp/sdk] streaming response cancelled: ${reason}`));
     }
   }
 
@@ -259,6 +474,18 @@ class HostChannelImpl implements HostChannel {
   }
 }
 
+// ── Phase 3 streaming helpers ───────────────────────────────────
+
+/**
+ * Parse a JSON-RPC id string. Numeric forms become numbers (matching
+ * the request.id sent by `request()`); non-numeric strings pass through.
+ */
+function parseRpcId(raw: string): number | string | null {
+  if (raw.length === 0) return null;
+  if (/^[0-9]+$/.test(raw)) return Number(raw);
+  return raw;
+}
+
 // ── Production stdin source ─────────────────────────────────────
 //
 // Bun.stdin.stream() yields Uint8Array chunks; we split on \n into an
@@ -294,9 +521,27 @@ async function* bunStdinLines(): AsyncGenerator<string> {
 let singleton: HostChannelImpl | null = null;
 
 function createProductionChannel(): HostChannelImpl {
+  // `process.stdout.write` triggers Bun's lazy lookup of `node:fs`'s
+  // WriteStream constructor for stdio init. Phase 3 sandbox-preload
+  // poisons fs module property access, so the very first stdout write
+  // would throw `Extension sandbox: 'fs module' blocked`. `Bun.stdout`
+  // is a stable Bun primitive (not gated by Phase 3 fs poisoning), so
+  // its writer survives the sandbox. Cached lazily so we don't pay
+  // the writer-creation cost on every JSON-RPC frame.
+  let writer: ReturnType<typeof Bun.stdout.writer> | null = null;
   return new HostChannelImpl({
     stdin: bunStdinLines(),
-    stdout: { write: (s: string): void => { process.stdout.write(s); } },
+    stdout: {
+      write: (s: string): void => {
+        if (!writer) writer = Bun.stdout.writer();
+        writer.write(s);
+        // Best-effort flush — if Bun's writer queue blocks we just
+        // back-pressure the next call rather than awaiting here (the
+        // host reader is line-delimited, so byte-aligned framing is
+        // preserved by writer's internal buffering).
+        void writer.flush();
+      },
+    },
   });
 }
 
@@ -342,13 +587,26 @@ function ensureDispatcherRegistered(): void {
       // isError-result. Tool-level errors (handler threw / returned
       // isError:true) keep the result-envelope path below.
       if (!handler) throw new JsonRpcError(-32601, `Tool not found: ${name}`);
-      try {
-        return await handler(args, ctx);
-      } catch (err) {
-        if (opts?.onError) return opts.onError(err, name);
-        const message = err instanceof Error ? err.message : String(err);
-        return toolError(message);
-      }
+      // Phase 2: bind the per-call tool context so the in-sandbox fetch
+      // wrapper (sandbox-preload.ts) can read the active tool name from
+      // ALS. Without this, the wrapper falls back to extension-wide
+      // allowlist only — the per-tool override (`EZCORP_TOOL_NETWORK_CAPS`)
+      // would be unreachable. `ezConversationId` is forwarded by the host
+      // on `_meta`; default to "" when absent (e.g. in tests).
+      const ezConversationId =
+        typeof rawMeta.ezConversationId === "string" ? rawMeta.ezConversationId : "";
+      return withToolContext(
+        { toolName: name, conversationId: ezConversationId },
+        async () => {
+          try {
+            return await handler(args, ctx);
+          } catch (err) {
+            if (opts?.onError) return opts.onError(err, name);
+            const message = err instanceof Error ? err.message : String(err);
+            return toolError(message);
+          }
+        },
+      );
     });
   });
 }

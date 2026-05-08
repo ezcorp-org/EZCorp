@@ -17,7 +17,6 @@ import {
 import { denyAndDisable } from "../extensions/security";
 import type { SecurityViolation } from "../extensions/security";
 import {
-  checkPermission,
   diffPermissions,
   getRequiredPermissions,
   isSensitiveOperation,
@@ -357,67 +356,96 @@ describe("checksum integrity verification", () => {
   });
 });
 
-// ── 10. Edge Cases ───────────────────────────────────────────────────
+// ── 10. PDP edge cases (Phase 1 migration) ───────────────────────────
+//
+// The pre-Phase-1 block called the dead sync `checkPermission` helper
+// directly. Phase 1 routes every privileged op through the
+// `PermissionEngine` (PDP); these cases now exercise `engine.authorize`
+// against a registry stub configured with the equivalent grant set.
+// Pure-function coverage of the deprecated `checkPermission` lives in
+// the dedicated unit suite that imports it; it stays alive until the
+// Phase 6 deletion.
 
-describe("permission check edge cases", () => {
-  test("no network permissions → returns false", () => {
-    const result = checkPermission("network", "evil.com", { grantedAt: {} });
-    expect(result).toBe(false);
+import { createPermissionEngine } from "../extensions/permission-engine";
+import type { ExtensionRegistry } from "../extensions/registry";
+import type { CapabilitySet } from "../extensions/capability-types";
+
+function makeEngineWithGrant(granted: ExtensionPermissions) {
+  return createPermissionEngine({
+    registry: {
+      getGrantedPermissions: () => granted,
+    } as unknown as ExtensionRegistry,
+    bus: { emit: () => {}, on: () => () => {} } as unknown as Parameters<
+      typeof createPermissionEngine
+    >[0]["bus"],
+    db: { _token: "lifecycle-edge" },
+  });
+}
+
+const CTX = {
+  extensionId: "ext-1",
+  userId: "u-1",
+  conversationId: "c-1",
+};
+
+describe("PDP edge cases — replaces dead checkPermission unit tests", () => {
+  test("no network permissions → deny", async () => {
+    const engine = makeEngineWithGrant({ grantedAt: {} });
+    const decision = await engine.authorize(CTX, [
+      { kind: "network", value: "evil.com" },
+    ] as CapabilitySet);
+    expect(decision.decision).toBe("deny");
   });
 
-  test("filesystem path outside granted prefix → returns false", () => {
-    const result = checkPermission("filesystem", "/etc/passwd", {
-      grantedAt: {},
-      filesystem: ["/home"],
-    });
-    expect(result).toBe(false);
+  test("filesystem path outside granted prefix → deny", async () => {
+    const engine = makeEngineWithGrant({ grantedAt: {}, filesystem: ["/home"] });
+    const decision = await engine.authorize(CTX, [
+      { kind: "fs.read", value: "/etc/passwd" },
+    ]);
+    expect(decision.decision).toBe("deny");
   });
 
-  test("shell not granted → returns false", () => {
-    const result = checkPermission("shell", true, {
-      grantedAt: {},
-      shell: false,
-    });
-    expect(result).toBe(false);
+  test("shell not granted → deny", async () => {
+    const engine = makeEngineWithGrant({ grantedAt: {}, shell: false });
+    const decision = await engine.authorize(CTX, [{ kind: "shell" }]);
+    expect(decision.decision).toBe("deny");
   });
 
-  test("env variable not in granted list → returns false", () => {
-    const result = checkPermission("env", "SECRET_KEY", {
-      grantedAt: {},
-      env: ["PUBLIC_KEY"],
-    });
-    expect(result).toBe(false);
+  test("env variable not in granted list → deny", async () => {
+    const engine = makeEngineWithGrant({ grantedAt: {}, env: ["PUBLIC_KEY"] });
+    const decision = await engine.authorize(CTX, [
+      { kind: "env", value: "SECRET_KEY" },
+    ]);
+    expect(decision.decision).toBe("deny");
   });
 
-  test("network permission granted → returns true", () => {
-    const result = checkPermission("network", "api.example.com", {
+  test("network permission granted → allow", async () => {
+    const engine = makeEngineWithGrant({
       grantedAt: {},
       network: ["api.example.com"],
     });
-    expect(result).toBe(true);
+    const decision = await engine.authorize(CTX, [
+      { kind: "network", value: "api.example.com" },
+    ]);
+    expect(decision.decision).toBe("allow");
   });
 
-  test("filesystem path within granted prefix → returns true", () => {
-    const result = checkPermission("filesystem", "/home/user/file.txt", {
+  test("filesystem path within granted prefix → allow (read)", async () => {
+    const engine = makeEngineWithGrant({
       grantedAt: {},
       filesystem: ["/home"],
     });
-    expect(result).toBe(true);
+    const decision = await engine.authorize(CTX, [
+      { kind: "fs.read", value: "/home/user/file.txt" },
+    ]);
+    expect(decision.decision).toBe("allow");
   });
 
-  test("shell granted → returns true", () => {
-    const result = checkPermission("shell", true, {
-      grantedAt: {},
-      shell: true,
-    });
-    expect(result).toBe(true);
-  });
-
-  test("env variable in granted list → returns true", () => {
-    const result = checkPermission("env", "PUBLIC_KEY", {
-      grantedAt: {},
-      env: ["PUBLIC_KEY"],
-    });
-    expect(result).toBe(true);
+  test("env variable in granted list → allow", async () => {
+    const engine = makeEngineWithGrant({ grantedAt: {}, env: ["PUBLIC_KEY"] });
+    const decision = await engine.authorize(CTX, [
+      { kind: "env", value: "PUBLIC_KEY" },
+    ]);
+    expect(decision.decision).toBe("allow");
   });
 });

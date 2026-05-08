@@ -1,50 +1,32 @@
-// ── fetchPermitted — hostname-allowlisted fetch ─────────────────
+// ── fetchPermitted — thin shim of globalThis.fetch (Phase 2+) ───
 //
-// Wraps global `fetch` with a pre-network hostname check against the
-// comma-separated allowlist published by the host in
-// `EZCORP_PERMITTED_HOSTS`. The host populates this env only when the
-// extension's manifest declares `permissions.network` AND the user has
-// granted that permission at install time (see
-// src/extensions/registry.ts buildAllowedEnv).
+// Pre-Phase-2: this helper hand-rolled the per-host allowlist check
+// against `EZCORP_PERMITTED_HOSTS`. SDK-using extensions (github-stats,
+// openai-image-gen-2, web-search/providers.ts, claude-design) called
+// `fetchPermitted` voluntarily. A non-SDK extension calling raw
+// `fetch()` reached any host — the allowlist was advisory.
 //
-// If the env is unset or empty, ALL fetches are rejected — a granted
-// extension that accidentally runs outside the host sandbox should fail
-// closed, not silently open.
-
-function readAllowlist(): string[] {
-  const raw = process.env.EZCORP_PERMITTED_HOSTS;
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.length > 0);
-}
+// Phase 2 inverted this: the sandbox-preload now wraps `globalThis.fetch`
+// itself with the per-host + per-tool enforcement, so EVERY fetch the
+// extension makes — SDK or raw — is gated. `fetchPermitted` becomes a
+// thin alias of `fetch` (which is the wrapped builtin), preserving
+// back-compat for the four production callers without forcing a
+// rewrite.
+//
+// The error messages from the wrapper are slightly different (no
+// `[@ezcorp/sdk]` prefix), but the throw semantics are equivalent —
+// the four extensions catch the throw via `try/catch`, surface a tool
+// error, and don't depend on the exact message string.
 
 /**
- * Perform a fetch, but first verify the target hostname is present in
- * the extension's granted network allowlist.
- *
- * Throws when:
- *   - `EZCORP_PERMITTED_HOSTS` is unset or empty (extension has no
- *     granted network permission).
- *   - The URL's hostname is not a member of the allowlist.
+ * @deprecated since Phase 2: `globalThis.fetch` is now the same wrapper
+ * (sandbox-preload installs it before extension code runs). Direct
+ * `fetch()` works identically. Kept for back-compat; will be removed
+ * in a future major version.
  */
 export async function fetchPermitted(
   url: string | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const allowlist = readAllowlist();
-  if (allowlist.length === 0) {
-    throw new Error(
-      "[@ezcorp/sdk] fetchPermitted: EZCORP_PERMITTED_HOSTS not configured — extension lacks granted network permission",
-    );
-  }
-  const target = typeof url === "string" ? new URL(url) : url;
-  const hostname = target.hostname.toLowerCase();
-  if (!allowlist.includes(hostname)) {
-    throw new Error(
-      `[@ezcorp/sdk] fetchPermitted: hostname '${hostname}' is not in EZCORP_PERMITTED_HOSTS allowlist (granted: ${allowlist.join(", ")})`,
-    );
-  }
   return fetch(url, init);
 }

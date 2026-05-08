@@ -57,6 +57,7 @@ mock.module("../extensions/subprocess", () => ({
 
 import { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { getSecurityViolations } from "../extensions/security";
 // NOTE: intentionally NOT importing hasSecurityViolation — see test comment
 // in the "allowed fs call" case.
@@ -168,7 +169,7 @@ describe("Seam 3: permission violation → DB disable → next call rejected", (
     expect(preRow[0]!.enabled).toBe(true);
 
     // Trigger the violation via the real ToolExecutor + real registry path.
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const res = await executor.handlePiFs(
       extensionId,
       makeFsRequest("read", join(outsideDir, "secret.txt")),
@@ -200,7 +201,7 @@ describe("Seam 3: permission violation → DB disable → next call rejected", (
     expect(registry.getRegisteredTool(NAMESPACED_TOOL)).not.toBeNull();
 
     // Violate → disable (this is what the fs RPC handler does in prod).
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     await executor.handlePiFs(extensionId, makeFsRequest("read", join(outsideDir, "secret.txt")));
 
     // Reload simulates the next startup / the admin endpoint that reloads
@@ -217,7 +218,7 @@ describe("Seam 3: permission violation → DB disable → next call rejected", (
   test("subsequent executeToolCall on a disabled extension rejects with 'Unknown tool'", async () => {
     const registry = ExtensionRegistry.getInstance();
     await registry.loadFromDb();
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
 
     // Violate → disable → reload the registry from the (now-updated) DB.
     await executor.handlePiFs(extensionId, makeFsRequest("read", join(outsideDir, "secret.txt")));
@@ -247,7 +248,7 @@ describe("Seam 3: permission violation → DB disable → next call rejected", (
     // attempt is recorded, regardless of current enabled state.
     const registry = ExtensionRegistry.getInstance();
     await registry.loadFromDb();
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
 
     await executor.handlePiFs(extensionId, makeFsRequest("read", join(outsideDir, "secret.txt")));
     await executor.handlePiFs(
@@ -272,7 +273,7 @@ describe("Seam 3: permission violation → DB disable → next call rejected", (
     // and the seam accidentally disables well-behaved extensions.
     const registry = ExtensionRegistry.getInstance();
     await registry.loadFromDb();
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
 
     const res = await executor.handlePiFs(
       extensionId,

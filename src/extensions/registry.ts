@@ -1,6 +1,6 @@
 import { ExtensionProcess, type ExtensionProcessOptions, parseMemoryLimit } from "./subprocess";
 import type { ToolDefinition, ExtensionManifestV2, ExtensionPermissions } from "./types";
-import { satisfiesRange } from "./manifest";
+import { migrateManifestV2ToV3, satisfiesRange } from "./manifest";
 import { verifyPackageChecksums } from "./checksum";
 import { denyAndDisable } from "./security";
 import { listExtensions, updateExtension } from "../db/queries/extensions";
@@ -12,6 +12,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { McpClient } from "../mcp/client";
 import { buildSandboxedMcpSpec } from "./mcp-sandbox";
+import type { McpProxyHandle } from "./mcp-proxy";
+import { getPermissionEngine } from "./permission-engine";
 
 /** Async resolver that produces a fresh env map on each spawn — exported
  *  so callers can type their resolver fns consistently without pulling in
@@ -76,15 +78,81 @@ export function buildAllowedEnv(
     allowedEnv.EZCORP_PERMITTED_HOSTS = grantedPerms.network.join(",");
   }
 
+  // Phase 3: EZCORP_FS_ALLOWED is informational ONLY — the SDK's
+  // fs helpers (`@ezcorp/sdk/runtime/fs.fsRead/...`) read it to
+  // fast-fail with a clean "no filesystem grant" error before
+  // round-tripping to the host's `ezcorp/fs.*` reverse-RPC. The
+  // sandbox-preload deniers fire regardless of this flag — granted
+  // access does NOT unblock raw `Bun.file` / `node:fs` (see
+  // sandbox-preload.ts FS_MODULES block + plan pillar 6). Mirrors
+  // the existing `EZCORP_NETWORK_ALLOWED` / `EZCORP_SHELL_ALLOWED`
+  // pattern at `subprocess.ts:168-169`, but emitted here so the
+  // grant test (`grantedPerms.filesystem.length > 0`) lives next to
+  // the granted-network test for symmetry.
+  if (grantedPerms.filesystem && grantedPerms.filesystem.length > 0) {
+    allowedEnv.EZCORP_FS_ALLOWED = "1";
+  }
+
+  // Phase 2: EZCORP_TOOL_NETWORK_CAPS — JSON-serialized
+  // `{toolName: string[]}` mapping, parsed by the in-sandbox fetch
+  // wrapper to enforce per-tool host allowlists narrower than the
+  // extension-wide ceiling. The active tool name is read via the SDK's
+  // `getToolContext()` (ALS).
+  //
+  // The wrapper uses this to intersect the request hostname against
+  // BOTH the extension-wide grant (PERMITTED_HOSTS) AND the per-tool
+  // declaration. A tool with no entry inherits the extension-wide
+  // ceiling without further narrowing.
+  //
+  // Migration: `buildAllowedEnv` is called on every spawn. v3 manifests
+  // pass through with their authored per-tool caps verbatim; v2 inputs
+  // need `migrateManifestV2ToV3` to synthesize per-tool caps from the
+  // extension-wide `permissions`. The migrator is idempotent on v3, but
+  // re-running it allocates a new `tools[]` array on each spawn — N1
+  // perf nit (validator nice-to-have). Short-circuit when the input is
+  // already v3 AND every tool already has an authored `capabilities`
+  // declaration: in that case the migration produces identical output.
+  // The registry's hot path (live spawns) hits this short-circuit;
+  // `mcp-sandbox.ts` / `test-helpers.ts` callers with raw v2 inputs
+  // still pay the migration cost.
+  const isFullyV3 =
+    manifest.schemaVersion === 3 &&
+    (manifest.tools ?? []).every((t) => t.capabilities !== undefined);
+  const migrated = isFullyV3 ? manifest : migrateManifestV2ToV3(manifest);
+  const toolCaps: Record<string, string[]> = {};
+  for (const tool of migrated.tools ?? []) {
+    const hosts = tool.capabilities?.network?.hosts;
+    if (hosts && hosts.length > 0) {
+      toolCaps[tool.name] = hosts.map((h) => h.toLowerCase());
+    }
+  }
+  if (Object.keys(toolCaps).length > 0) {
+    allowedEnv.EZCORP_TOOL_NETWORK_CAPS = JSON.stringify(toolCaps);
+  }
+
   return allowedEnv;
 }
 
 /**
  * Remove the per-extension TMPDIR. Call during extension removal.
+ *
+ * N2 (validator nit #5): also clears the per-extension deprecation
+ * warning tracker in `tool-executor.ts` so a reinstalled extension
+ * warns afresh on its first legacy `ezcorp/fs` shim call. Lazy
+ * `require` keeps the registry → tool-executor edge dynamic so no
+ * cyclic dependency materializes at module-load.
  */
 export function cleanupExtTmpDir(extensionId: string): void {
   const extTmpDir = join(tmpdir(), "ezcorp-ext", extensionId);
   rmSync(extTmpDir, { recursive: true, force: true });
+  try {
+    const teModule = require("./tool-executor") as {
+      clearFsDeprecationForExtension?: (id: string) => void;
+    };
+    teModule.clearFsDeprecationForExtension?.(extensionId);
+  } catch {
+    /* tool-executor unavailable (rare in tests); nothing to clear. */
+  }
 }
 
 export interface RegisteredTool extends ToolDefinition {
@@ -109,6 +177,12 @@ export class ExtensionRegistry {
   private processes = new Map<string, ExtensionProcess>();
   /** extension id -> McpClient (for kind:"mcp" extensions) */
   private mcpClients = new Map<string, McpClient>();
+  /** Phase 7: extension id -> per-MCP forward-proxy handle. Populated
+   *  in `getMcpClient` after `buildSandboxedMcpSpec` starts the proxy;
+   *  torn down in `killAll` and on `getMcpClient`'s connect-failure
+   *  branch. The proxy listens on the per-MCP UDS (Linux netns) or
+   *  loopback port (fallback) and gates outbound HTTPS via PDP. */
+  private mcpProxies = new Map<string, McpProxyHandle>();
   /** extension id -> manifest */
   private manifests = new Map<string, ExtensionManifestV2>();
   /** extension id -> install path */
@@ -493,11 +567,36 @@ export class ExtensionRegistry {
     this.installPaths.set(extId, path);
   }
 
-  /** Re-read DB and rebuild maps. Call after install/uninstall. */
+  /** Re-read DB and rebuild maps. Call after install/uninstall.
+   *
+   *  Phase 7 fix-pass C3: a previous version leaked the per-MCP forward
+   *  proxy on uninstall — `mcpProxies.clear()` only ran in `killAll()`,
+   *  so an uninstalled MCP extension kept a listener (and its bearer
+   *  token in memory) until process exit. We now snapshot the
+   *  pre-reload extension-id set, run the reload, and stop+drop any
+   *  proxy / mcp-client whose extensionId is no longer in the DB.
+   */
   async reload(): Promise<void> {
-    // Kill processes for extensions that may be removed
     this.verifiedSessions.clear();
     await this.loadFromDb();
+
+    // After loadFromDb, `this.manifests` reflects the post-reload set
+    // of extension ids. Compare against the maps that hold live
+    // resources.
+    const liveIds = new Set(this.manifests.keys());
+
+    for (const [extId, proxy] of this.mcpProxies) {
+      if (!liveIds.has(extId)) {
+        void proxy.stop().catch(() => {});
+        this.mcpProxies.delete(extId);
+      }
+    }
+    for (const [extId, client] of this.mcpClients) {
+      if (!liveIds.has(extId)) {
+        void client.close().catch(() => {});
+        this.mcpClients.delete(extId);
+      }
+    }
   }
 
   /** Kill all managed processes and close MCP clients. */
@@ -510,6 +609,13 @@ export class ExtensionRegistry {
       void client.close().catch(() => {});
     }
     this.mcpClients.clear();
+    // Phase 7: tear down every per-MCP forward proxy. Stopping the
+    // proxy unlinks its UDS (when applicable) so a subsequent boot or
+    // re-load doesn't trip EADDRINUSE.
+    for (const proxy of this.mcpProxies.values()) {
+      void proxy.stop().catch(() => {});
+    }
+    this.mcpProxies.clear();
   }
 
   /**
@@ -528,14 +634,55 @@ export class ExtensionRegistry {
 
     // Audit finding #1: route stdio spawns through the sandbox envelope
     // (prlimit + bounded env). http/sse are pass-through — nothing to wrap.
+    //
+    // Phase 7: when the PDP singleton is wired (production boot), pass
+    // a `ctx` so `buildSandboxedMcpSpec` starts the per-MCP forward
+    // proxy and (on Linux) wraps the spawn in `unshare`. The PDP being
+    // unavailable is a test-time signal; we degrade to the pre-Phase-7
+    // prlimit-only spec rather than fail-closed because many existing
+    // unit tests construct registries without going through full boot.
+    let phase7Ctx: { engine: ReturnType<typeof getPermissionEngine>; conversationId: null; userId: null } | undefined;
+    try {
+      phase7Ctx = {
+        engine: getPermissionEngine(),
+        conversationId: null,
+        userId: null,
+      };
+    } catch {
+      // Engine not initialized (test path) — fall through to pre-P7 wrap.
+      phase7Ctx = undefined;
+    }
     const granted = this.grantedPerms.get(extensionId) ?? { grantedAt: {} };
-    const sandboxedSpec = buildSandboxedMcpSpec(server, manifest, granted, extensionId);
+    const { spec: sandboxedSpec, proxyHandle } = await buildSandboxedMcpSpec(
+      server,
+      manifest,
+      granted,
+      extensionId,
+      phase7Ctx,
+    );
+
+    if (proxyHandle) {
+      // Stop any prior proxy for this extension (re-load path) before
+      // recording the new handle.
+      const prior = this.mcpProxies.get(extensionId);
+      if (prior) {
+        void prior.stop().catch(() => {});
+      }
+      this.mcpProxies.set(extensionId, proxyHandle);
+    }
 
     const client = existing ?? new McpClient(sandboxedSpec);
     try {
       await client.connect();
     } catch (err) {
       this.mcpClients.delete(extensionId);
+      // Tear down the proxy we just started — its child process never
+      // came up, so the listener is leaked otherwise.
+      const failedProxy = this.mcpProxies.get(extensionId);
+      if (failedProxy) {
+        void failedProxy.stop().catch(() => {});
+        this.mcpProxies.delete(extensionId);
+      }
       throw err;
     }
     this.mcpClients.set(extensionId, client);

@@ -24,6 +24,7 @@
 
 import { test, expect, describe, beforeEach } from "bun:test";
 import { ToolExecutor } from "../tool-executor";
+import { createStubPermissionEngine } from "../../__tests__/helpers/permission-engine-stub";
 import type { ExtensionProcess } from "../subprocess";
 import type {
   JsonRpcRequest,
@@ -97,7 +98,7 @@ describe("ToolExecutor.ensureSubprocessRpcWired", () => {
 
   beforeEach(() => {
     registry = makeStubRegistry();
-    executor = new ToolExecutor(registry);
+    executor = new ToolExecutor(registry, createStubPermissionEngine());
     proc = makeStubProc();
   });
 

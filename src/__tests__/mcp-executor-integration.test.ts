@@ -5,6 +5,7 @@ mockDbConnection();
 
 import { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { installMcpExtension, deleteExtension } from "../db/queries/extensions";
 import { createConversation } from "../db/queries/conversations";
 import { getDb } from "../db/connection";
@@ -88,7 +89,7 @@ describe("ToolExecutor MCP path — events + DB recording", () => {
     bus.on("tool:error", (p) => events.push({ type: "tool:error", payload: p }));
 
     const conv = await createConversation(projectId, { title: "ev" });
-    const executor = new ToolExecutor(registry, { bus });
+    const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus });
 
     const result = await executor.executeToolCall(
       "ev-success__probe",
@@ -126,7 +127,7 @@ describe("ToolExecutor MCP path — events + DB recording", () => {
     bus.on("tool:error", () => events.push({ type: "tool:error" }));
 
     const conv = await createConversation(projectId, { title: "err" });
-    const executor = new ToolExecutor(registry, { bus });
+    const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus });
 
     const result = await executor.executeToolCall(
       "ev-throw__probe",
@@ -154,7 +155,7 @@ describe("ToolExecutor MCP path — events + DB recording", () => {
       async () => ({ content: [{ type: "text", text: "nope" }], isError: true }),
     );
     const conv = await createConversation(projectId, { title: "isErr" });
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const r = await executor.executeToolCall("ev-isErr__probe", {}, conv.id, null);
     expect(r.isError).toBe(true);
 
@@ -178,7 +179,7 @@ describe("ToolExecutor MCP path — events + DB recording", () => {
     );
 
     const conv = await createConversation(projectId, { title: "shared" });
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     await executor.executeToolCall(
       "ev-shared__probe",
       { name: "alice" },
@@ -195,16 +196,17 @@ describe("ToolExecutor MCP path — events + DB recording", () => {
     await deleteExtension(ext.id);
   });
 
-  test("permission checker is honored on MCP path", async () => {
+  test("PDP deny is honored on MCP path", async () => {
     const { ext, registry } = await setupMcp(
       "ev-perm",
       { type: "object", properties: {} },
       async () => ({ content: [{ type: "text", text: "should-not-reach" }], isError: false }),
     );
     const conv = await createConversation(projectId, { title: "perm" });
-    const executor = new ToolExecutor(registry, {
-      permissionChecker: async () => false, // deny all
-    });
+    // Phase 1: the per-call permission gate is the PDP, not a checker
+    // injected at construction time. Deny-all engine = same observable
+    // semantics: PermissionDeniedError + subprocess never invoked.
+    const executor = new ToolExecutor(registry, createStubPermissionEngine("deny-all"));
     await expect(
       executor.executeToolCall("ev-perm__probe", {}, conv.id, null),
     ).rejects.toThrow(/Permission denied/);

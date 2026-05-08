@@ -12,6 +12,7 @@ import {
 } from "../extensions/dependency-resolver";
 import { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { parseArgs } from "../cli";
 import type {
   ExtensionManifestV2,
@@ -272,7 +273,7 @@ describe("Integration: Cross-Extension Composition", () => {
 
     registry.buildDepRoutes();
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const capturedCalls: Array<{ toolName: string; callerExtensionId?: string }> = [];
     executor.executeToolCall = async (toolName, _input, _cid, _mid, opts?) => {
       capturedCalls.push({ toolName, callerExtensionId: opts?.callerExtensionId });
@@ -315,7 +316,7 @@ describe("Integration: Cross-Extension Composition", () => {
 
     registry.buildDepRoutes();
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const depthLog: Array<{ toolName: string; depth: number }> = [];
 
     executor.executeToolCall = async (toolName, _input, _cid, _mid, opts?) => {
@@ -357,7 +358,7 @@ describe("Integration: Cross-Extension Composition", () => {
     });
     registry.buildDepRoutes();
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const response = await executor.handlePiInvoke("id-a", {
       jsonrpc: "2.0", id: 1, method: "ezcorp/invoke",
       params: { tool: "ext-b__doStuff", arguments: {} },
@@ -381,7 +382,7 @@ describe("Integration: Cross-Extension Composition", () => {
     });
     registry.buildDepRoutes();
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const response = await executor.handlePiInvoke("id-a", {
       jsonrpc: "2.0", id: 1, method: "ezcorp/invoke",
       params: { tool: "ext-b__doStuff", arguments: {}, _depth: 10 },
@@ -411,7 +412,7 @@ describe("Integration: Cross-Extension Composition", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.extensionId).toBe("id-lib");
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     executor.executeToolCall = async () => {
       return { content: [{ type: "text" as const, text: "lib-result" }], isError: false };
     };

@@ -36,6 +36,7 @@ const { ToolExecutor } = await import("../extensions/tool-executor");
 const { getDb } = await import("../db/connection");
 const { users, projects, conversations, extensions, conversationExtensions, agentConfigs } =
   await import("../db/schema");
+const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
 
 import type { ExtensionRegistry } from "../extensions/registry";
 import type { JsonRpcRequest, ExtensionPermissions } from "../extensions/types";
@@ -116,7 +117,7 @@ afterAll(async () => {
 
 describe("ToolExecutor.handlePiAgentConfigs", () => {
   test("registry miss (null granted permissions) → -32603", async () => {
-    const execu = new ToolExecutor(makeRegistry(null));
+    const execu = new ToolExecutor(makeRegistry(null), createStubPermissionEngine());
     const resp = await execu.handlePiAgentConfigs(
       "missing-ext",
       rpc("ezcorp/agent-configs", { v: 1, action: "list" }),
@@ -127,7 +128,7 @@ describe("ToolExecutor.handlePiAgentConfigs", () => {
 
   test("context builds from currentUserId and happy-path list succeeds", async () => {
     const granted: ExtensionPermissions = { agentConfig: "read", grantedAt: {} };
-    const execu = new ToolExecutor(makeRegistry(granted));
+    const execu = new ToolExecutor(makeRegistry(granted), createStubPermissionEngine());
     execu.setCurrentUserId("user-cap");
     const resp = await execu.handlePiAgentConfigs(
       EXT_ID,
@@ -140,7 +141,7 @@ describe("ToolExecutor.handlePiAgentConfigs", () => {
 
   test("unset currentUserId flows through as 'unknown' and is rejected (-32602)", async () => {
     const granted: ExtensionPermissions = { agentConfig: "read", grantedAt: {} };
-    const execu = new ToolExecutor(makeRegistry(granted));
+    const execu = new ToolExecutor(makeRegistry(granted), createStubPermissionEngine());
     // NOTE: setCurrentUserId NOT called. Default "unknown" sentinel.
     const resp = await execu.handlePiAgentConfigs(
       EXT_ID,
@@ -155,7 +156,7 @@ describe("ToolExecutor.handlePiAgentConfigs", () => {
 
 describe("ToolExecutor.handlePiEmitTaskEvent", () => {
   test("registry miss → -32603", async () => {
-    const execu = new ToolExecutor(makeRegistry(null));
+    const execu = new ToolExecutor(makeRegistry(null), createStubPermissionEngine());
     const resp = await execu.handlePiEmitTaskEvent(
       "missing-ext",
       rpc("ezcorp/emit-task-event", { v: 1, type: "snapshot", payload: { tasks: [] } }),
@@ -166,7 +167,7 @@ describe("ToolExecutor.handlePiEmitTaskEvent", () => {
   test("context threads bus + currentConversationId + currentUserId into handler", async () => {
     const granted: ExtensionPermissions = { taskEvents: true, grantedAt: {} };
     const { bus, calls } = makeBus();
-    const execu = new ToolExecutor(makeRegistry(granted), { bus });
+    const execu = new ToolExecutor(makeRegistry(granted), createStubPermissionEngine(), { bus });
     execu.setCurrentUserId("user-cap");
     // currentConversationId is private; we set it indirectly by calling
     // executeToolCall — but we don't have a wired tool. Instead, call

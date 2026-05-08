@@ -5,6 +5,7 @@ import {
   MAX_TOOL_CALLS_PER_TURN,
   PermissionDeniedError,
 } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import type { AssistantMessageEvent, AgentEvents } from "../types";
 import { EventBus } from "../runtime/events";
 
@@ -75,7 +76,7 @@ function createFailingRegistry() {
 
 describe("ToolExecutor", () => {
   test("executeToolCall returns result for known tool", async () => {
-    const executor = new ToolExecutor(createMockRegistry());
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine());
     const result = await executor.executeToolCall("read_file", { path: "/tmp" }, "conv-1", "msg-1");
 
     expect(result.isError).toBe(false);
@@ -83,49 +84,74 @@ describe("ToolExecutor", () => {
   });
 
   test("executeToolCall returns isError for unknown tool", async () => {
-    const executor = new ToolExecutor(createMockRegistry());
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine());
     const result = await executor.executeToolCall("unknown_tool", {}, "conv-1", "msg-1");
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("Unknown tool");
   });
 
-  test("permission checker blocks when returning false", async () => {
-    const checker = async () => false;
-    const executor = new ToolExecutor(createMockRegistry(), { permissionChecker: checker });
+  test("PDP deny throws PermissionDeniedError", async () => {
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine("deny-all"));
 
     await expect(
       executor.executeToolCall("read_file", {}, "conv-1", "msg-1"),
     ).rejects.toThrow(PermissionDeniedError);
   });
 
-  test("permission checker allows when returning true", async () => {
-    const checker = async () => true;
-    const executor = new ToolExecutor(createMockRegistry(), { permissionChecker: checker });
+  test("PDP allow lets the call through", async () => {
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine("allow-all"));
     const result = await executor.executeToolCall("read_file", {}, "conv-1", "msg-1");
 
     expect(result.isError).toBe(false);
   });
 
-  test("no permission checker = all tools allowed", async () => {
-    const executor = new ToolExecutor(createMockRegistry());
+  test("default stub engine = allow-all", async () => {
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine());
     const result = await executor.executeToolCall("read_file", { any: "thing" }, "conv-1", "msg-1");
 
     expect(result.isError).toBe(false);
   });
 
-  test("setPermissionChecker updates checker after construction", async () => {
-    const executor = new ToolExecutor(createMockRegistry());
+  test("PDP mode toggle updates decisions at runtime (replaces deprecated setPermissionChecker)", async () => {
+    const engine = createStubPermissionEngine("allow-all");
+    const executor = new ToolExecutor(createMockRegistry(), engine);
 
-    // Initially no checker -- should succeed
+    // Initially allow-all → succeeds
     const r1 = await executor.executeToolCall("read_file", {}, "c", "m");
     expect(r1.isError).toBe(false);
 
-    // Set a blocking checker
-    executor.setPermissionChecker(async () => false);
+    // Flip to deny-all → next call rejects
+    engine.setMode("deny-all");
     await expect(
       executor.executeToolCall("read_file", {}, "c", "m"),
     ).rejects.toThrow(PermissionDeniedError);
+  });
+
+  test("PDP runtime fail-closed: engine.authorize throwing converts to PermissionDeniedError", async () => {
+    // A transient DB outage in `getSetting` (or any other unexpected
+    // authorize() throw) must NOT silently allow the dispatch on the
+    // existing try/catch's success path. The wrapper in
+    // tool-executor.ts:executeToolCall converts the throw into a
+    // PermissionDeniedError, which routes through the same reject
+    // path as a normal deny.
+    const explodingEngine = createStubPermissionEngine();
+    explodingEngine.authorize = async () => {
+      throw new Error("simulated DB outage in getSetting");
+    };
+    const executor = new ToolExecutor(createMockRegistry(), explodingEngine);
+
+    let caught: unknown = null;
+    try {
+      await executor.executeToolCall("read_file", {}, "c", "m");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PermissionDeniedError);
+    expect((caught as PermissionDeniedError).reason).toContain("engine error");
+    expect((caught as PermissionDeniedError).reason).toContain(
+      "simulated DB outage",
+    );
   });
 
   test("PermissionDeniedError has correct extensionId and toolName", () => {
@@ -139,7 +165,7 @@ describe("ToolExecutor", () => {
   });
 
   test("createToolsContext.invoke returns text content", async () => {
-    const executor = new ToolExecutor(createMockRegistry());
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine());
     const ctx = executor.createToolsContext("conv-1", "msg-1");
     const result = await ctx.invoke("read_file", { path: "/tmp" });
 
@@ -147,7 +173,7 @@ describe("ToolExecutor", () => {
   });
 
   test("createToolsContext.invoke throws on error results", async () => {
-    const executor = new ToolExecutor(createMockRegistry());
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine());
     const ctx = executor.createToolsContext("conv-1", "msg-1");
 
     // "unknown_tool" returns isError: true
@@ -170,7 +196,7 @@ describe("ToolExecutor", () => {
       }),
     } as any;
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const r1 = await executor.executeToolCall("tool_a", {}, "c", "m");
     const r2 = await executor.executeToolCall("tool_b", {}, "c", "m");
     const r3 = await executor.executeToolCall("tool_c", {}, "c", "m");
@@ -182,7 +208,7 @@ describe("ToolExecutor", () => {
   });
 
   test("tool execution error is caught and returned as error result", async () => {
-    const executor = new ToolExecutor(createFailingRegistry());
+    const executor = new ToolExecutor(createFailingRegistry(), createStubPermissionEngine());
     const result = await executor.executeToolCall("fail_tool", {}, "c", "m");
 
     expect(result.isError).toBe(true);
@@ -202,7 +228,7 @@ describe("ToolExecutor with EventBus", () => {
     const events: AgentEvents["tool:complete"][] = [];
     bus.on("tool:complete", (data) => events.push(data));
 
-    const executor = new ToolExecutor(createMockRegistry(), { bus });
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine(), { bus });
     await executor.executeToolCall("read_file", { path: "/tmp" }, "conv-1", "msg-1");
 
     expect(events.length).toBe(1);
@@ -217,7 +243,7 @@ describe("ToolExecutor with EventBus", () => {
     const events: AgentEvents["tool:error"][] = [];
     bus.on("tool:error", (data) => events.push(data));
 
-    const executor = new ToolExecutor(createFailingRegistry(), { bus });
+    const executor = new ToolExecutor(createFailingRegistry(), createStubPermissionEngine(), { bus });
     await executor.executeToolCall("fail_tool", {}, "conv-1", "msg-1");
 
     expect(events.length).toBe(1);
@@ -228,7 +254,7 @@ describe("ToolExecutor with EventBus", () => {
 
   test("no emission when bus is not provided", async () => {
     // Should not throw - bus is optional
-    const executor = new ToolExecutor(createMockRegistry());
+    const executor = new ToolExecutor(createMockRegistry(), createStubPermissionEngine());
     const result = await executor.executeToolCall("read_file", {}, "conv-1", "msg-1");
     expect(result.isError).toBe(false);
   });

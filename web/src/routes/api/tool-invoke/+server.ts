@@ -2,6 +2,7 @@ import { json } from "@sveltejs/kit";
 import { z } from "zod";
 import { ExtensionRegistry } from "$server/extensions/registry";
 import { ToolExecutor } from "$server/extensions/tool-executor";
+import { getPermissionEngine } from "$server/extensions/permission-engine";
 import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { ensureInitialized, getBus } from "$lib/server/context";
@@ -85,7 +86,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     }
   }
 
-  const toolExecutor = new ToolExecutor(registry, { bus: getBus() });
+  // PDP singleton — pre-initialized by the executor at boot. Pass no
+  // deps so a placeholder bus/db here can't lose an init race; the
+  // factory throws clearly if the singleton isn't pre-init.
+  const engine = getPermissionEngine();
+  const toolExecutor = new ToolExecutor(registry, engine, { bus: getBus() });
   const metadata = { invocationId, source: 'inline' as const };
   let lastResult = { content: [{ type: "text" as const, text: "Unknown error" }], isError: true };
   let retryCount = 0;

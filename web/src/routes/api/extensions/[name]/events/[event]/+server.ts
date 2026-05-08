@@ -15,6 +15,7 @@ import {
 } from "$server/db/queries/conversation-extensions";
 import { ExtensionRegistry } from "$server/extensions/registry";
 import { ToolExecutor } from "$server/extensions/tool-executor";
+import { getPermissionEngine } from "$server/extensions/permission-engine";
 import { handleAppendMessageRpc } from "$server/extensions/append-message-handler";
 import { handleFinalizeToolCallRpc } from "$server/extensions/finalize-tool-call-handler";
 import type { ExtensionPermissions } from "$server/extensions/types";
@@ -311,7 +312,12 @@ export const POST: RequestHandler = async ({ request, locals, params }) => {
     let wireError: string | undefined;
     try {
       const proc = await registry.getProcess(ext.id);
-      const wirer = new ToolExecutor(registry, { bus: getBus() });
+      // PDP singleton — pre-initialized by the executor at boot. We
+      // pass no deps so a stale `getBus()` ref here can't silently
+      // lose an init race. Boot-order regressions surface as a clear
+      // factory throw.
+      const engine = getPermissionEngine();
+      const wirer = new ToolExecutor(registry, engine, { bus: getBus() });
       await wirer.ensureSubprocessRpcWired(ext.id, proc);
     } catch (err) {
       wireOk = false;

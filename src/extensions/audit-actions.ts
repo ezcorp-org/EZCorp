@@ -56,6 +56,13 @@ export const EXT_AUDIT_ACTIONS = {
    *  field distinguishes outcomes: `"cancelled"`, `"not-owned"`,
    *  `"missing-run"`, `"permission-missing"` (Phase 4). */
   SPAWN_CANCELLED: "ext:spawn-cancelled",
+  /** `ezcorp/spawn-assignment` successfully spawned a child agent run.
+   *  The metadata carries `subConversationId`, `agentRunId`, and the
+   *  effective grant set so the audit chain rooted here can be
+   *  reconstructed (Phase 4 §M2). Every authorize() inside the
+   *  child conversation's tool calls threads `parentAuditId` back to
+   *  this row's id. */
+  SPAWN_AUTHORIZED: "ext:spawn-authorized",
   /** `ezcorp/emit-task-event` rejected an emission — rate-limited,
    *  unauthorized conversation wiring, or malformed payload (Phase 2b). */
   EMIT_EVENT_REJECTED: "ext:emit-event-rejected",
@@ -94,6 +101,68 @@ export const EXT_AUDIT_ACTIONS = {
    *  /api/extensions/[id]/settings/user. Audited with the
    *  pre-delete values for forensic trail. */
   SETTINGS_USER_RESET: "ext:settings.user.reset",
+  // ── Phase 1: Policy Decision Point (PDP) ──
+  /** PDP authorized a tool call / privileged op (every needed cap is
+   *  covered by the effective grant set). Metadata: `{auditId, toolName,
+   *  capabilityKind, capabilityValue, parentAuditId, callerExtensionId,
+   *  conversationId}`. Phase 4 will populate `callerExtensionId` for
+   *  cross-ext invokes. */
+  PERM_ALLOWED: "ext:perm:allowed",
+  /** PDP denied a privileged op — at least one needed cap is missing.
+   *  Metadata: same shape as PERM_ALLOWED plus a `reason` field naming
+   *  the missing cap. */
+  PERM_DENIED: "ext:perm:denied",
+  /** PDP returned `prompt` — every needed cap is granted but a
+   *  sensitive cap (shell / fs.write) lacks an always-allow row. Phase
+   *  6 wires the UI; Phase 1 callers treat this as `allow` so the
+   *  audit row is the only externally visible signal. Metadata:
+   *  `{auditId, toolName, capabilityKind, capabilityValue, promptId,
+   *  conversationId}`. */
+  PERM_PROMPTED: "ext:perm:prompted",
+  // ── Phase 5: Bundled cap-ceiling + manifest tamper detection ──
+  /**
+   * `bundled.ts` install path clamped a user-requested grant to the
+   * hardcoded `bundled-ceiling.ts` ceiling — at least one field was
+   * narrowed by `intersectPermissions`. The persisted grant is the
+   * clamped value; the audit metadata records the diff so an admin
+   * can investigate. Metadata: `{extensionName, requested, effective}`
+   * — both shapes are `ExtensionPermissions` JSON.
+   */
+  BUNDLED_CEILING_CLAMP: "ext:bundled:ceiling-clamp",
+  /**
+   * `bundled.ts` manifest-refresh path detected a mismatch between the
+   * on-disk manifest and `manifest.lock.json` (tool-list, entrypoint,
+   * or version). Extension is disabled; refresh is aborted; runtime
+   * enforcement keeps the prior DB grant. Metadata:
+   * `{extensionName, reason, expected, actual}`.
+   */
+  BUNDLED_MANIFEST_TAMPER: "ext:bundled:manifest-tamper",
+  // ── Phase 7: MCP isolation (forward proxy + Linux netns) ──
+  /**
+   * `mcp-sandbox.ts` successfully started an MCP process inside a
+   * fresh user+net+mount namespace. One row per MCP-extension start.
+   * Metadata: `{extensionName, socketPath, kernel}` — the kernel
+   * field carries `process.platform`+`process.versions.libuv` so a
+   * fleet operator can audit which kernels the netns leg ran on.
+   */
+  MCP_NETNS_CREATED: "ext:mcp:netns-created",
+  /**
+   * The netns probe failed (non-Linux, hardened kernel, or seccomp
+   * profile blocking unshare) so `mcp-sandbox.ts` fell back to the
+   * "HTTPS_PROXY env only" mode. Bypassable by raw-socket libc; the
+   * audit signal lets fleet monitoring identify deployments running
+   * in less-strict mode. Metadata: `{extensionName, reason}` — the
+   * reason string comes verbatim from `probeNetnsAvailability().reason`.
+   */
+  MCP_NETNS_FALLBACK: "ext:mcp:netns-fallback",
+  /**
+   * The per-MCP forward proxy refused a CONNECT request: token
+   * mismatch, hostname not in the manifest's permitted list, byte
+   * quota exhausted, or concurrent-connection cap reached. Metadata:
+   * `{extensionName, hostname, reason}` where reason is one of
+   * `"auth"`, `"host"`, `"quota:bytes"`, `"quota:concurrent"`.
+   */
+  MCP_HOST_BLOCKED: "ext:mcp:host-blocked",
   // ── Phase 50: SDK capability tier (Phase 51 handlers write these) ──
   // These rows accompany the high-volume sdk_capability_calls table:
   // every SDK call writes a row to sdk_capability_calls AND a row
@@ -163,6 +232,21 @@ export const EXT_AUDIT_ACTIONS = {
    *  `maxRetries > 0`. */
   SDK_SCHEDULE_REAPED: "ext:sdk-schedule-reaped",
 } as const;
+
+// Re-export the three Phase 1 PDP action codes as named constants for
+// import sites that don't go through the `EXT_AUDIT_ACTIONS.*` lookup
+// (the PDP itself, every PEP). Keeping both forms means pre-existing
+// code that already uses `EXT_AUDIT_ACTIONS.PERM_ALLOWED` keeps
+// working.
+export const AUDIT_PERM_ALLOWED = "ext:perm:allowed";
+export const AUDIT_PERM_DENIED = "ext:perm:denied";
+export const AUDIT_PERM_PROMPTED = "ext:perm:prompted";
+
+// Phase 5 named-constant exports — same string values as the
+// `EXT_AUDIT_ACTIONS.BUNDLED_*` keys above; provided for direct import
+// at the call sites in `bundled.ts`.
+export const AUDIT_BUNDLED_CEILING_CLAMP = "ext:bundled:ceiling-clamp";
+export const AUDIT_BUNDLED_MANIFEST_TAMPER = "ext:bundled:manifest-tamper";
 
 export type ExtAuditAction = typeof EXT_AUDIT_ACTIONS[keyof typeof EXT_AUDIT_ACTIONS];
 

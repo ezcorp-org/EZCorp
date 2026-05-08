@@ -4,6 +4,7 @@ import { restoreModuleMocks } from "./helpers/mock-cleanup";
 afterAll(() => restoreModuleMocks());
 import type { ToolDefinition, } from "../extensions/types";
 import { ExtensionRegistry, type RegisteredTool } from "../extensions/registry";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 
 // ── Mock DB layer (registry.loadFromDb calls listExtensions) ─────
 mock.module("../db/queries/extensions", () => ({
@@ -130,7 +131,7 @@ describe("ToolExecutor includes cardType in events", () => {
 
 		// Dynamic import to ensure mocks are applied
 		const { ToolExecutor } = await import("../extensions/tool-executor");
-		const executor = new ToolExecutor(registry, { bus: bus as any });
+		const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus: bus as any });
 
 		// Register tool with cardType
 		registry.registerToolForTest("task-stack.list-tasks", makeRegisteredTool({
@@ -170,7 +171,7 @@ describe("ToolExecutor includes cardType in events", () => {
 		};
 
 		const { ToolExecutor } = await import("../extensions/tool-executor");
-		const executor = new ToolExecutor(registry, { bus: bus as any });
+		const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus: bus as any });
 
 		registry.registerToolForTest("task-stack.update-task", makeRegisteredTool({
 			name: "task-stack.update-task",
@@ -253,7 +254,7 @@ describe("ToolExecutor setStateMediator wiring", () => {
 			panel: { stateSchema: {} },
 		}));
 
-		const executor = new ToolExecutor(registry, { bus: bus as any });
+		const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus: bus as any });
 		executor.setStateMediator(mediator);
 
 		// Register a tool
@@ -326,7 +327,7 @@ describe("ToolExecutor setStateMediator wiring", () => {
 			on: () => () => {},
 		};
 
-		const executor = new ToolExecutor(registry, { bus: bus as any });
+		const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus: bus as any });
 
 		// setStateMediator should not throw when called after construction
 		const mediator = new ExtensionStateMediator(bus as any, () => undefined);

@@ -9,7 +9,16 @@ export {
   atomicRead,
   loadJSON,
   saveJSON,
+  // ── Phase 3 host-mediated fs helpers ──
+  fsRead,
+  fsWrite,
+  fsList,
+  fsStat,
+  fsExists,
+  fsMkdir,
+  fsUnlink,
 } from "./fs";
+export type { FsListEntry, FsStatResult } from "./fs";
 
 export { withLock, createMutex } from "./lock";
 
@@ -44,6 +53,9 @@ export { fetchPermitted } from "./http";
 
 export { invoke } from "./invoke";
 export type { InvokeOptions } from "./invoke";
+
+export { withToolContext, getToolContext } from "./tool-context";
+export type { ToolContext } from "./tool-context";
 
 export { PanelBuilder } from "./panel";
 export type {

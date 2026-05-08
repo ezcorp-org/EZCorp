@@ -46,6 +46,7 @@ import { ToolExecutor, PermissionDeniedError } from "../extensions/tool-executor
 import { ExtensionRegistry, buildAllowedEnv } from "../extensions/registry";
 import type { ExtensionManifestV2 } from "../extensions/types";
 import { computePackageChecksums } from "../extensions/checksum";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -120,9 +121,7 @@ describe("PermissionChecker blocks denied tools", () => {
       inputSchema: { type: "object", properties: {} },
     });
 
-    const executor = new ToolExecutor(registry, {
-      permissionChecker: async () => false,
-    });
+    const executor = new ToolExecutor(registry, createStubPermissionEngine("deny-all"));
 
     await expect(
       executor.executeToolCall("test-ext.my-tool", {}, "conv-1", "msg-1"),
@@ -140,9 +139,7 @@ describe("PermissionChecker blocks denied tools", () => {
       inputSchema: { type: "object", properties: {} },
     });
 
-    const executor = new ToolExecutor(registry, {
-      permissionChecker: async () => false,
-    });
+    const executor = new ToolExecutor(registry, createStubPermissionEngine("deny-all"));
 
     try {
       await executor.executeToolCall("test-ext.my-tool", {}, "conv-1", "msg-1");
@@ -155,7 +152,7 @@ describe("PermissionChecker blocks denied tools", () => {
     }
   });
 
-  test("executeToolCall succeeds when checker returns true", async () => {
+  test("executeToolCall succeeds when PDP returns allow", async () => {
     const registry = ExtensionRegistry.getInstance();
     const mockProc = createMockProcess();
     registry.registerToolForTest("test-ext.my-tool", {
@@ -170,16 +167,14 @@ describe("PermissionChecker blocks denied tools", () => {
     // Patch getProcess to return our mock
     (registry as any).getProcess = async () => mockProc;
 
-    const executor = new ToolExecutor(registry, {
-      permissionChecker: async () => true,
-    });
+    const executor = new ToolExecutor(registry, createStubPermissionEngine("allow-all"));
 
     const result = await executor.executeToolCall("test-ext.my-tool", {}, "conv-1", "msg-1");
     expect(result.isError).toBe(false);
     expect(result.content[0]!.text).toBe("mock result");
   });
 
-  test("checker receives correct extensionId, toolName, and input", async () => {
+  test("PDP authorize receives correct ctx and needed caps", async () => {
     const registry = ExtensionRegistry.getInstance();
     const mockProc = createMockProcess();
     registry.registerToolForTest("test-ext.my-tool", {
@@ -192,19 +187,15 @@ describe("PermissionChecker blocks denied tools", () => {
     });
     (registry as any).getProcess = async () => mockProc;
 
-    let receivedArgs: { extensionId: string; toolName: string; input: Record<string, unknown> } | null = null;
-    const executor = new ToolExecutor(registry, {
-      permissionChecker: async (extensionId, toolName, input) => {
-        receivedArgs = { extensionId, toolName, input };
-        return true;
-      },
-    });
+    const engine = createStubPermissionEngine();
+    const executor = new ToolExecutor(registry, engine);
 
     await executor.executeToolCall("test-ext.my-tool", { path: "/foo" }, "conv-1", "msg-1");
-    expect(receivedArgs).not.toBeNull();
-    expect(receivedArgs!.extensionId).toBe("test-ext-id");
-    expect(receivedArgs!.toolName).toBe("test-ext.my-tool");
-    expect(receivedArgs!.input).toEqual({ path: "/foo" });
+
+    expect(engine.calls).toHaveLength(1);
+    expect(engine.calls[0]!.ctx.extensionId).toBe("test-ext-id");
+    expect(engine.calls[0]!.ctx.toolName).toBe("my-tool");
+    expect(engine.calls[0]!.ctx.conversationId).toBe("conv-1");
   });
 });
 
@@ -221,7 +212,7 @@ describe("handlePiFs filesystem mediation", () => {
     });
     registry.setInstallPathForTest("test-ext-id", installDir);
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     return { executor, registry };
   }
 
@@ -321,7 +312,7 @@ describe("handlePiFs filesystem mediation", () => {
 
   test("returns error when extension is not in registry", async () => {
     const registry = ExtensionRegistry.getInstance();
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const req = makeRequest("/some/path");
     const resp = await executor.handlePiFs("unknown-ext", req);
 
@@ -367,7 +358,7 @@ describe("handlePiInvoke cross-extension calls", () => {
     const mockProc = createMockProcess();
     (registry as any).getProcess = async () => mockProc;
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     return { executor, registry };
   }
 
@@ -777,7 +768,7 @@ describe("ToolExecutor request handler routing", () => {
     });
     (registry as any).getProcess = async () => mockProc;
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     await executor.executeToolCall("test-ext.my-tool", {}, "conv-1", "msg-1");
 
     // The handler should have been set
@@ -814,7 +805,7 @@ describe("ToolExecutor request handler routing", () => {
     });
     (registry as any).getProcess = async () => mockProc;
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     await executor.executeToolCall("test-ext.my-tool", {}, "conv-1", "msg-1");
 
     const unknownReq: JsonRpcRequest = {

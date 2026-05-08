@@ -121,6 +121,9 @@ function makeCtx(
     spawnDepth: overrides.spawnDepth ?? 0,
     ...(overrides.parentModel !== undefined ? { parentModel: overrides.parentModel } : {}),
     ...(overrides.parentProvider !== undefined ? { parentProvider: overrides.parentProvider } : {}),
+    // Phase 6: pass through engine when supplied so PDP-path tests
+    // drive the new branch.
+    ...(overrides.engine ? { engine: overrides.engine } : {}),
   };
 }
 
@@ -251,17 +254,36 @@ describe("spawn-assignment — rate + depth", () => {
   const validParams = { v: 1, task: "hi", agentConfigId: "cfg-alice-helper" };
 
   test("60 tight-loop requests → ~50 accepted, remainder -32029 + audit rate-limited", async () => {
-    const ext = `rl-ext-${crypto.randomUUID().slice(0, 8)}`;
-    await wireConversation(CONV_WIRED, ext);
-    let accepted = 0;
-    let limited = 0;
-    for (let i = 0; i < 60; i++) {
-      const resp = await handleSpawnAssignmentRpc(ext, rpc(validParams, `rl-${i}`), makeCtx());
-      if (resp.error?.code === -32029) limited++;
-      else if (!resp.error) accepted++;
+    // Phase 4 §M2 added per-success work (SPAWN_AUTHORIZED audit
+    // chain + the M4 fallback console.warn that fires for every
+    // success since this test never threads ctx.registry). Both add
+    // PGlite latency that tipped this test's tight-loop calibration.
+    // Switch the chain to fire-and-forget AND suppress the warn for
+    // this test so we still measure rate-limiter behavior, not Phase
+    // 4 overhead. Production stays on the default sync path with the
+    // warn enabled.
+    const { _setSyncAuditChainForTests } = await import(
+      "../extensions/spawn-assignment-handler"
+    );
+    _setSyncAuditChainForTests(false);
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const ext = `rl-ext-${crypto.randomUUID().slice(0, 8)}`;
+      await wireConversation(CONV_WIRED, ext);
+      let accepted = 0;
+      let limited = 0;
+      for (let i = 0; i < 60; i++) {
+        const resp = await handleSpawnAssignmentRpc(ext, rpc(validParams, `rl-${i}`), makeCtx());
+        if (resp.error?.code === -32029) limited++;
+        else if (!resp.error) accepted++;
+      }
+      expect(accepted).toBeGreaterThanOrEqual(45);
+      expect(limited).toBeGreaterThan(0);
+    } finally {
+      console.warn = originalWarn;
+      _setSyncAuditChainForTests(true);
     }
-    expect(accepted).toBeGreaterThanOrEqual(45);
-    expect(limited).toBeGreaterThan(0);
   });
 
   test("spawnDepth >= MAX_SPAWN_DEPTH → -32000 + audit depth-exceeded", async () => {
@@ -585,5 +607,51 @@ describe("spawn-assignment — Phase 4 pass-through fields", () => {
     expect(resp.error).toBeUndefined();
     expect(startAssignmentCalls).toHaveLength(1);
     expect(startAssignmentCalls[0]!.orchestrationDepth).toBe(3);
+  });
+});
+
+// ── Phase 6: PDP-deny path + quota-invalid audit reason ─────────────
+
+describe("spawn-assignment — Phase 6 PDP-deny + quota-invalid reason", () => {
+  const validParams = { v: 1, task: "hi", agentConfigId: "cfg-alice-helper" };
+
+  test("ctx.engine returns deny → -32001 'spawnAgents permission not granted'", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("deny-all");
+    const resp = await handleSpawnAssignmentRpc(
+      EXT_WIRED,
+      rpc(validParams, "pdp-deny-1"),
+      makeCtx({ engine }),
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("spawnAgents permission not granted");
+    expect(engine.calls.length).toBe(1);
+    expect(engine.calls[0]!.needed).toEqual([{ kind: "ezcorp:agent:spawn" }]);
+  });
+
+  test("PDP allows + invalid quota → -32001 'quota config invalid' + audit quota-invalid", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("allow-all");
+    // Use a unique extensionId so `lastAudit` deterministically finds
+    // OUR new row regardless of test-file ordering — `EXT_WIRED` may
+    // already carry a `permission-missing` row from earlier tests in
+    // this file (or a prior file that shares the test PGlite via the
+    // module-level `db` singleton).
+    const ext = `qi-sa-${crypto.randomUUID().slice(0, 8)}`;
+    await wireConversation(CONV_WIRED, ext);
+    const resp = await handleSpawnAssignmentRpc(
+      ext,
+      rpc(validParams, "qi-1"),
+      makeCtx({
+        engine,
+        // PDP says allow, but the grant blob has maxPerHour=0 so the
+        // quota-validity branch fires with the new audit reason.
+        grantedPermissions: makePerms({ maxPerHour: 0 }),
+      }),
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("quota config invalid");
+    const a = await lastAudit(ext);
+    expect(a?.metadata).toMatchObject({ reason: "quota-invalid" });
   });
 });

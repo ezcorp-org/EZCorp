@@ -226,6 +226,43 @@ export async function setConversationSpawnDepth(conversationId: string, depth: n
     .where(eq(conversations.id, conversationId));
 }
 
+/**
+ * Phase 4 §M2 — read the spawn-authorize audit id seeded on this
+ * conversation when it was created via `ezcorp/spawn-assignment`. Used
+ * by the PDP to set `parentAuditId` on every authorize() inside the
+ * child, so the audit log forms a single chain rooted at the spawn's
+ * authorize row. Returns `null` for top-level (non-spawned)
+ * conversations or when the metadata key is absent.
+ */
+export async function getConversationSpawnParentAuditId(
+  conversationId: string,
+): Promise<string | null> {
+  const conv = await getConversation(conversationId);
+  if (!conv) return null;
+  const meta = (conv.metadata ?? {}) as { spawnParentAuditId?: unknown };
+  return typeof meta.spawnParentAuditId === "string" ? meta.spawnParentAuditId : null;
+}
+
+/**
+ * Phase 4 §M2 — write the spawn-authorize audit id onto the child's
+ * metadata bag at spawn-creation time. Preserves other metadata keys.
+ */
+export async function setConversationSpawnParentAuditId(
+  conversationId: string,
+  auditId: string,
+): Promise<void> {
+  const conv = await getConversation(conversationId);
+  if (!conv) return;
+  const meta = {
+    ...((conv.metadata ?? {}) as Record<string, unknown>),
+    spawnParentAuditId: auditId,
+  };
+  await getDb()
+    .update(conversations)
+    .set({ metadata: meta })
+    .where(eq(conversations.id, conversationId));
+}
+
 export async function updateConversation(
   id: string,
   data: { title?: string; model?: string; provider?: string; systemPrompt?: string; agentConfigId?: string; modeId?: string | null },

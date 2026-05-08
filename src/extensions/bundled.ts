@@ -8,6 +8,8 @@ import { installFromLocal } from "./installer";
 import { loadManifestFresh } from "./loader";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS, type ExtensionAuditMetadata } from "./audit-actions";
+import { clampToBundledCeiling, getCeiling } from "./bundled-ceiling";
+import { canonicalizeAndHash, verifyManifestAgainstLock } from "./bundled-lock";
 import { join, dirname } from "node:path";
 import { logger } from "../logger";
 const log = logger.child("extensions");
@@ -465,9 +467,39 @@ export async function ensureBundledExtensions(): Promise<void> {
         // (§detectVersionBumpRequiringReapproval) as the sole escalation
         // paths for permission changes. Non-permission fields (tools,
         // description, version-unless-gated, entrypoint) track source.
+        //
+        // Phase 5: gate the refresh on `manifest.lock.json`. A
+        // mismatch on tool-list / entrypoint / version means either
+        // a maintainer forgot to regenerate the lockfile or the file
+        // was tampered with. Either way, fail-closed: disable the
+        // extension, write an audit row, do NOT proceed with refresh.
         try {
           const diskDir = join(getProjectRoot(), entry.path);
           const diskManifest = await loadManifestFresh(diskDir);
+
+          const lockResult = await verifyManifestAgainstLock(entry.name, diskManifest);
+          if (!lockResult.ok) {
+            log.error("Manifest tamper detected for bundled extension", {
+              name: entry.name,
+              extensionId: existing.id,
+              reason: lockResult.reason,
+              expected: lockResult.expected,
+              actual: lockResult.actual,
+            });
+            await writeBundledManifestTamperAudit(
+              existing.id,
+              entry.name,
+              lockResult.reason,
+              lockResult.expected,
+              lockResult.actual,
+            );
+            // Disable the extension. The DB-stored manifest + grant
+            // remain intact so a future re-approval can re-enable
+            // without losing user state.
+            await updateExtension(existing.id, { enabled: false });
+            continue;
+          }
+
           const refreshed: ExtensionManifestV2 = {
             ...diskManifest,
             permissions: (existing.manifest as ExtensionManifestV2).permissions ?? diskManifest.permissions,
@@ -509,7 +541,25 @@ export async function ensureBundledExtensions(): Promise<void> {
       }
 
       const resolvedPath = join(getProjectRoot(), entry.path);
-      const installed = await installFromLocal(resolvedPath, entry.permissions, true);
+
+      // Phase 5: clamp the bundled install request to the hardcoded
+      // capability ceiling. The ceiling is independent of the manifest
+      // — a compromised `BUNDLED_EXTENSIONS` entry that requests wider
+      // perms cannot exceed `bundled-ceiling.ts`. Persist the CLAMPED
+      // grant; audit when narrowing occurred.
+      const { effective: clampedPerms, clamped } = clampToBundledCeiling(
+        entry.name,
+        entry.permissions,
+      );
+      if (clamped) {
+        log.warn("Bundled install grant clamped to ceiling", {
+          name: entry.name,
+          requested: entry.permissions,
+          effective: clampedPerms,
+        });
+      }
+
+      const installed = await installFromLocal(resolvedPath, clampedPerms, true);
       // Mark provenance AFTER the row exists. installFromLocal is shared
       // with the user install path (which must default isBundled=false),
       // so bundled trust is granted here, in the one place that knows.
@@ -522,7 +572,10 @@ export async function ensureBundledExtensions(): Promise<void> {
         });
       }
       log.info("Installed extension", { name: entry.name });
-      await writeBundledInstallAudit(installed.id, entry.permissions);
+      await writeBundledInstallAudit(installed.id, clampedPerms);
+      if (clamped) {
+        await writeBundledCeilingClampAudit(installed.id, entry.name, entry.permissions, clampedPerms);
+      }
     } catch (error) {
       log.error("Failed to install extension", { name: entry.name, error: String(error) });
     }
@@ -766,21 +819,27 @@ async function detectAndLogManifestDrift(
 }
 
 /**
- * Re-approval gate (S9). Compares on-disk manifest `version` and
- * `permissions` against the DB-stored copy. Returns `true` if the gate
- * engaged (version changed AND permissions changed), meaning the
- * caller should disable the extension and leave it disabled until an
- * admin re-approves. Also writes an `UPDATE_BLOCKED` audit row per
- * differing permission field so the admin UI can show exactly what
- * changed.
+ * Re-approval gate (S9). Compares on-disk manifest `version`,
+ * `permissions`, and tool-list signature against the DB-stored copy.
+ * Returns `true` if the gate engaged, meaning the caller should
+ * disable the extension and leave it disabled until an admin
+ * re-approves. Also writes an `UPDATE_BLOCKED` audit row per
+ * differing field so the admin UI can show exactly what changed.
  *
- * Why gate on BOTH version and permissions changing? A pure version
- * bump with no permission change is a normal upgrade — no user-visible
- * security impact, so interrupting the upgrade with a manual approval
- * would just be friction. A pure permissions change with no version
- * bump is already caught by drift detection (S6). The pairing here
- * catches the specific attack: a dependency release that claims to be
- * a new version while quietly widening its permission surface.
+ * Trigger conditions (any one suffices):
+ *   1. Version changed AND permissions changed (the original S9
+ *      gate — catches a dependency release that quietly widens
+ *      its permission surface under a new version number).
+ *   2. Tool-list signature changed (Phase 5, regardless of version
+ *      or permissions). Adding, removing, renaming, or modifying
+ *      a tool's `inputSchema` requires explicit re-approval — a
+ *      new tool that exercises existing grants in unforeseen ways
+ *      is exactly the supply-chain attack Phase 5 closes.
+ *
+ * A pure version bump with no permission AND no tool change is a
+ * normal upgrade and does NOT engage the gate. A pure permissions
+ * change with no version bump is caught by drift detection (S6).
+ * Tool-list signature drift is caught here.
  */
 async function detectVersionBumpRequiringReapproval(
   entry: BundledExtension,
@@ -796,7 +855,15 @@ async function detectVersionBumpRequiringReapproval(
     return false;
   }
 
-  if (diskManifest.version === dbManifest.version) return false;
+  // Tool-list signature: canonical-JSON SHA-256. Drift on this signal
+  // is independent of the version-vs-permissions trigger and ALWAYS
+  // requires re-approval (Phase 5).
+  const dbToolHash = canonicalizeAndHash(dbManifest.tools ?? []);
+  const diskToolHash = canonicalizeAndHash(diskManifest.tools ?? []);
+  const toolListChanged = dbToolHash !== diskToolHash;
+
+  // Version + permissions trigger (legacy S9).
+  const versionChanged = diskManifest.version !== dbManifest.version;
 
   const diskPerms = diskManifest.permissions ?? {};
   const dbPerms = dbManifest.permissions ?? {};
@@ -806,6 +873,22 @@ async function detectVersionBumpRequiringReapproval(
     const a = dbPerms[f];
     const b = diskPerms[f];
     if (JSON.stringify(a) !== JSON.stringify(b)) diffs.push({ field: f, oldValue: a, newValue: b });
+  }
+
+  // No trigger: pure version bump, pure cosmetic refresh, or a
+  // permission-only change that's already caught by drift detection.
+  if (!toolListChanged && (!versionChanged || diffs.length === 0)) {
+    return false;
+  }
+
+  // Tool-list change adds a synthetic diff entry so the admin UI
+  // surfaces it next to the permissions diffs.
+  if (toolListChanged) {
+    diffs.push({
+      field: "tools",
+      oldValue: dbToolHash,
+      newValue: diskToolHash,
+    });
   }
   if (diffs.length === 0) return false;
 
@@ -870,5 +953,63 @@ async function writeBundledRegrantAudit(
       };
       await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_REGRANTED, extensionId, meta);
     }
+  } catch { /* audit write failure is non-fatal */ }
+}
+
+/**
+ * Phase 5: write an audit row for a bundled-install grant clamped to
+ * the hardcoded ceiling. The metadata captures the FULL requested vs.
+ * effective grant so an admin reviewing the audit log can reconstruct
+ * exactly which fields were narrowed without consulting `bundled.ts`
+ * source.
+ */
+async function writeBundledCeilingClampAudit(
+  extensionId: string,
+  extensionName: string,
+  requested: ExtensionPermissions,
+  effective: ExtensionPermissions,
+): Promise<void> {
+  const ceiling = getCeiling(extensionName);
+  const meta: ExtensionAuditMetadata = {
+    permission: "ceiling-clamp",
+    oldValue: requested,
+    newValue: effective,
+    actor: "system",
+    reason: `bundled-ceiling-clamp: bundled '${extensionName}' install request narrowed by hardcoded ceiling`,
+    extensionName,
+    requested,
+    effective,
+    ceiling,
+  };
+  try {
+    await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_CEILING_CLAMP, extensionId, meta);
+  } catch { /* audit write failure is non-fatal */ }
+}
+
+/**
+ * Phase 5: write an audit row when `verifyManifestAgainstLock` returns
+ * `ok: false`. Captures the lockfile-vs-disk diff so an admin can
+ * confirm whether the mismatch was a maintainer's missed lockfile
+ * regenerate or a tampering signal.
+ */
+async function writeBundledManifestTamperAudit(
+  extensionId: string,
+  extensionName: string,
+  reason: string,
+  expected: unknown,
+  actual: unknown,
+): Promise<void> {
+  const meta: ExtensionAuditMetadata = {
+    permission: "manifest-tamper",
+    oldValue: expected,
+    newValue: actual,
+    actor: "system",
+    reason: `bundled-manifest-tamper: ${reason}`,
+    extensionName,
+    expected,
+    actual,
+  };
+  try {
+    await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_MANIFEST_TAMPER, extensionId, meta);
   } catch { /* audit write failure is non-fatal */ }
 }

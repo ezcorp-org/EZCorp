@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import type { ExtensionManifestV2 } from "../extensions/types";
 
 /**
@@ -62,7 +63,7 @@ describe("ToolExecutor dispatch for MCP-kind extensions", () => {
       throw new Error("subprocess path should not be used for MCP extensions");
     };
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const result = await executor.executeToolCall(
       "remote__ping",
       { q: "hi" },

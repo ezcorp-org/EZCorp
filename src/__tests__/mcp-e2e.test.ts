@@ -31,6 +31,7 @@ mock.module("../../web/src/routes/api/mcp-servers/$types", () => ({}));
 import { POST as installPOST } from "../../web/src/routes/api/mcp-servers/+server";
 import { ExtensionRegistry } from "../extensions/registry";
 import { ToolExecutor } from "../extensions/tool-executor";
+import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
 import { createAgentConfig, updateAgentConfig } from "../db/queries/agent-configs";
 import { createConversation } from "../db/queries/conversations";
 import { listExtensions, deleteExtension } from "../db/queries/extensions";
@@ -107,7 +108,7 @@ describe("E2E: install → attach → execute", () => {
 
     // 5. Invoke the tool via the executor (routes to MCP client since kind=mcp)
     const conv = await createConversation(projectId, { title: "e2e-conv", userId: ADMIN_USER.id });
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
     const result = await executor.executeToolCall(
       "e2e-mcp__echo",
       { text: "hello-world" },

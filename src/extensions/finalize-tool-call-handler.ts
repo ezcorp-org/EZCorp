@@ -26,6 +26,7 @@ import type {
   ExtensionPermissions,
   ToolCallResult,
 } from "./types";
+import type { PermissionEngine } from "./permission-engine";
 import { getDb } from "../db/connection";
 import { toolCalls } from "../db/schema";
 import { createRateLimiter } from "./rate-limit";
@@ -39,6 +40,8 @@ export interface FinalizeToolCallContext {
   conversationId: string;
   userId: string;
   grantedPermissions: ExtensionPermissions;
+  /** Phase 6: PDP. Optional for back-compat with pre-PDP unit tests. */
+  engine?: PermissionEngine;
 }
 
 /**
@@ -72,7 +75,26 @@ export async function handleFinalizeToolCallRpc(
     return rpcError(req.id, -32001, "appendMessages permission not granted");
   }
 
-  if (!ctx.grantedPermissions.appendMessages) {
+  // Phase 6: PDP is the sole gate. Delegates the permission decision
+  // when wired; legacy boolean fallback retained for pre-PDP test
+  // contexts.
+  if (ctx.engine) {
+    const decision = await ctx.engine.authorize(
+      {
+        extensionId,
+        userId: ctx.userId && ctx.userId !== "unknown" ? ctx.userId : null,
+        conversationId:
+          ctx.conversationId && ctx.conversationId !== "unknown"
+            ? ctx.conversationId
+            : null,
+        toolName: "ezcorp/finalize-tool-call",
+      },
+      [{ kind: "ezcorp:chat:append" }],
+    );
+    if (decision.decision === "deny") {
+      return rpcError(req.id, -32001, "appendMessages permission not granted");
+    }
+  } else if (!ctx.grantedPermissions.appendMessages) {
     return rpcError(req.id, -32001, "appendMessages permission not granted");
   }
 

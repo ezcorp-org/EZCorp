@@ -948,6 +948,10 @@ export class ToolExecutor {
       userId: this.currentUserId ?? "unknown",
       manifest,
       grantedPermissions: granted,
+      // Phase 6: thread the PDP so the handler delegates the
+      // permission decision to `engine.authorize` (audit log + scope
+      // semantics applied uniformly).
+      engine: this.engine,
     };
 
     return handleStorageRpc(extensionId, req, ctx);
@@ -973,6 +977,10 @@ export class ToolExecutor {
     const ctx: AgentConfigsContext = {
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
+      // Phase 6: thread the PDP. The engine reuses the same audit-log
+      // + always-allow infrastructure as every other dispatch.
+      engine: this.engine,
+      conversationId: this.currentConversationId ?? "unknown",
     };
     return handleAgentConfigsRpc(extensionId, req, ctx);
   }
@@ -1001,6 +1009,8 @@ export class ToolExecutor {
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
       bus: this.bus,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
     };
     return handleEmitTaskEventRpc(extensionId, req, ctx);
   }
@@ -1059,6 +1069,8 @@ export class ToolExecutor {
       // effective grants from each shared extension's installed grants
       // + manifest, and persist them on conversation_extensions.
       registry: this.registry,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
       ...(this.currentModel !== undefined ? { parentModel: this.currentModel } : {}),
       ...(this.currentProvider !== undefined ? { parentProvider: this.currentProvider } : {}),
     };
@@ -1096,6 +1108,9 @@ export class ToolExecutor {
       grantedPermissions: granted,
       executor: this.executor,
       quota: this.spawnQuota,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
+      conversationId: this.currentConversationId ?? "unknown",
     };
     return handleCancelRunRpc(extensionId, req, ctx);
   }
@@ -1263,6 +1278,8 @@ export class ToolExecutor {
       conversationId: this.currentConversationId ?? "unknown",
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
     };
     const response = await handleAppendMessageRpc(extensionId, req, ctx);
 
@@ -1325,6 +1342,8 @@ export class ToolExecutor {
       conversationId: this.currentConversationId ?? "unknown",
       userId: this.currentUserId ?? "unknown",
       grantedPermissions: granted,
+      // Phase 6: thread the PDP for the canonical permission decision.
+      engine: this.engine,
     };
     return handleFinalizeToolCallRpc(extensionId, req, ctx);
   }

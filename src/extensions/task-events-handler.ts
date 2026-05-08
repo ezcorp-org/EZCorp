@@ -30,6 +30,7 @@ import type {
 } from "./types";
 import type { EventBus } from "../runtime/events";
 import type { AgentEvents } from "../types";
+import type { PermissionEngine } from "./permission-engine";
 import { getConversationExtensionIds } from "../db/queries/conversation-extensions";
 import { createRateLimiter } from "./rate-limit";
 import { capabilityToolsDisabled } from "./capability-flags";
@@ -117,6 +118,8 @@ export interface TaskEventsContext {
   userId: string;
   grantedPermissions: ExtensionPermissions;
   bus: EventBus<AgentEvents> | undefined;
+  /** Phase 6: PDP. Optional for back-compat with pre-PDP unit tests. */
+  engine?: PermissionEngine;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -162,11 +165,30 @@ export async function handleEmitTaskEventRpc(
     return rpcError(req.id, -32001, "taskEvents permission not granted");
   }
 
-  // 1. Permission check — `task:*` events gate on `taskEvents: true`.
+  // 1. Permission check — Phase 6 PDP is the sole gate. `task:*`
+  // events gate on the `ezcorp:tasks:emit` namespaced cap; the legacy
+  // boolean fallback is retained for context that pre-dates PDP wiring.
   const rawType = params.type;
   const type = typeof rawType === "string" ? rawType : undefined;
 
-  if (ctx.grantedPermissions.taskEvents !== true) {
+  if (ctx.engine) {
+    const decision = await ctx.engine.authorize(
+      {
+        extensionId,
+        userId: userIdForAudit,
+        conversationId:
+          ctx.conversationId && ctx.conversationId !== "unknown"
+            ? ctx.conversationId
+            : null,
+        toolName: "ezcorp/emit-task-event",
+      },
+      [{ kind: "ezcorp:tasks:emit" }],
+    );
+    if (decision.decision === "deny") {
+      await auditReject(extensionId, userIdForAudit, "permission-missing");
+      return rpcError(req.id, -32001, "taskEvents permission not granted");
+    }
+  } else if (ctx.grantedPermissions.taskEvents !== true) {
     await auditReject(extensionId, userIdForAudit, "permission-missing");
     return rpcError(req.id, -32001, "taskEvents permission not granted");
   }

@@ -12,7 +12,9 @@
  *
  * Enforcement ladder (strict order):
  *   1. Kill-switch (`EZCORP_DISABLE_CAPABILITY_TOOLS=1`)
- *   2. `granted.spawnAgents` present + `maxPerHour > 0`
+ *   2. PDP gate via `engine.authorize` for `ezcorp:agent:spawn` (Phase 6).
+ *      Quota validity (`spawnAgents.maxPerHour > 0`) is a separate
+ *      rate-limit check.
  *   3. Parent conversationId bound (not "unknown")
  *   4. Parent projectId bound (sub-conv creation needs it)
  *   5. Extension wired to the parent conversation
@@ -57,6 +59,7 @@ import type { TaskAssignment, TaskSnapshot, TrackedTask } from "../runtime/task-
 import { rpcError, rpcResult } from "./json-rpc";
 import { intersectPermissions } from "./capability-types";
 import type { ExtensionRegistry } from "./registry";
+import type { PermissionEngine } from "./permission-engine";
 
 const MAX_OPS_PER_SECOND = 50;
 const consumeTokens = createRateLimiter(MAX_OPS_PER_SECOND);
@@ -92,6 +95,8 @@ export interface SpawnAssignmentContext {
    * parent's grant rows verbatim. New callers should always supply it.
    */
   registry?: ExtensionRegistry;
+  /** Phase 6: PDP. Optional for back-compat with pre-PDP unit tests. */
+  engine?: PermissionEngine;
 }
 
 type DenyReason =
@@ -143,7 +148,28 @@ export async function handleSpawnAssignmentRpc(
     return rpcError(req.id, -32001, "spawnAgents permission not granted");
   }
 
-  // 2. Permission check — structural (spawnAgents is an object, not a bool).
+  // 2. Permission check — Phase 6 PDP is the sole gate for the
+  // boolean "spawnAgents granted" decision; the structural quota
+  // (`maxPerHour > 0`) is a SEPARATE rate-limit concern that stays.
+  if (ctx.engine) {
+    const decision = await ctx.engine.authorize(
+      {
+        extensionId,
+        userId: auditUser,
+        conversationId:
+          ctx.conversationId && ctx.conversationId !== "unknown"
+            ? ctx.conversationId
+            : null,
+        toolName: "ezcorp/spawn-assignment",
+      },
+      [{ kind: "ezcorp:agent:spawn" }],
+    );
+    if (decision.decision === "deny") {
+      await auditReject(extensionId, auditUser, "permission-missing");
+      return rpcError(req.id, -32001, "spawnAgents permission not granted");
+    }
+  }
+  // Quota validity (rate limit, NOT permission). Stays even with PDP.
   const granted = ctx.grantedPermissions.spawnAgents;
   if (!granted || typeof granted.maxPerHour !== "number" || granted.maxPerHour <= 0) {
     await auditReject(extensionId, auditUser, "permission-missing");

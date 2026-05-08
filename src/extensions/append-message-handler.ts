@@ -12,7 +12,7 @@
  *
  * Enforcement ladder (strict order, mirrors `task-events-handler.ts`):
  *   1. Kill-switch (`EZCORP_DISABLE_CAPABILITY_TOOLS=1`)
- *   2. `granted.appendMessages` present
+ *   2. PDP gate via `engine.authorize` for `ezcorp:chat:append` (Phase 6).
  *   3. Parent conversationId bound (not "unknown")
  *   4. Extension wired to the parent conversation
  *   5. Caller-supplied `conversationId` (if present) === host's forced one
@@ -35,6 +35,7 @@ import type {
   ExtensionPermissions,
   ToolCallResult,
 } from "./types";
+import type { PermissionEngine } from "./permission-engine";
 import { eq, and, inArray } from "drizzle-orm";
 import { getDb } from "../db/connection";
 import { messageAttachments } from "../db/schema";
@@ -71,6 +72,8 @@ export interface AppendMessageContext {
   conversationId: string;
   userId: string;
   grantedPermissions: ExtensionPermissions;
+  /** Phase 6: PDP. Optional for back-compat with pre-PDP unit tests. */
+  engine?: PermissionEngine;
 }
 
 // ── Validation helpers ─────────────────────────────────────────────
@@ -188,8 +191,26 @@ export async function handleAppendMessageRpc(
     return rpcError(req.id, -32001, "appendMessages permission not granted");
   }
 
-  // 2. Permission check — the manifest+grant must declare appendMessages.
-  if (!ctx.grantedPermissions.appendMessages) {
+  // 2. Permission check — Phase 6 PDP is the sole gate. Delegates the
+  // decision to `engine.authorize` when wired; legacy boolean fallback
+  // retained for pre-PDP test contexts.
+  if (ctx.engine) {
+    const decision = await ctx.engine.authorize(
+      {
+        extensionId,
+        userId: ctx.userId && ctx.userId !== "unknown" ? ctx.userId : null,
+        conversationId:
+          ctx.conversationId && ctx.conversationId !== "unknown"
+            ? ctx.conversationId
+            : null,
+        toolName: "ezcorp/append-message",
+      },
+      [{ kind: "ezcorp:chat:append" }],
+    );
+    if (decision.decision === "deny") {
+      return rpcError(req.id, -32001, "appendMessages permission not granted");
+    }
+  } else if (!ctx.grantedPermissions.appendMessages) {
     return rpcError(req.id, -32001, "appendMessages permission not granted");
   }
 

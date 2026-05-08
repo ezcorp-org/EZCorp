@@ -4,6 +4,7 @@
  */
 
 import type { JsonRpcRequest, JsonRpcResponse, ExtensionPermissions, ExtensionManifestV2 } from "./types";
+import type { PermissionEngine } from "./permission-engine";
 import {
   getStorageValue,
   setStorageValue,
@@ -77,6 +78,16 @@ export interface StorageContext {
   userId: string;
   manifest: ExtensionManifestV2;
   grantedPermissions: ExtensionPermissions;
+  /**
+   * Phase 6: optional PDP for the canonical "is this allowed?" check.
+   * When supplied, the handler delegates the permission decision to
+   * `engine.authorize`. The field is optional so older callers (tests
+   * that pre-date the PDP wiring) keep working with the same context
+   * shape — the handler falls back to a structural boolean check when
+   * `engine` is undefined. New production callers in
+   * `tool-executor.ts` always thread the singleton.
+   */
+  engine?: PermissionEngine;
 }
 
 /**
@@ -109,9 +120,34 @@ export async function handleStorageRpc(
   const params = (req.params ?? {}) as Record<string, unknown>;
   const isBuiltin = extensionId === "builtin";
 
-  // Permission check (builtin always allowed)
-  if (!isBuiltin && !ctx.grantedPermissions.storage) {
-    return rpcError(req.id, -32001, "Storage permission not granted");
+  // Phase 6: PDP is the sole gate. When `ctx.engine` is wired, the
+  // handler defers the permission decision to `engine.authorize` so
+  // the audit log records the call and always-allow semantics apply
+  // uniformly. Builtin extensions are always allowed (the host's own
+  // storage scope, never user-controlled). The legacy boolean check
+  // remains as the fallback for context that pre-dates the PDP
+  // wiring (some unit tests).
+  if (!isBuiltin) {
+    if (ctx.engine) {
+      const decision = await ctx.engine.authorize(
+        {
+          extensionId,
+          userId: ctx.userId && ctx.userId !== "unknown" ? ctx.userId : null,
+          conversationId:
+            ctx.conversationId && ctx.conversationId !== "unknown"
+              ? ctx.conversationId
+              : null,
+          toolName: "ezcorp/storage",
+        },
+        [{ kind: "storage" }],
+      );
+      if (decision.decision === "deny") {
+        return rpcError(req.id, -32001, "Storage permission not granted");
+      }
+    } else if (!ctx.grantedPermissions.storage) {
+      // Legacy fallback for callers that didn't thread the engine.
+      return rpcError(req.id, -32001, "Storage permission not granted");
+    }
   }
 
   const action = params.action as string;

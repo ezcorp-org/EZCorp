@@ -27,7 +27,8 @@ export default defineExtension({
     "Distills durable lessons from completed runs (auto on run:complete and via the manual !EZ:distill action).",
   author: { name: "EZCorp" },
   entrypoint: "./index.ts",
-  persistent: false,
+  // Phase 53.6 — event-only extension; idle-out would silently drop run:complete after 5min
+  persistent: true,
 
   permissions: {
     llm: {

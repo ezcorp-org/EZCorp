@@ -38,7 +38,8 @@ export default defineExtension({
     "Extracts durable facts from completed chat runs (preferences, biographical, technical, decisions/goals) and runs a 6-hour compaction sweep.",
   author: { name: "EZCorp" },
   entrypoint: "./index.ts",
-  persistent: false,
+  // Phase 53.6 — event-only extension; idle-out would silently drop run:complete after 5min
+  persistent: true,
 
   permissions: {
     llm: {

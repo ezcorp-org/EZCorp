@@ -37,6 +37,7 @@ import type { RequestHandler } from "./$types";
 import { ensureInitialized, getBus } from "$lib/server/context";
 import { ExtensionRegistry } from "$server/extensions/registry";
 import { ToolExecutor } from "$server/extensions/tool-executor";
+import { getPermissionEngine } from "$server/extensions/permission-engine";
 
 /**
  * Phase 53 Stage 1 — forward `!EZ:distill` to the bundled
@@ -77,7 +78,8 @@ async function forwardDistillToBundled(
     };
   }
 
-  const executor = new ToolExecutor(registry, { bus: getBus() });
+  const engine = getPermissionEngine();
+  const executor = new ToolExecutor(registry, engine, { bus: getBus() });
   executor.setCurrentUserId(userId);
   const messageIdSentinel = `ez-action-distill-${Date.now()}`;
 

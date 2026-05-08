@@ -32,6 +32,9 @@
 
 import type { ExtensionPermissions } from "./types";
 import { intersectPermissions } from "./capability-types";
+import { logger } from "../logger";
+
+const log = logger.child("bundled-ceiling");
 
 /**
  * Ceiling table — keys MUST match `BUNDLED_EXTENSIONS[*].name` in
@@ -240,6 +243,13 @@ export function clampToBundledCeiling(
 ): { effective: ExtensionPermissions; clamped: boolean } {
   const ceiling = getCeiling(extensionName);
   if (!ceiling) {
+    // Forensic chain: callers (e.g. installer paths) should NEVER drive
+    // a non-bundled extension through this helper, but if they do we
+    // log a debug line instead of silently nooping. No audit row —
+    // the passthrough isn't a security event.
+    log.debug("clampToBundledCeiling called for non-bundled name — passthrough", {
+      extensionName,
+    });
     return { effective: requested, clamped: false };
   }
   const effective = intersectPermissions(requested, ceiling);

@@ -183,7 +183,11 @@ const scanTodos: ToolHandler = async (args) => {
   }
 };
 
-const tools: Record<string, ToolHandler> = {
+// Exported for `index.test.ts` so the scan-todos handler can be invoked
+// directly with stubbed `getChannel().request` for `ezcorp/fs.list` and
+// `ezcorp/fs.read`. Smallest API surface change vs. introducing a
+// dedicated helper — the dispatcher contract is already public.
+export const tools: Record<string, ToolHandler> = {
   "scan-todos": scanTodos,
 };
 

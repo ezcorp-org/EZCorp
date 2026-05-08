@@ -10,12 +10,16 @@
  *
  *   - clean tree (no added/removed/changed) → exit 0
  *   - any drift → exit 1 with a remediation hint
- *   - mutual-exclusion of --check and --dry-run is a flag-parsing
- *     concern handled in main(); we assert behavior of the pure
- *     decision helper here.
+ *
+ * Flag-parsing branches (mutually-exclusive `--check`+`--dry-run` and
+ * unknown flags) live in `main()` and call `process.exit(2)` directly,
+ * so we DO need a subprocess to test them — that's the second describe
+ * block at the bottom of this file. Validator coverage gap: those exit-2
+ * paths had no test before this phase.
  */
 
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 
 const { computeCheckDecision, diffLockfiles } = await import(
   "../../scripts/regenerate-manifest-lock"
@@ -131,5 +135,77 @@ describe("regenerate-manifest-lock --check", () => {
     expect(decision.message).toContain("+ c");
     expect(decision.message).toContain("- b");
     expect(decision.message).toContain("~ a.toolsHash");
+  });
+});
+
+// --- Flag-parsing subprocess tests ---
+//
+// Phase post-perm-cleanup, validator coverage gap: the `main()`
+// flag-parsing branches (mutual-exclusion + unknown-flag) call
+// `process.exit(2)` directly, so they can't be exercised in-process —
+// `process.exit` would tear down the test runner. We use
+// `Bun.spawnSync` to invoke the script as a real subprocess and assert
+// the exit code + stderr message.
+//
+// These tests intentionally feed flags that fail BEFORE `main()` does
+// any IO (manifest loading, lockfile diffing), so they don't require a
+// real bundled-extension tree on disk. They should complete in <1s on
+// a warm runner; the timeout is a safety bound, not the expected
+// duration.
+//
+// Path resolution: `import.meta.dir` here is `src/__tests__/`. The
+// script is at `<repo-root>/scripts/regenerate-manifest-lock.ts`.
+describe("regenerate-manifest-lock flag parsing (subprocess)", () => {
+  const SCRIPT = join(import.meta.dir, "..", "..", "scripts", "regenerate-manifest-lock.ts");
+
+  test("--check and --dry-run together → exit 2 with mutually-exclusive message", () => {
+    const result = Bun.spawnSync({
+      cmd: ["bun", "run", SCRIPT, "--check", "--dry-run"],
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 5000,
+    });
+    expect(result.exitCode).toBe(2);
+    const stderr = result.stderr.toString();
+    expect(stderr).toContain("--check and --dry-run are mutually exclusive");
+  });
+
+  test("--check and --dry-run in reverse order also exit 2", () => {
+    // Order shouldn't matter for the mutex check — both flags are
+    // collected via `args.includes()` before the gate fires.
+    const result = Bun.spawnSync({
+      cmd: ["bun", "run", SCRIPT, "--dry-run", "--check"],
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 5000,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toString()).toContain("mutually exclusive");
+  });
+
+  test("unknown flag → exit 2 with 'unknown flag' message", () => {
+    const result = Bun.spawnSync({
+      cmd: ["bun", "run", SCRIPT, "--bogus"],
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 5000,
+    });
+    expect(result.exitCode).toBe(2);
+    const stderr = result.stderr.toString();
+    expect(stderr).toContain("unknown flag: --bogus");
+  });
+
+  test("unknown flag mixed with valid flag still exits 2", () => {
+    // Even if the user passes a valid flag alongside the unknown one,
+    // the unknown-flag gate must still fire — otherwise typos slip
+    // through silently.
+    const result = Bun.spawnSync({
+      cmd: ["bun", "run", SCRIPT, "--check", "--typo"],
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 5000,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toString()).toContain("unknown flag: --typo");
   });
 });

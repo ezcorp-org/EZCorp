@@ -155,9 +155,33 @@ class HostChannelImpl implements HostChannel {
     void this.stdout.write(JSON.stringify(msg) + "\n");
   }
 
+  // Phase 3 chunked-frame state (host → SDK only). Mirror of the
+  // host's json-rpc.ts streaming protocol.
+  private streams = new Map<
+    number | string,
+    { total: number; pieces: string[]; nextSeq: number; assembledBytes: number }
+  >();
+
   private async runLoop(): Promise<void> {
     for await (const rawLine of this.stdin) {
       if (this.stopped) break;
+      // Phase 3: route on the FIRST byte. Sentinel `\x01` (chunk),
+      // `\x02` (announce), `\x03` (cancel) for streamed responses;
+      // anything else is the legacy line-delimited JSON path.
+      if (rawLine.length === 0) continue;
+      const first = rawLine.charCodeAt(0);
+      if (first === 0x01) {
+        this.handleChunkFrame(rawLine);
+        continue;
+      }
+      if (first === 0x02) {
+        this.handleAnnounceFrame(rawLine);
+        continue;
+      }
+      if (first === 0x03) {
+        this.handleCancelFrame(rawLine);
+        continue;
+      }
       const line = rawLine.trim();
       if (!line) continue;
       let msg: Record<string, unknown>;
@@ -180,6 +204,129 @@ class HostChannelImpl implements HostChannel {
       } else if (msg.id !== undefined && msg.id !== null) {
         this.handleResponse(msg);
       }
+    }
+  }
+
+  // ── Chunked-frame protocol (host → SDK) ─────────────────────────
+
+  private handleAnnounceFrame(line: string): void {
+    const body = line.slice(1);
+    const colon = body.indexOf(":");
+    if (colon === -1) return;
+    const idRaw = body.slice(0, colon);
+    const totalRaw = body.slice(colon + 1);
+    const id = parseRpcId(idRaw);
+    const total = Number(totalRaw);
+    if (id === null || !Number.isFinite(total) || total <= 0) return;
+
+    // Hard cap @ 100MB / 256KB per chunk = 410 chunks
+    const HARD = (100 * 1024 * 1024) / (256 * 1024);
+    if (total > HARD) {
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming response exceeds 100MB cap (announced ${total} chunks)`,
+          ),
+        );
+      }
+      return;
+    }
+
+    this.streams.set(id, {
+      total,
+      pieces: new Array(total),
+      nextSeq: 0,
+      assembledBytes: 0,
+    });
+  }
+
+  private handleChunkFrame(line: string): void {
+    const body = line.slice(1);
+    const c1 = body.indexOf(":");
+    if (c1 === -1) return;
+    const c2 = body.indexOf(":", c1 + 1);
+    if (c2 === -1) return;
+    const idRaw = body.slice(0, c1);
+    const seqRaw = body.slice(c1 + 1, c2);
+    const b64 = body.slice(c2 + 1);
+    const id = parseRpcId(idRaw);
+    const seq = Number(seqRaw);
+    if (id === null || !Number.isFinite(seq) || seq < 0) return;
+
+    const state = this.streams.get(id);
+    if (!state) return;
+
+    if (seq !== state.nextSeq) {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(
+          new Error(
+            `[@ezcorp/sdk] streaming chunk out of order: id=${id}, expected seq=${state.nextSeq}, got ${seq}`,
+          ),
+        );
+      }
+      return;
+    }
+
+    let piece: string;
+    try {
+      piece = atob(b64);
+    } catch {
+      this.streams.delete(id);
+      const entry = this.pending.get(id);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pending.delete(id);
+        entry.reject(new Error(`[@ezcorp/sdk] streaming chunk invalid base64 (id=${id}, seq=${seq})`));
+      }
+      return;
+    }
+    state.pieces[seq] = piece;
+    state.nextSeq = seq + 1;
+    state.assembledBytes += piece.length;
+
+    if (state.nextSeq === state.total) {
+      this.streams.delete(id);
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(state.pieces.join("")) as Record<string, unknown>;
+      } catch (e) {
+        const entry = this.pending.get(id);
+        if (entry) {
+          if (entry.timer) clearTimeout(entry.timer);
+          this.pending.delete(id);
+          entry.reject(
+            new Error(
+              `[@ezcorp/sdk] streaming response is not valid JSON (id=${id}): ${e instanceof Error ? e.message : String(e)}`,
+            ),
+          );
+        }
+        return;
+      }
+      this.handleResponse(parsed);
+    }
+  }
+
+  private handleCancelFrame(line: string): void {
+    const body = line.slice(1);
+    const colon = body.indexOf(":");
+    const idRaw = colon === -1 ? body : body.slice(0, colon);
+    const reason = colon === -1 ? "unknown" : body.slice(colon + 1);
+    const id = parseRpcId(idRaw);
+    if (id === null) return;
+    const hadStream = this.streams.delete(id);
+    const entry = this.pending.get(id);
+    if (!entry && !hadStream) return;
+    if (entry) {
+      if (entry.timer) clearTimeout(entry.timer);
+      this.pending.delete(id);
+      entry.reject(new Error(`[@ezcorp/sdk] streaming response cancelled: ${reason}`));
     }
   }
 
@@ -258,6 +405,18 @@ class HostChannelImpl implements HostChannel {
       this.write(res);
     }
   }
+}
+
+// ── Phase 3 streaming helpers ───────────────────────────────────
+
+/**
+ * Parse a JSON-RPC id string. Numeric forms become numbers (matching
+ * the request.id sent by `request()`); non-numeric strings pass through.
+ */
+function parseRpcId(raw: string): number | string | null {
+  if (raw.length === 0) return null;
+  if (/^[0-9]+$/.test(raw)) return Number(raw);
+  return raw;
 }
 
 // ── Production stdin source ─────────────────────────────────────

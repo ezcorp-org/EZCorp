@@ -9,7 +9,16 @@ export {
   atomicRead,
   loadJSON,
   saveJSON,
+  // ── Phase 3 host-mediated fs helpers ──
+  fsRead,
+  fsWrite,
+  fsList,
+  fsStat,
+  fsExists,
+  fsMkdir,
+  fsUnlink,
 } from "./fs";
+export type { FsListEntry, FsStatResult } from "./fs";
 
 export { withLock, createMutex } from "./lock";
 

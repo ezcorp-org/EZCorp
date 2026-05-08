@@ -22,7 +22,7 @@
 //   - packages/@ezcorp/sdk/test/http.test.ts
 // This file is the consolidated cross-layer view required by task #11.
 
-import { test, expect, describe, beforeEach, afterEach, afterAll, mock, beforeAll, spyOn } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach, afterAll, mock, spyOn } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 import { mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { join, resolve as pathResolve } from "node:path";
@@ -361,19 +361,27 @@ describe("empty grantedPermissions — process.env secrets are not leaked to the
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// CASE 5: Network per-host allowlist (fetchPermitted)
+// CASE 5: Network per-host allowlist (fetchPermitted = thin shim post-Phase-2)
 // ═══════════════════════════════════════════════════════════════════
+//
+// Phase 2 changed where the per-host gate lives:
+//   - Pre-Phase-2: `fetchPermitted` (SDK helper) enforced the allowlist
+//     by hand. Direct `fetch()` bypassed entirely.
+//   - Post-Phase-2: the sandbox-preload installs a `globalThis.fetch`
+//     wrapper that enforces the allowlist for EVERY fetch call (SDK
+//     or raw). `fetchPermitted` is a `@deprecated` thin alias of
+//     `globalThis.fetch`.
+//
+// The semantic invariant ("network: ['api.example.com'] gates fetches")
+// still holds — it's just enforced at a different layer. These tests
+// now verify the shim semantics + the wrapper layer is covered by
+// `src/__tests__/network-wrapper.test.ts` (pure logic) and
+// `src/__tests__/security/sb2-network-egress.test.ts` (real subprocess).
 
-describe("scoped grantedPermissions: network: ['api.example.com'] — per-host enforcement", () => {
-  let originalHosts: string | undefined;
+describe("scoped grantedPermissions: network — Phase 2 shim semantics", () => {
   let fetchSpy: ReturnType<typeof spyOn>;
 
-  beforeAll(() => {
-    originalHosts = process.env.EZCORP_PERMITTED_HOSTS;
-  });
-
   beforeEach(() => {
-    // Stub the global fetch so we don't hit the real network.
     fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
       (async () => new Response("stub", { status: 200 })) as unknown as typeof fetch,
     );
@@ -381,31 +389,39 @@ describe("scoped grantedPermissions: network: ['api.example.com'] — per-host e
 
   afterEach(() => {
     fetchSpy.mockRestore();
-    if (originalHosts === undefined) delete process.env.EZCORP_PERMITTED_HOSTS;
-    else process.env.EZCORP_PERMITTED_HOSTS = originalHosts;
   });
 
-  test("fetch to api.example.com is allowed", async () => {
-    process.env.EZCORP_PERMITTED_HOSTS = "api.example.com";
+  test("fetchPermitted is a thin alias — every call goes through globalThis.fetch", async () => {
+    // Post-Phase-2: even if EZCORP_PERMITTED_HOSTS is unset in the
+    // test environment, `fetchPermitted` doesn't throw on its own.
+    // The real enforcement lives in the sandbox-preload's wrapper of
+    // `globalThis.fetch` — which isn't installed in this unit-test
+    // process (the spy stub takes its place).
     const resp = await fetchPermitted("https://api.example.com/v1/data");
     expect(resp.status).toBe(200);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("fetch to evil.com is rejected with an explanatory error naming the allowlist", async () => {
-    process.env.EZCORP_PERMITTED_HOSTS = "api.example.com";
-    await expect(fetchPermitted("https://evil.com/x")).rejects.toThrow(
-      /hostname 'evil\.com' is not in EZCORP_PERMITTED_HOSTS allowlist/,
-    );
-    expect(fetchSpy).not.toHaveBeenCalled();
+  test("fetchPermitted forwards to fetch even for non-allowlisted hosts (alias semantics)", async () => {
+    // The shim doesn't pre-filter — it just calls fetch. The SANDBOX
+    // wrapper rejects in production; in this in-process test the spy
+    // captures the call without dialing the real network.
+    await fetchPermitted("https://evil.com/x");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("empty allowlist = fail closed (not fail open)", async () => {
-    delete process.env.EZCORP_PERMITTED_HOSTS;
-    await expect(fetchPermitted("https://api.example.com/")).rejects.toThrow(
-      /EZCORP_PERMITTED_HOSTS not configured/,
+  test("fetchPermitted surfaces fetch's throw verbatim (e.g. wrapper-deny in sandboxed proc)", async () => {
+    // Simulate the wrapped fetch rejecting an off-allowlist host:
+    fetchSpy.mockImplementation(
+      (async () => {
+        throw new Error(
+          "Extension sandbox: hostname 'evil.com' is not in the granted network allowlist (granted: api.example.com)",
+        );
+      }) as unknown as typeof fetch,
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(fetchPermitted("https://evil.com/")).rejects.toThrow(
+      /hostname 'evil\.com' is not in the granted network allowlist/,
+    );
   });
 });
 

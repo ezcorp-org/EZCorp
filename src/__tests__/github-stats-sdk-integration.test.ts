@@ -138,11 +138,14 @@ function makeSandboxEnv(extensionId: string, permittedHosts?: string): Record<st
   return env;
 }
 
-describe("github-stats SDK integration DENY path (real subprocess, fetchPermitted guard)", () => {
-  test("Branch 1 — empty allowlist: EZCORP_PERMITTED_HOSTS omitted, fetchPermitted throws 'not configured'", async () => {
+describe("github-stats SDK integration DENY path (real subprocess, sandbox fetch wrapper)", () => {
+  test("Branch 1 — empty allowlist: EZCORP_PERMITTED_HOSTS omitted, sandbox wrapper denies the host", async () => {
     const extId = "github-stats-deny-empty-" + Math.random().toString(36).slice(2, 8);
-    // Omit EZCORP_PERMITTED_HOSTS entirely → readAllowlist() returns [] →
-    // fetchPermitted throws on the "no granted permission" guard (http.ts:36-41).
+    // Phase 2: enforcement moved from the SDK's `fetchPermitted` helper
+    // (now a thin alias) to the sandbox-preload's `globalThis.fetch`
+    // wrapper. With `EZCORP_PERMITTED_HOSTS` unset, the wrapper denies
+    // every external host — message anchors on the wrapper's "not in
+    // the granted network allowlist" pattern.
     const env = makeSandboxEnv(extId);
     const proc = new ExtensionProcess(extId, GITHUB_STATS_ENTRYPOINT, env, {
       persistent: false,
@@ -154,10 +157,10 @@ describe("github-stats SDK integration DENY path (real subprocess, fetchPermitte
       expect(r.isError).toBe(true);
       const first = r.content[0];
       if (!first || first.type !== "text") throw new Error("expected text content");
-      expect(first.text).toContain("EZCORP_PERMITTED_HOSTS not configured");
-      // Hostname should NOT appear in this branch per http.ts — it's the
-      // pre-network guard, thrown before the hostname check runs.
-      expect(first.text).not.toContain("'api.github.com' is not in");
+      // Wrapper denies api.github.com — empty allowlist means everything
+      // not internal is denied with the same error.
+      expect(first.text).toContain("api.github.com");
+      expect(first.text).toMatch(/not in the granted network allowlist/);
     } finally {
       proc.kill();
     }
@@ -180,7 +183,15 @@ describe("github-stats SDK integration DENY path (real subprocess, fetchPermitte
       if (!first || first.type !== "text") throw new Error("expected text content");
       expect(first.text).toContain("api.github.com");
       expect(first.text).toContain("example.com");
-      expect(first.text).toContain("not in EZCORP_PERMITTED_HOSTS allowlist");
+      // Phase 2: error message now comes from the sandbox-preload's
+      // `globalThis.fetch` wrapper (which `fetchPermitted` aliases), not
+      // the SDK helper's hand-rolled check. The new message uses
+      // "Extension sandbox" / "granted network allowlist" — assertions
+      // anchor on the host names + the "not in" / "allowlist" pattern
+      // that's shared between both message shapes.
+      expect(first.text).toMatch(
+        /not in (EZCORP_PERMITTED_HOSTS|the granted network) allowlist/,
+      );
     } finally {
       proc.kill();
     }

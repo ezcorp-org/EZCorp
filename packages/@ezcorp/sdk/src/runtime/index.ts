@@ -137,3 +137,13 @@ export type {
   LlmUsage,
   LlmBudgetSnapshot,
 } from "./llm";
+
+export { Memory } from "./memory";
+export type {
+  MemoryRecord,
+  MemoryWriteInput,
+  MemoryListOpts,
+  MemoryCategory,
+  MemoryConfidence,
+  MemoryStatus,
+} from "./memory";

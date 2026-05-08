@@ -1,4 +1,9 @@
 /**
+ * NOTE (Phase 53.6): This file stubs the proc with `isRunning: true`
+ * hard-coded — the real spawn chain is covered by
+ * `bundled-boot-spawn-real-process.test.ts`. Any change to the
+ * dispatcher's `getProcessIfRunning` gating MUST keep that test green.
+ *
  * Phase 53 fix-loop regression guard — `run:complete` ACTUALLY delivers
  * to a bundled event-only extension when boot-spawn ran, and STILL drops
  * silently when boot-spawn didn't run.

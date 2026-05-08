@@ -1,4 +1,9 @@
 /**
+ * NOTE (Phase 53.6): This file stubs the registry's `getProcess` to return
+ * an object with `isRunning: true` hard-coded — the real spawn chain is
+ * covered by `bundled-boot-spawn-real-process.test.ts`. Any change to
+ * `bootSpawnFlaggedBundledExtensions` MUST keep that third test green.
+ *
  * Phase 53 fix-loop coverage — `bootSpawnFlaggedBundledExtensions`.
  *
  * UAT for Phase 53.5 caught two silently-broken event-only extensions:

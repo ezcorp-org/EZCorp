@@ -74,31 +74,46 @@ describe("migrateManifestV2ToV3 — v2 manifests inherit caps", () => {
     expect(out.tools?.[0]?.capabilities?.filesystem?.mode).toEqual(["read", "write"]);
   });
 
-  test("legacy boolean perms (taskEvents, agentConfig) → custom block", () => {
+  test("Phase 6: legacy boolean perms migrate to namespaced ezcorp:* form", () => {
+    // Phase 6 capability namespace migration. The legacy keys
+    // (taskEvents, agentConfig, appendMessages, spawnAgents,
+    // eventSubscriptions) are translated to their `ezcorp:*` form via
+    // NAMESPACE_MAP inside `deriveCapsFromExtensionPerms`. The runtime
+    // continues to read BOTH names so existing manifests don't need
+    // editing — `customToKind` in capability-types.ts accepts both.
     const manifest = makeManifest({
       schemaVersion: 2,
       permissions: {
         taskEvents: true,
         agentConfig: "read",
         appendMessages: { excludedDefault: true },
+        spawnAgents: { maxPerHour: 5 },
       },
       tools: [{ name: "t", description: "t", inputSchema: { type: "object" } }],
     });
     const out = migrateManifestV2ToV3(manifest);
     const custom = out.tools?.[0]?.capabilities?.custom;
-    expect(custom?.taskEvents).toBe(true);
-    expect(custom?.agentConfig).toBe(true);
-    expect(custom?.appendMessages).toBe(true);
+    expect(custom?.["ezcorp:tasks:emit"]).toBe(true);
+    expect(custom?.["ezcorp:agent:config"]).toBe(true);
+    expect(custom?.["ezcorp:chat:append"]).toBe(true);
+    expect(custom?.["ezcorp:agent:spawn"]).toBe(true);
+    // The legacy keys are NOT emitted on the namespaced output.
+    expect(custom?.taskEvents).toBeUndefined();
+    expect(custom?.agentConfig).toBeUndefined();
+    expect(custom?.appendMessages).toBeUndefined();
+    expect(custom?.spawnAgents).toBeUndefined();
   });
 
-  test("eventSubscriptions: ['x:y'] → custom.eventSubscriptions array", () => {
+  test("Phase 6: eventSubscriptions array migrates to ezcorp:events:subscribe", () => {
     const manifest = makeManifest({
       schemaVersion: 2,
       permissions: { eventSubscriptions: ["x:y"] },
       tools: [{ name: "t", description: "t", inputSchema: { type: "object" } }],
     });
     const out = migrateManifestV2ToV3(manifest);
-    expect(out.tools?.[0]?.capabilities?.custom?.eventSubscriptions).toEqual(["x:y"]);
+    const custom = out.tools?.[0]?.capabilities?.custom;
+    expect(custom?.["ezcorp:events:subscribe"]).toEqual(["x:y"]);
+    expect(custom?.eventSubscriptions).toBeUndefined();
   });
 });
 

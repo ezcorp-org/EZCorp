@@ -899,16 +899,27 @@ export function deriveCapsFromExtensionPerms(
     decl.storage = true;
   }
 
-  // Translate the legacy boolean fields to the namespaced custom
-  // namespace so the PDP's `capabilityDeclarationToSet` produces
-  // matching `ezcorp:*` caps.
+  // Phase 6 — namespace migration. Translate the legacy boolean fields
+  // to their `ezcorp:*` namespaced form via NAMESPACE_MAP. The runtime
+  // (`capabilityDeclarationToSet` in capability-types.ts) accepts BOTH
+  // the legacy keys and the namespaced keys for back-compat: extension
+  // manifests can declare either name. Internally, the PDP and audit
+  // rows use the namespaced form.
   const custom: Record<string, string[] | boolean> = {};
-  if (perms.appendMessages !== undefined) custom.appendMessages = true;
-  if (perms.agentConfig === "read") custom.agentConfig = true;
-  if (perms.spawnAgents) custom.spawnAgents = true;
-  if (perms.taskEvents === true) custom.taskEvents = true;
+  if (perms.appendMessages !== undefined) {
+    custom[NAMESPACE_MAP.appendMessages] = true;
+  }
+  if (perms.agentConfig === "read") {
+    custom[NAMESPACE_MAP.agentConfig] = true;
+  }
+  if (perms.spawnAgents) {
+    custom[NAMESPACE_MAP.spawnAgents] = true;
+  }
+  if (perms.taskEvents === true) {
+    custom[NAMESPACE_MAP.taskEvents] = true;
+  }
   if (perms.eventSubscriptions && perms.eventSubscriptions.length > 0) {
-    custom.eventSubscriptions = [...perms.eventSubscriptions];
+    custom[NAMESPACE_MAP.eventSubscriptions] = [...perms.eventSubscriptions];
   }
   if (Object.keys(custom).length > 0) {
     decl.custom = custom;
@@ -916,3 +927,22 @@ export function deriveCapsFromExtensionPerms(
 
   return decl;
 }
+
+/**
+ * Phase 6 — capability namespace migration map. Translates the legacy
+ * boolean / object-shaped permission keys (`appendMessages`,
+ * `agentConfig`, `taskEvents`, `spawnAgents`, `eventSubscriptions`) to
+ * their `ezcorp:*` namespaced form. The runtime continues to read both
+ * old + new names for back-compat (extension manifests can declare
+ * either); internally the PDP and audit rows use the namespaced form.
+ *
+ * `migrateManifestV2ToV3` and `deriveCapsFromExtensionPerms` both
+ * consume this map so the translation is anchored in exactly one place.
+ */
+export const NAMESPACE_MAP: Readonly<Record<string, string>> = {
+  appendMessages: "ezcorp:chat:append",
+  agentConfig: "ezcorp:agent:config",
+  taskEvents: "ezcorp:tasks:emit",
+  spawnAgents: "ezcorp:agent:spawn",
+  eventSubscriptions: "ezcorp:events:subscribe",
+};

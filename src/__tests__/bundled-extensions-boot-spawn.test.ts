@@ -71,28 +71,46 @@ interface SpawnCall {
   extensionId: string;
 }
 
+interface ProcStub {
+  extensionId: string;
+  isRunning: boolean;
+  ensureRunningCalls: number;
+  ensureRunning(): void;
+}
+
 function makeRegistry(opts: {
   failOn?: Set<string>;
 } = {}): {
   spawnCalls: SpawnCall[];
+  procStubs: Map<string, ProcStub>;
   registry: ExtensionRegistry;
 } {
   const spawnCalls: SpawnCall[] = [];
+  const procStubs = new Map<string, ProcStub>();
   const registry = {
     async getProcess(extensionId: string): Promise<ExtensionProcess> {
       spawnCalls.push({ extensionId });
       if (opts.failOn?.has(extensionId)) {
         throw new Error(`spawn refused for ${extensionId}`);
       }
-      // Minimal ExtensionProcess stub — only `extensionId` is read by
-      // the wireRpc callback in production. The dispatcher path uses
-      // sendNotification + isRunning, which the run-complete-dispatch
-      // integration test exercises separately. Cast through `unknown`
+      // Minimal ExtensionProcess stub — `extensionId` is read by the
+      // wireRpc callback, `ensureRunning` is invoked by the helper to
+      // actually spawn the subprocess (Phase 53.6 fix). The dispatcher
+      // path uses sendNotification + isRunning, which the
+      // run-complete-dispatch integration test and the real-process
+      // regression test exercise separately. Cast through `unknown`
       // because ExtensionProcess has private fields we don't simulate.
-      return { extensionId, isRunning: true } as unknown as ExtensionProcess;
+      const proc: ProcStub = {
+        extensionId,
+        isRunning: true,
+        ensureRunningCalls: 0,
+        ensureRunning() { this.ensureRunningCalls++; },
+      };
+      procStubs.set(extensionId, proc);
+      return proc as unknown as ExtensionProcess;
     },
   } as unknown as ExtensionRegistry;
-  return { spawnCalls, registry };
+  return { spawnCalls, procStubs, registry };
 }
 
 function makeWireRpc() {
@@ -319,7 +337,11 @@ describe("bootSpawnFlaggedBundledExtensions", () => {
     const registry = {
       async getProcess(extensionId: string): Promise<ExtensionProcess> {
         order.push(`spawn:${extensionId}`);
-        return { extensionId, isRunning: true } as unknown as ExtensionProcess;
+        return {
+          extensionId,
+          isRunning: true,
+          ensureRunning() { order.push(`ensureRunning:${extensionId}`); },
+        } as unknown as ExtensionProcess;
       },
     } as unknown as ExtensionRegistry;
     const wireRpc = async (extensionId: string, _proc: ExtensionProcess) => {
@@ -328,6 +350,81 @@ describe("bootSpawnFlaggedBundledExtensions", () => {
 
     await bootSpawnFlaggedBundledExtensions(registry, wireRpc);
 
-    expect(order).toEqual(["spawn:ext-lessons", "wire:ext-lessons"]);
+    // Order invariant: getProcess() (constructs the wrapper) MUST run
+    // before ensureRunning() (actually spawns the subprocess), which
+    // MUST run before wireRpc() (installs reverse-RPC handlers).
+    // Spawn-then-wire is intentional — see bundled.ts JSDoc.
+    expect(order).toEqual([
+      "spawn:ext-lessons",
+      "ensureRunning:ext-lessons",
+      "wire:ext-lessons",
+    ]);
+  });
+
+  // ── Phase 53.6 — explicit `ensureRunning` coverage ──────────────────
+  //
+  // The pre-existing tests above exercise the helper through a stub
+  // registry whose `getProcess` returns `{ isRunning: true }`. That
+  // accidentally masked a production bug for two phases: the helper
+  // never actually called `proc.ensureRunning()`, so in production
+  // (where `getProcess` only constructs the wrapper) `proc.proc`
+  // stayed `null`, `isRunning` was `false`, and the dispatcher's
+  // `getProcessIfRunning` silently dropped every event.
+  //
+  // The real-process regression test in
+  // `bundled-boot-spawn-real-process.test.ts` covers the end-to-end
+  // chain. The test below is the unit-level guard: assert that the
+  // helper invokes `ensureRunning()` exactly once per successful entry
+  // (idempotent contract on the proc side, but the helper should call
+  // it deterministically — not skip it on retry, not call it twice).
+
+  test("calls proc.ensureRunning() exactly once per successful entry (Phase 53.6 fix)", async () => {
+    store.set("lessons-distiller", {
+      id: "ext-lessons",
+      name: "lessons-distiller",
+      enabled: true,
+    });
+    store.set("memory-extractor", {
+      id: "ext-memory",
+      name: "memory-extractor",
+      enabled: true,
+    });
+
+    const { procStubs, registry } = makeRegistry();
+    const { fn: wireRpc } = makeWireRpc();
+
+    await bootSpawnFlaggedBundledExtensions(registry, wireRpc);
+
+    // Both flagged extensions must have ensureRunning called exactly
+    // once. Calling it twice would be wasteful (it's idempotent — but
+    // a second call would mean the helper double-spawns); calling it
+    // zero times is the regression we're guarding against.
+    expect(procStubs.get("ext-lessons")?.ensureRunningCalls).toBe(1);
+    expect(procStubs.get("ext-memory")?.ensureRunningCalls).toBe(1);
+  });
+
+  test("does NOT call ensureRunning() when getProcess throws (Phase 53.6 fix)", async () => {
+    // If getProcess fails, the proc stub is never returned, so
+    // ensureRunning can't run. The try/catch around the spawn-then-wire
+    // block should swallow the throw without touching the (nonexistent)
+    // proc handle. Belt-and-suspenders against a future refactor that
+    // moves ensureRunning out of the try block.
+    store.set("lessons-distiller", {
+      id: "ext-lessons",
+      name: "lessons-distiller",
+      enabled: true,
+    });
+
+    const { procStubs, registry } = makeRegistry({
+      failOn: new Set(["ext-lessons"]),
+    });
+    const { fn: wireRpc } = makeWireRpc();
+
+    const result = await bootSpawnFlaggedBundledExtensions(registry, wireRpc);
+
+    // No proc stub recorded for the failing entry (getProcess threw
+    // before the stub was constructed).
+    expect(procStubs.get("ext-lessons")).toBeUndefined();
+    expect(result.failed).toContain("lessons-distiller");
   });
 });

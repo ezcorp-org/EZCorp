@@ -1191,13 +1191,31 @@ async function writeBundledManifestTamperAudit(
  *   3. Calls `registry.getProcess(extId)` — the registry's only spawn
  *      API; this is the same call path used by `tool-executor.ts:592`
  *      for tool dispatch, so the subprocess gets the same env / sandbox
- *      / rate-limit setup.
- *   4. Calls the supplied `wireRpc(extId, proc)` callback to install
+ *      / rate-limit setup. Note: `getProcess` only constructs the
+ *      `ExtensionProcess` wrapper — the actual `Bun.spawn(...)` is
+ *      deferred to `proc.ensureRunning()`, which is normally called
+ *      lazily inside `proc.call(...)` on first tool invocation.
+ *      Event-only extensions never `call`, so this helper MUST drive
+ *      the spawn explicitly via `ensureRunning()`.
+ *   4. Calls `proc.ensureRunning()` — actually spawns the subprocess.
+ *      Synchronous and idempotent (`subprocess.ts:174-176`). Without
+ *      this step the wrapper exists but `proc.proc` stays `null`, so
+ *      `proc.isRunning` returns `false` and the dispatcher's
+ *      `getProcessIfRunning` silently drops every event. This was the
+ *      Phase 53.6 bug — UAT for Phase 53.5 caught it; the two
+ *      pre-existing unit tests for this helper happened to stub
+ *      `isRunning: true` on the proc and missed the gap entirely.
+ *   5. Calls the supplied `wireRpc(extId, proc)` callback to install
  *      the JSON-RPC handlers (ezcorp/invoke, ezcorp/storage,
  *      ezcorp/memory, ezcorp/lessons, etc.) — without this, any
  *      reverse-RPC the extension issues (e.g. `ctx.memory.write` from
  *      memory-extractor's `run:complete` handler) would error with
- *      "Method not found".
+ *      "Method not found". Spawn-then-wire is intentional: handlers
+ *      are stored in `pendingRequestHandler`/`pendingNotificationHandler`
+ *      and re-wired into the live transport on the next
+ *      `setRequestHandler`/`setNotificationHandler` call, so wiring
+ *      after spawn is correctly idempotent. Spawn-after-wire would
+ *      lose handlers if the subprocess crashes between the two calls.
  *
  * `wireRpc` is injected (rather than imported directly) for two reasons:
  *   - Avoid the circular-import hazard between `bundled.ts` and
@@ -1211,9 +1229,12 @@ async function writeBundledManifestTamperAudit(
  * dispatcher's event-drop is preferable to an unbootable server.
  *
  * Idempotent: subsequent calls to `getProcess` on an already-running
- * extension return the same `ExtensionProcess`; `ensureSubprocessRpcWired`
+ * extension return the same `ExtensionProcess`; `ensureRunning()` is a
+ * no-op when `proc.proc` is already set; `ensureSubprocessRpcWired`
  * (the typical implementation behind `wireRpc`) is also idempotent via
- * its internal `wiredExtensions` Set.
+ * its internal `wiredExtensions` Set. The whole helper is safe to call
+ * twice (same boot path with no observable side effect on the second
+ * call).
  */
 export async function bootSpawnFlaggedBundledExtensions(
   registry: ExtensionRegistry,
@@ -1257,6 +1278,15 @@ export async function bootSpawnFlaggedBundledExtensions(
 
     try {
       const proc = await registry.getProcess(row.id);
+      // Phase 53.6 fix: actually spawn the subprocess. `getProcess`
+      // only constructs the `ExtensionProcess` wrapper; the real
+      // `Bun.spawn` is deferred to `ensureRunning()` (normally called
+      // lazily by `proc.call()`). Event-only extensions never `call`,
+      // so without this line `proc.isRunning` stays false and the
+      // dispatcher's `getProcessIfRunning` returns null on every
+      // emitted `run:complete`, silently dropping the event.
+      // `ensureRunning()` is synchronous + idempotent.
+      proc.ensureRunning();
       await wireRpc(row.id, proc);
       log.info("boot-spawned bundled extension", {
         name: entry.name,

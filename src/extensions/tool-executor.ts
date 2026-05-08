@@ -852,9 +852,18 @@ export class ToolExecutor {
         };
       }
       const manifest = this.registry.getManifest(callerExtId);
+      // Per-call conversation-scope auth: thread the executor's
+      // current conversation id (and acting user id) into the
+      // RuntimeInvokeContext so `runtime.conversations.getMessages` /
+      // `runtime.lessons.triggerGate` can enforce
+      // `args.conversationId === ctx.currentConversationId`. Without
+      // this, any installed extension could read messages from any
+      // conversation across users — `conversation_extensions` wiring
+      // is NOT consulted on the runtime-invoke fast path.
       const ctx = {
         extensionId: callerExtId,
         userId: this.currentUserId ?? null,
+        currentConversationId: this.currentConversationId ?? null,
         granted,
         ...(manifest?.settings ? { settingsSchema: manifest.settings } : {}),
       };

@@ -55,6 +55,7 @@ const MODULE_PATHS = [
   "../../db/queries/modes",
   "../../db/queries/features",
   "../../db/queries/lessons",
+  "../../db/queries/tool-calls",
   "../../db/schema",
   "../../extensions/registry",
   "../../extensions/tool-executor",

@@ -81,7 +81,11 @@ async function forwardDistillToBundled(
   const engine = getPermissionEngine();
   const executor = new ToolExecutor(registry, engine, { bus: getBus() });
   executor.setCurrentUserId(userId);
-  const messageIdSentinel = `ez-action-distill-${Date.now()}`;
+  // Phase 53.1 audit-fix: Date.now() collides under burst load (two
+  // dispatcher calls in the same ms produce identical sentinels which
+  // breaks per-call attribution). randomUUID is the smallest diff that
+  // guarantees uniqueness without changing the call signature.
+  const messageIdSentinel = `ez-action-distill-${crypto.randomUUID()}`;
 
   let result;
   try {

@@ -32,6 +32,7 @@ import {
   createToolDispatcher,
   getChannel,
   getSetting,
+  JsonRpcError,
   Lessons,
   Llm,
   registerEventHandler,
@@ -451,12 +452,35 @@ export async function handleRunComplete(payload: { run?: unknown; conversationId
 
   // Resolve the project id via the same getMessages call (embedded in
   // the response — see host-side handler).
+  //
+  // Distinguish the two failure modes the host now signals:
+  //   - JsonRpcError code -32604 ("conversation not found" OR "not
+  //     wired to this caller") → silent skip; the run:complete handler
+  //     is fire-and-forget and the conversation may simply have been
+  //     deleted between fire-time and now, or this extension just
+  //     isn't wired into it.
+  //   - JsonRpcError code -32603 (DB error) or anything else → log,
+  //     then return. This used to be silent (pre-S3-fix) which made a
+  //     transient DB blip indistinguishable from "conversation not
+  //     found" — operators couldn't tell whether the listener was
+  //     misconfigured or the DB was flapping.
+  // The listener contract is still fire-and-forget (we never throw),
+  // but the log is the operator's signal.
   let projectId: string;
   try {
     const messagesEnvelope = await runtimeApi.getMessagesEnvelope(conversationId);
     if (!messagesEnvelope.projectId) return;
     projectId = messagesEnvelope.projectId;
-  } catch {
+  } catch (err) {
+    if (err instanceof JsonRpcError && err.code === -32604) {
+      // Silent — expected for deleted / unwired conversations.
+      return;
+    }
+    console.warn("[lessons-distiller] handleRunComplete: getMessagesEnvelope failed", {
+      conversationId,
+      code: err instanceof JsonRpcError ? err.code : undefined,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return;
   }
 

@@ -59,6 +59,10 @@ describe("extension audit action constants", () => {
       // Phase 5 — bundled cap-ceiling clamp + manifest tamper detection
       "BUNDLED_CEILING_CLAMP",
       "BUNDLED_MANIFEST_TAMPER",
+      // Phase 7 — MCP isolation (forward proxy + Linux netns)
+      "MCP_NETNS_CREATED",
+      "MCP_NETNS_FALLBACK",
+      "MCP_HOST_BLOCKED",
     ]));
   });
 

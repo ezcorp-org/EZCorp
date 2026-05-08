@@ -237,6 +237,16 @@ export class ToolExecutor {
     // Phase 6 (M3): wire the per-turn counter to reset on run:complete.
     // Idempotent — module-level flag ensures a single bus subscription
     // even though many ToolExecutor instances are constructed per-turn.
+    //
+    // NOTE (reviewer S2): the module-level `toolCallsCounterWired`
+    // binds to the FIRST `bus` instance that gets here. Production is
+    // single-bus by design (one `host.bus` lives on `setup-tools.ts`'s
+    // shared host), so this is a documentation requirement, not a code
+    // change. If the runtime ever transitions to multi-bus topology
+    // (e.g. per-tenant or per-process buses), this single-flag pattern
+    // would silently bind the counter to one bus and orphan the rest.
+    // Test-only `_resetToolCallsCounterForTests` resets the flag so
+    // each test's `makeBus()` rewires correctly.
     if (this.bus && !toolCallsCounterWired) {
       toolCallsCounterWired = true;
       this.bus.on("run:complete", (data) => {

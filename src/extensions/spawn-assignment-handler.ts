@@ -101,6 +101,7 @@ export interface SpawnAssignmentContext {
 
 type DenyReason =
   | "permission-missing"
+  | "quota-invalid"
   | "not-wired"
   | "rate-limited"
   | "depth-exceeded"
@@ -170,10 +171,17 @@ export async function handleSpawnAssignmentRpc(
     }
   }
   // Quota validity (rate limit, NOT permission). Stays even with PDP.
+  // Phase 6 reviewer S1: this branch is dead-on-success for any
+  // extension whose grant carries a valid `maxPerHour`; it only fires
+  // when the grant blob is structurally invalid (the PDP would have
+  // already denied if the cap was missing). The audit reason is
+  // `quota-invalid` so analytics can distinguish "permission denied"
+  // (PERM_DENIED on the PDP path) from "permission granted but the
+  // installed grant is malformed" (this branch).
   const granted = ctx.grantedPermissions.spawnAgents;
   if (!granted || typeof granted.maxPerHour !== "number" || granted.maxPerHour <= 0) {
-    await auditReject(extensionId, auditUser, "permission-missing");
-    return rpcError(req.id, -32001, "spawnAgents permission not granted");
+    await auditReject(extensionId, auditUser, "quota-invalid");
+    return rpcError(req.id, -32001, "spawnAgents quota config invalid");
   }
 
   // 3. Parent conversation bound.

@@ -21,6 +21,7 @@ import {
   migrateManifestV2ToV3,
   validateManifestV2,
 } from "../extensions/manifest";
+import { capabilityDeclarationToSet } from "../extensions/capability-types";
 import type {
   CapabilityDeclaration,
   ExtensionManifest,
@@ -294,6 +295,46 @@ describe("ExtensionManifestInternal shape", () => {
   test("migrated v2 manifest is assignable to ExtensionManifestInternal", () => {
     const out: ExtensionManifestInternal = migrateManifestV2ToV3(makeManifest());
     expect(out._inheritedFromV2).toBeDefined();
+  });
+});
+
+// ── Phase 6: customToKind dual-spelling acceptance ──────────────────
+
+describe("customToKind — accepts BOTH legacy and namespaced spellings", () => {
+  // Phase 6 spec lock-in: "Runtime reads BOTH old + new (back-compat)."
+  // `customToKind` (capability-types.ts:472) maps either form to the
+  // same `CapabilityKind`. Exercised via `capabilityDeclarationToSet`
+  // — the only public consumer of `decl.custom`.
+  const pairs: Array<{ legacy: string; namespaced: string; value?: string[] | true }> = [
+    { legacy: "appendMessages", namespaced: "ezcorp:chat:append", value: true },
+    { legacy: "agentConfig", namespaced: "ezcorp:agent:config", value: true },
+    { legacy: "taskEvents", namespaced: "ezcorp:tasks:emit", value: true },
+    { legacy: "spawnAgents", namespaced: "ezcorp:agent:spawn", value: true },
+    { legacy: "eventSubscriptions", namespaced: "ezcorp:events:subscribe", value: ["foo:bar"] },
+  ];
+
+  for (const { legacy, namespaced, value } of pairs) {
+    test(`${legacy} ↔ ${namespaced} produce the same CapabilitySet`, () => {
+      const declLegacy: CapabilityDeclaration = {
+        custom: { [legacy]: value as string[] | boolean },
+      };
+      const declNamespaced: CapabilityDeclaration = {
+        custom: { [namespaced]: value as string[] | boolean },
+      };
+      const setLegacy = capabilityDeclarationToSet(declLegacy, {});
+      const setNamespaced = capabilityDeclarationToSet(declNamespaced, {});
+      // Both spellings flatten to the same kind/value tuples.
+      expect(setLegacy).toEqual(setNamespaced);
+      // And both must produce the namespaced kind, not the legacy
+      // string — the PDP and audit log only see the namespaced form.
+      expect(setLegacy.length).toBeGreaterThan(0);
+      expect(setLegacy[0]!.kind).toBe(namespaced as never);
+    });
+  }
+
+  test("unknown custom key is silently dropped", () => {
+    const decl: CapabilityDeclaration = { custom: { someThirdParty: true } };
+    expect(capabilityDeclarationToSet(decl, {})).toEqual([]);
   });
 });
 

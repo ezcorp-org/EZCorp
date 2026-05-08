@@ -744,3 +744,71 @@ describe("storage-handler parseStorageQuota branches", () => {
     expect(resp.error).toBeUndefined();
   });
 });
+
+// ── Phase 6: PDP-deny path ──────────────────────────────────────────
+
+describe("storage-handler — PDP-deny path (Phase 6)", () => {
+  test("ctx.engine returns deny → -32001 'Storage permission not granted'", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("deny-all");
+    const ext = uniqueExtId();
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+    const resp = await handleStorageRpc(
+      ext,
+      rpc("get", { key: "k" }),
+      // grantedPermissions still has storage:true; PDP path overrides.
+      { ...makeCtx(m), engine },
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("Storage permission not granted");
+    expect(engine.calls.length).toBe(1);
+    expect(engine.calls[0]!.needed).toEqual([{ kind: "storage" }]);
+  });
+
+  test("ctx.engine returns allow + grantedPermissions empty → handler proceeds", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("allow-all");
+    const ext = uniqueExtId();
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+    const resp = await handleStorageRpc(
+      ext,
+      rpc("get", { key: "k" }),
+      { ...makeCtx(m), grantedPermissions: makePerms(false), engine },
+    );
+    // get on missing key returns success with value:null — no error.
+    expect(resp.error).toBeUndefined();
+    expect(engine.calls.length).toBe(1);
+  });
+
+  test("builtin extension bypasses the PDP (legacy bypass for host's own scope)", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("deny-all");
+    const m = makeManifest("builtin");
+    // Builtin extension may already be present from earlier tests in
+    // the file; insert idempotently.
+    await getDb()
+      .insert(extensions)
+      .values({
+        id: "builtin",
+        name: "builtin",
+        version: m.version,
+        description: m.description,
+        manifest: m,
+        source: "test:builtin",
+        installPath: "/tmp/builtin",
+        enabled: true,
+        grantedPermissions: makePerms(true),
+      } as never)
+      .onConflictDoNothing();
+    const resp = await handleStorageRpc(
+      "builtin",
+      rpc("get", { key: "k" }),
+      { ...makeCtx(m), grantedPermissions: makePerms(false), engine },
+    );
+    // builtin → no engine.authorize call, handler proceeds.
+    expect(resp.error).toBeUndefined();
+    expect(engine.calls.length).toBe(0);
+  });
+});

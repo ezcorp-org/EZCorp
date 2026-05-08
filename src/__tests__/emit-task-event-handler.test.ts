@@ -73,6 +73,9 @@ function makeCtx(
     userId: overrides.userId ?? "user-alice",
     grantedPermissions: overrides.grantedPermissions ?? makePerms(true),
     bus,
+    // Phase 6: pass through engine when supplied so PDP-path tests
+    // drive the new branch.
+    ...(overrides.engine ? { engine: overrides.engine } : {}),
   };
 }
 
@@ -479,5 +482,51 @@ describe("emit-task-event — rate limit", () => {
     }
     expect(accepted).toBeGreaterThanOrEqual(45);
     expect(limited).toBeGreaterThan(0);
+  });
+});
+
+// ── Phase 6: PDP-deny path ──────────────────────────────────────────
+
+describe("emit-task-event-handler — PDP-deny path (Phase 6)", () => {
+  test("ctx.engine returns deny → -32001 'taskEvents permission not granted'", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("deny-all");
+    const ext = `pdp-deny-ext-${crypto.randomUUID().slice(0, 8)}`;
+    await wireConversation(CONV_WIRED, ext);
+    const { bus } = makeBus();
+    const resp = await handleEmitTaskEventRpc(
+      ext,
+      rpc({ v: 1, type: "snapshot", payload: { tasks: [] } }),
+      // grantedPermissions still says taskEvents:true; PDP overrides.
+      makeCtx(bus, {
+        conversationId: CONV_WIRED,
+        grantedPermissions: makePerms(true),
+        engine,
+      }),
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("taskEvents permission not granted");
+    expect(engine.calls.length).toBe(1);
+    expect(engine.calls[0]!.needed).toEqual([{ kind: "ezcorp:tasks:emit" }]);
+  });
+
+  test("ctx.engine returns allow + grantedPermissions empty → handler proceeds", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("allow-all");
+    const ext = `pdp-allow-ext-${crypto.randomUUID().slice(0, 8)}`;
+    await wireConversation(CONV_WIRED, ext);
+    const { bus } = makeBus();
+    const resp = await handleEmitTaskEventRpc(
+      ext,
+      rpc({ v: 1, type: "snapshot", payload: { tasks: [] } }),
+      makeCtx(bus, {
+        conversationId: CONV_WIRED,
+        // legacy bool would deny; PDP allow takes precedence.
+        grantedPermissions: makePerms(false),
+        engine,
+      }),
+    );
+    expect(resp.error).toBeUndefined();
+    expect(engine.calls.length).toBe(1);
   });
 });

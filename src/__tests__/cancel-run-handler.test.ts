@@ -139,6 +139,8 @@ function makeCancelCtx(overrides: {
   executor: FakeExecutor;
   quota: SpawnQuota;
   userId?: string;
+  engine?: CancelRunContext["engine"];
+  conversationId?: string;
 }): CancelRunContext {
   return {
     userId: overrides.userId ?? "user-cr",
@@ -146,6 +148,8 @@ function makeCancelCtx(overrides: {
       overrides.grantedPermissions ?? makePerms({ maxPerHour: 10, maxConcurrent: 3 }),
     executor: overrides.executor as unknown as AgentExecutor,
     quota: overrides.quota,
+    ...(overrides.engine ? { engine: overrides.engine } : {}),
+    ...(overrides.conversationId ? { conversationId: overrides.conversationId } : {}),
   };
 }
 
@@ -442,5 +446,53 @@ describe("cancel-run — slot release under concurrent cap (§5.3)", () => {
       spawnCtx,
     );
     expect(s3Retry.error).toBeUndefined();
+  });
+});
+
+// ── Phase 6: PDP-deny path + quota-invalid audit reason ─────────────
+
+describe("cancel-run — Phase 6 PDP-deny + quota-invalid reason", () => {
+  test("ctx.engine returns deny → -32001 + audit permission-missing", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("deny-all");
+    const ext = `pdp-deny-cr-${crypto.randomUUID().slice(0, 8)}`;
+    await ensureExtension(ext);
+    const bus = new EventBus<AgentEvents>();
+    const quota = createSpawnQuota(bus);
+    const executor = makeFakeExecutor();
+    const resp = await handleCancelRunRpc(
+      ext,
+      rpc({ v: 1, agentRunId: "any-run-id" }, "pdp-deny-1"),
+      makeCancelCtx({ executor, quota, engine }),
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("spawnAgents permission not granted");
+    expect(engine.calls.length).toBe(1);
+    expect(engine.calls[0]!.needed).toEqual([{ kind: "ezcorp:agent:spawn" }]);
+  });
+
+  test("PDP allows + invalid quota → -32001 'quota config invalid' + audit quota-invalid", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("allow-all");
+    const ext = `qi-cr-${crypto.randomUUID().slice(0, 8)}`;
+    await ensureExtension(ext);
+    const bus = new EventBus<AgentEvents>();
+    const quota = createSpawnQuota(bus);
+    const executor = makeFakeExecutor();
+    const resp = await handleCancelRunRpc(
+      ext,
+      rpc({ v: 1, agentRunId: "any-run-id" }, "qi-1"),
+      makeCancelCtx({
+        executor,
+        quota,
+        engine,
+        // PDP allows but the grant blob is structurally degenerate.
+        grantedPermissions: makePerms({ maxPerHour: 0 }),
+      }),
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("quota config invalid");
+    const a = await lastCancelAudit(ext);
+    expect(a?.metadata).toMatchObject({ reason: "quota-invalid" });
   });
 });

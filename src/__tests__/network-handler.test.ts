@@ -194,7 +194,9 @@ describe("handleNetworkInternalRpc — PDP gate", () => {
   });
 
   test("PDP receives correct ctx fields", async () => {
-    let capturedCtx: { extensionId?: string; userId?: string; conversationId?: string } | undefined;
+    // Phase 6: AuthorizeContext.userId/conversationId widened to
+    // `string | null`, so the captured fixture must accept null too.
+    let capturedCtx: { extensionId?: string; userId?: string | null; conversationId?: string | null } | undefined;
     const engine: NetworkInternalContext["engine"] = {
       authorize: async (ctx) => {
         capturedCtx = ctx;

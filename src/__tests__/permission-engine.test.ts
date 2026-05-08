@@ -367,6 +367,67 @@ describe("authorize — audit log row per decision", () => {
     const meta = rows[0]!.metadata as Record<string, unknown>;
     expect(meta.parentAuditId).toBe("abc-parent-id");
   });
+
+  // Phase 6 — acceptance criterion #5: null userId/conversationId
+  // serializes as JSON null in the audit row, NOT the literal string
+  // "unknown" (which Phase 4 reviewer flagged). Three cases:
+  //   1. ctx with explicit null on both fields → audit row has null + null.
+  //   2. ctx with omitted (undefined) fields → tolerated by the engine,
+  //      audit row has null + null.
+  //   3. The metadata blob contains no literal "unknown" anywhere.
+
+  test("null userId + null conversationId → audit row carries JSON null (not 'unknown')", async () => {
+    const engine = makeEngine({ granted: { grantedAt: {}, storage: true } });
+    await engine.authorize(
+      {
+        extensionId: HELLO_EXT,
+        userId: null,
+        conversationId: null,
+        toolName: "anonymous",
+      },
+      [{ kind: "storage" }],
+    );
+    const rows = await getTestDb()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "ext:perm:allowed"));
+    expect(rows.length).toBe(1);
+    const row = rows[0]!;
+    // Top-level userId column accepts JSON null.
+    expect(row.userId).toBeNull();
+    const meta = row.metadata as Record<string, unknown>;
+    // conversationId scrubbed from metadata when null/sentinel; not the
+    // literal "unknown" string.
+    expect(meta.conversationId === null || meta.conversationId === undefined).toBe(true);
+    // Belt-and-suspenders: the entire serialized metadata must not
+    // contain the literal "unknown" sentinel.
+    expect(JSON.stringify(meta)).not.toContain("unknown");
+  });
+
+  test("legacy 'unknown' string sentinels are normalized to null in audit metadata", async () => {
+    const engine = makeEngine({ granted: { grantedAt: {}, storage: true } });
+    // Older callers (handler tests that pre-date Phase 6) still pass
+    // the literal "unknown" sentinel. The engine MUST normalize them.
+    await engine.authorize(
+      {
+        extensionId: HELLO_EXT,
+        userId: "unknown",
+        conversationId: "unknown",
+        toolName: "legacy-shape",
+      },
+      [{ kind: "storage" }],
+    );
+    const rows = await getTestDb()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "ext:perm:allowed"));
+    expect(rows.length).toBe(1);
+    const row = rows[0]!;
+    expect(row.userId).toBeNull();
+    const meta = row.metadata as Record<string, unknown>;
+    expect(meta.conversationId === null || meta.conversationId === undefined).toBe(true);
+    expect(JSON.stringify(meta)).not.toContain("unknown");
+  });
 });
 
 // ── always-allow read from settings DB ──────────────────────────────

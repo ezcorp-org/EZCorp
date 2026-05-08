@@ -22,7 +22,6 @@ import {
 } from "../extensions/tool-executor";
 import { ExtensionRegistry } from "../extensions/registry";
 import { createStubPermissionEngine } from "./helpers/permission-engine-stub";
-import type { JsonRpcRequest } from "../extensions/types";
 import type { EventBus } from "../runtime/events";
 import type { AgentEvents } from "../types";
 
@@ -49,7 +48,10 @@ function makeBus(): { bus: EventBus<AgentEvents>; emit: (type: keyof AgentEvents
 	} as unknown as EventBus<AgentEvents>;
 	return {
 		bus,
-		emit: (type, data) => bus.emit(type, data as never),
+		// `keyof AgentEvents` on TS widens to `string | symbol | number`
+		// when used as the variadic param of `bus.emit`; cast to string
+		// to keep the call-site shape narrow.
+		emit: (type, data) => bus.emit(type as string, data as never),
 	};
 }
 
@@ -203,6 +205,104 @@ describe("MAX_TOOL_CALLS_PER_TURN enforcement (M3)", () => {
 			await executor.executeToolCall("ext-mtc3__do", {}, "conv-mtc-3", `msg-${i + 100}`);
 		}
 		expect(_getToolCallsThisTurnForTests("conv-mtc-3")).toBe(10);
+	});
+
+	test("counter resets on run:cancel", async () => {
+		ExtensionRegistry.resetInstance();
+		const registry = ExtensionRegistry.getInstance();
+		registry.registerToolForTest("ext-mtc-cancel__do", {
+			name: "ext-mtc-cancel__do",
+			originalName: "do",
+			description: "test",
+			inputSchema: { type: "object" },
+			extensionId: "ext-mtc-cancel",
+			extensionName: "ext-mtc-cancel",
+		});
+		const fakeProc = {
+			callTool: async () => ({ content: [{ type: "text" as const, text: "ok" }], isError: false }),
+			setNotificationHandler: () => {},
+			setRequestHandler: () => {},
+		};
+		registry.getProcess = (async () => fakeProc) as never;
+		registry.getManifest = (() => ({
+			schemaVersion: 3,
+			name: "ext-mtc-cancel",
+			version: "1.0.0",
+			description: "t",
+			author: { name: "t" },
+			permissions: {},
+			entrypoint: "./i.ts",
+			tools: [{ name: "do", description: "t", inputSchema: { type: "object" }, capabilities: {} }],
+		} as unknown as ReturnType<typeof registry.getManifest>)) as never;
+		registry.getGrantedPermissions = (() => ({ grantedAt: {} })) as never;
+
+		const engine = createStubPermissionEngine();
+		const { bus, emit } = makeBus();
+		const executor = new ToolExecutor(registry, engine, { bus });
+
+		for (let i = 0; i < 10; i++) {
+			await executor.executeToolCall("ext-mtc-cancel__do", {}, "conv-mtc-cancel", `msg-${i}`);
+		}
+		expect(_getToolCallsThisTurnForTests("conv-mtc-cancel")).toBe(10);
+
+		// run:cancel clears the counter — a turn aborted mid-flight
+		// must not tie up the next turn's budget.
+		emit("run:cancel", { conversationId: "conv-mtc-cancel", runId: "r-cancel" });
+		expect(_getToolCallsThisTurnForTests("conv-mtc-cancel")).toBe(0);
+
+		// Next 10 succeed.
+		for (let i = 0; i < 10; i++) {
+			await executor.executeToolCall("ext-mtc-cancel__do", {}, "conv-mtc-cancel", `msg-${i + 100}`);
+		}
+		expect(_getToolCallsThisTurnForTests("conv-mtc-cancel")).toBe(10);
+	});
+
+	test("counter resets on run:error", async () => {
+		ExtensionRegistry.resetInstance();
+		const registry = ExtensionRegistry.getInstance();
+		registry.registerToolForTest("ext-mtc-err__do", {
+			name: "ext-mtc-err__do",
+			originalName: "do",
+			description: "test",
+			inputSchema: { type: "object" },
+			extensionId: "ext-mtc-err",
+			extensionName: "ext-mtc-err",
+		});
+		const fakeProc = {
+			callTool: async () => ({ content: [{ type: "text" as const, text: "ok" }], isError: false }),
+			setNotificationHandler: () => {},
+			setRequestHandler: () => {},
+		};
+		registry.getProcess = (async () => fakeProc) as never;
+		registry.getManifest = (() => ({
+			schemaVersion: 3,
+			name: "ext-mtc-err",
+			version: "1.0.0",
+			description: "t",
+			author: { name: "t" },
+			permissions: {},
+			entrypoint: "./i.ts",
+			tools: [{ name: "do", description: "t", inputSchema: { type: "object" }, capabilities: {} }],
+		} as unknown as ReturnType<typeof registry.getManifest>)) as never;
+		registry.getGrantedPermissions = (() => ({ grantedAt: {} })) as never;
+
+		const engine = createStubPermissionEngine();
+		const { bus, emit } = makeBus();
+		const executor = new ToolExecutor(registry, engine, { bus });
+
+		for (let i = 0; i < 10; i++) {
+			await executor.executeToolCall("ext-mtc-err__do", {}, "conv-mtc-err", `msg-${i}`);
+		}
+		expect(_getToolCallsThisTurnForTests("conv-mtc-err")).toBe(10);
+
+		// run:error also clears — same tradeoff as cancel.
+		emit("run:error", { conversationId: "conv-mtc-err", runId: "r-err", error: "boom" });
+		expect(_getToolCallsThisTurnForTests("conv-mtc-err")).toBe(0);
+
+		for (let i = 0; i < 10; i++) {
+			await executor.executeToolCall("ext-mtc-err__do", {}, "conv-mtc-err", `msg-${i + 100}`);
+		}
+		expect(_getToolCallsThisTurnForTests("conv-mtc-err")).toBe(10);
 	});
 
 	test("two parallel conversations don't share counters", async () => {

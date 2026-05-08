@@ -45,6 +45,10 @@ function makeCtx(overrides: Partial<AgentConfigsContext> = {}): AgentConfigsCont
   return {
     userId: overrides.userId ?? "user-alice",
     grantedPermissions: overrides.grantedPermissions ?? makePerms("read"),
+    // Phase 6: pass through engine + conversationId when supplied so
+    // PDP-path tests actually drive the new branch.
+    ...(overrides.engine ? { engine: overrides.engine } : {}),
+    ...(overrides.conversationId ? { conversationId: overrides.conversationId } : {}),
   };
 }
 
@@ -410,5 +414,53 @@ describe("agent-configs-handler — rate limit", () => {
     }
     expect(accepted).toBeGreaterThanOrEqual(45);
     expect(limited).toBeGreaterThan(0);
+  });
+});
+
+// ── Phase 6: PDP-deny path coverage ─────────────────────────────────
+// Acceptance #4 (day-1 risk): when ctx.engine is wired and returns
+// `decision: "deny"`, the handler MUST surface -32001 with the
+// "agentConfig permission not granted" reason. Without this case the
+// new PDP branch added in Phase 6 was uncovered.
+
+describe("agent-configs-handler — PDP-deny path (Phase 6)", () => {
+  test("ctx.engine returns deny → -32001 'agentConfig permission not granted'", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("deny-all");
+    const resp = await handleAgentConfigsRpc(
+      EXT_ID,
+      rpc({ v: 1, action: "list" }),
+      // grantedPermissions still says "read" — the legacy boolean
+      // would allow. The PDP path overrides and returns deny.
+      makeCtx({
+        userId: "user-alice",
+        grantedPermissions: makePerms("read"),
+        engine,
+        conversationId: "conv-pdp-deny",
+      }),
+    );
+    expect(resp.error?.code).toBe(-32001);
+    expect(resp.error?.message).toContain("agentConfig permission not granted");
+    // The PDP was consulted exactly once.
+    expect(engine.calls.length).toBe(1);
+    expect(engine.calls[0]!.needed).toEqual([{ kind: "ezcorp:agent:config" }]);
+  });
+
+  test("ctx.engine returns allow → handler proceeds (PDP gate is the sole boolean check)", async () => {
+    const { createStubPermissionEngine } = await import("./helpers/permission-engine-stub");
+    const engine = createStubPermissionEngine("allow-all");
+    const resp = await handleAgentConfigsRpc(
+      EXT_ID,
+      rpc({ v: 1, action: "list" }),
+      makeCtx({
+        userId: "user-alice",
+        // grantedPermissions empty — only PDP allow lets this through.
+        grantedPermissions: { grantedAt: {} },
+        engine,
+        conversationId: "conv-pdp-allow",
+      }),
+    );
+    expect(resp.error).toBeUndefined();
+    expect(engine.calls.length).toBe(1);
   });
 });

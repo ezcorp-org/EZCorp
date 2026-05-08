@@ -55,7 +55,12 @@ export interface CancelRunContext {
   conversationId?: string;
 }
 
-type CancelReason = "cancelled" | "not-owned" | "missing-run" | "permission-missing";
+type CancelReason =
+  | "cancelled"
+  | "not-owned"
+  | "missing-run"
+  | "permission-missing"
+  | "quota-invalid";
 
 async function auditCancel(
   extensionId: string,
@@ -121,12 +126,18 @@ export async function handleCancelRunRpc(
       return rpcError(req.id, -32001, "spawnAgents permission not granted");
     }
   }
+  // Quota validity (rate-limit shape, NOT permission). Mirrors the
+  // spawn-assignment-handler equivalent — the PDP gate above already
+  // proved the boolean grant; this branch only fires when the grant
+  // blob is structurally malformed. Reviewer S1: audit reason renamed
+  // to `quota-invalid` so analytics can separate "permission denied"
+  // from "config malformed".
   const granted = ctx.grantedPermissions.spawnAgents;
   if (!granted || typeof granted.maxPerHour !== "number" || granted.maxPerHour <= 0) {
-    await auditCancel(extensionId, auditUser, "permission-missing", {
+    await auditCancel(extensionId, auditUser, "quota-invalid", {
       agentRunId: typeof params.agentRunId === "string" ? params.agentRunId : null,
     });
-    return rpcError(req.id, -32001, "spawnAgents permission not granted");
+    return rpcError(req.id, -32001, "spawnAgents quota config invalid");
   }
 
   // 3. Payload validation.

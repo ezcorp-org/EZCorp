@@ -1,12 +1,15 @@
 <script lang="ts">
 	/**
-	 * Phase 4 (capability-expiry) — small re-approve prompt component.
+	 * Phase 4 (capability-expiry) — settings-side re-approve prompt
+	 * component.
 	 *
-	 * The modal copy is the design doc § 3.2 contract — the SAME verbatim
-	 * strings render on the in-chat PermissionGate's expired branch AND
-	 * on the settings page banner's click-to-reapprove inline modal.
-	 * Factoring out this component keeps the copy in one place (no
-	 * paraphrase drift between the two surfaces).
+	 * The modal renders on the settings-page surface (banner row →
+	 * inline modal). The in-chat surface (`PermissionGate.svelte`'s
+	 * expired branch) renders the SAME design doc § 3.2 copy by
+	 * importing from the shared `./expiry-copy.ts` module — both
+	 * surfaces read title, body, and button labels from one source so
+	 * paraphrase drift is impossible. Each surface's component test
+	 * asserts the verbatim contract independently.
 	 *
 	 * Pure presentation: callbacks (`onApproveDefault`, `onApproveForever`,
 	 * `onCancel`) are wired by the parent. The component does NOT issue
@@ -18,7 +21,7 @@
 	 * prop. Both server endpoints (tool-permission, reapprove) ALSO gate
 	 * scope=forever, defense in depth.
 	 */
-	import { humanizeDuration } from "$lib/utils/relative-time";
+	import { expiryCopy } from "./expiry-copy";
 
 	let {
 		extensionName,
@@ -42,14 +45,14 @@
 		onCancel: () => void;
 	} = $props();
 
-	let ageText = $derived(humanizeDuration(ageMs));
-	let ttlText = $derived(humanizeDuration(newTtlMs));
+	let copy = $derived(expiryCopy(extensionName, capability, ageMs, newTtlMs));
 </script>
 
 <!--
-	Title and body strings below MUST stay verbatim per design doc § 3.2.
-	Do NOT paraphrase. The component test reads exact substrings against
-	these copy contracts.
+	Title and body strings below come from `./expiry-copy.ts` (the
+	verbatim design doc § 3.2 contract). The chat-side surface
+	(`PermissionGate.svelte` expired branch) reads from the same module,
+	so the two surfaces are guaranteed to render identical copy.
 -->
 <div
 	class="rounded-md border border-amber-500/40 bg-amber-900/10 p-3"
@@ -72,12 +75,12 @@
 		<span
 			class="text-sm font-medium text-[var(--color-text-primary)]"
 			data-testid="expired-reapprove-title"
-		>Re-approve {extensionName}: {capability}</span>
+		>{copy.title}</span>
 	</div>
 	<p
 		class="mb-3 text-sm text-[var(--color-text-primary)]"
 		data-testid="expired-reapprove-body"
-	>Your permission for {capability} expired {ageText} ago. Continue to grant for another {ttlText}, or cancel.</p>
+	>{copy.body}</p>
 	<div class="flex flex-wrap gap-2" data-testid="expired-reapprove-actions">
 		<button
 			type="button"
@@ -86,7 +89,7 @@
 			data-testid="expired-reapprove-approve-default"
 			class="rounded px-3 py-1.5 text-xs font-medium bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-50"
 		>
-			{loading ? 'Working...' : `Approve ${ttlText}`}
+			{loading ? 'Working...' : copy.approveDefault}
 		</button>
 		{#if isAdmin}
 			<button
@@ -96,7 +99,7 @@
 				data-testid="expired-reapprove-approve-forever"
 				class="rounded px-3 py-1.5 text-xs font-medium bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-50"
 			>
-				Approve forever (admin only)
+				{copy.approveForever}
 			</button>
 		{/if}
 		<button
@@ -106,7 +109,7 @@
 			data-testid="expired-reapprove-cancel"
 			class="rounded px-3 py-1.5 text-xs font-medium bg-[var(--color-surface-tertiary)] hover:bg-[var(--color-surface-secondary)] text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
 		>
-			Cancel
+			{copy.cancel}
 		</button>
 	</div>
 </div>

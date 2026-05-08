@@ -316,3 +316,108 @@ describe("cap-expiry flow — banner load → reapprove → grantedAt resets", (
 		expect(vi.mocked(updateExtension)).not.toHaveBeenCalled();
 	});
 });
+
+/**
+ * POST /api/extensions/[id]/reapprove — gap-filler input-validation tests.
+ *
+ * The earlier describe block covers the happy path + role gating; this
+ * block locks the auth gate, the missing-extension shape, and the two
+ * shapes of malformed-body rejection so the asymmetry with the GET
+ * sibling endpoint (which already tests 401 + 404) is closed.
+ */
+describe("POST /api/extensions/[id]/reapprove — input validation", () => {
+	test("unauthenticated returns 401 (requireAuth throws Response)", async () => {
+		// Deliberately omit getExtension setup — auth must reject BEFORE
+		// the handler reaches the DB lookup.
+		let res: Response | undefined;
+		try {
+			res = await reapproveRoute.POST(
+				makeEvent({
+					method: "POST",
+					path: "/api/extensions/scratchpad/reapprove",
+					locals: {}, // no `user`
+					body: { capability: "shell" },
+				}),
+			);
+		} catch (thrown) {
+			expect(thrown).toBeInstanceOf(Response);
+			res = thrown as Response;
+		}
+		expect(res!.status).toBe(401);
+		// updateExtension MUST NOT have been called — auth fails first.
+		expect(vi.mocked(updateExtension)).not.toHaveBeenCalled();
+	});
+
+	test("unknown extension returns 404 (no updateExtension call)", async () => {
+		vi.mocked(getExtension).mockResolvedValue(null as any);
+		const res = await reapproveRoute.POST(
+			makeEvent({
+				method: "POST",
+				path: "/api/extensions/does-not-exist/reapprove",
+				locals: { user: memberUser },
+				body: { capability: "shell" },
+			}),
+		);
+		expect(res.status).toBe(404);
+		expect(vi.mocked(updateExtension)).not.toHaveBeenCalled();
+	});
+
+	test("invalid JSON body returns 400 (handler's request.json() catch)", async () => {
+		// Build the event by hand so we can pass a raw, non-JSON body.
+		// The shared `makeEvent` helper JSON.stringifies whatever's
+		// supplied; this test needs the literal "not-json{" on the wire
+		// to trip the try/catch around `request.json()`.
+		const event = {
+			url: new URL("http://localhost/api/extensions/scratchpad/reapprove"),
+			locals: { user: memberUser },
+			params: { id: "scratchpad" },
+			request: new Request(
+				"http://localhost/api/extensions/scratchpad/reapprove",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "not-json{",
+				},
+			),
+		} as any;
+
+		const res = await reapproveRoute.POST(event);
+		expect(res.status).toBe(400);
+		// The handler short-circuits before reaching the DB; no DB
+		// reads, no writes.
+		expect(vi.mocked(getExtension)).not.toHaveBeenCalled();
+		expect(vi.mocked(updateExtension)).not.toHaveBeenCalled();
+	});
+
+	test("missing capability field returns 400", async () => {
+		// Body has valid JSON but no `capability` key — the validator
+		// at line 92 of +server.ts must reject before the DB lookup.
+		const res = await reapproveRoute.POST(
+			makeEvent({
+				method: "POST",
+				path: "/api/extensions/scratchpad/reapprove",
+				locals: { user: memberUser },
+				body: {}, // <- no capability
+			}),
+		);
+		expect(res.status).toBe(400);
+		expect(vi.mocked(getExtension)).not.toHaveBeenCalled();
+		expect(vi.mocked(updateExtension)).not.toHaveBeenCalled();
+	});
+
+	test("empty-string capability returns 400 (treated as missing)", async () => {
+		// `capability: ""` is typeof "string" but `!capability` is true,
+		// so the handler's `if (!capability)` branch must fire.
+		const res = await reapproveRoute.POST(
+			makeEvent({
+				method: "POST",
+				path: "/api/extensions/scratchpad/reapprove",
+				locals: { user: memberUser },
+				body: { capability: "" },
+			}),
+		);
+		expect(res.status).toBe(400);
+		expect(vi.mocked(getExtension)).not.toHaveBeenCalled();
+		expect(vi.mocked(updateExtension)).not.toHaveBeenCalled();
+	});
+});

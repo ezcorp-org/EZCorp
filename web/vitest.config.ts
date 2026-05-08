@@ -32,7 +32,16 @@ export default defineConfig({
 	},
 	test: {
 		environment: "jsdom",
-		include: ["src/**/*.component.test.{ts,svelte.ts}", "src/**/*.server.test.ts"],
+		include: [
+			"src/**/*.component.test.{ts,svelte.ts}",
+			"src/**/*.server.test.ts",
+			// Pure-utility unit tests for code that lives under `src/lib/`
+			// (no DOM, no server handlers). Phase 4 added the first one
+			// (`relative-time.unit.test.ts`); the suffix keeps the runner
+			// boundary explicit so a stray `*.test.ts` in a subdir doesn't
+			// silently get picked up.
+			"src/**/*.unit.test.ts",
+		],
 		setupFiles: ["./src/__tests__/vitest-setup.ts"],
 		globals: true,
 		// Force inline-transform Zod so the CJS `exports.z = z` assignment

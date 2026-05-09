@@ -432,4 +432,33 @@ describe("bootSpawnFlaggedBundledExtensions", () => {
     expect(procStubs.get("ext-lessons")).toBeUndefined();
     expect(result.failed).toContain("lessons-distiller");
   });
+
+  test("a thrown ensureRunning is recorded in failed[] (Phase 53.6)", async () => {
+    // Symmetric to the getProcess-throws case above: if the wrapper is
+    // constructed but `ensureRunning()` itself throws (e.g. spawn ENOENT
+    // on the entrypoint), the helper's try/catch must classify the
+    // entry as failed[] — NOT spawned[]. Without this guard a future
+    // refactor that moves ensureRunning out of the try block would
+    // silently mark a non-running proc as spawned.
+    store.set("lessons-distiller", {
+      id: "ext-lessons",
+      name: "lessons-distiller",
+      enabled: true,
+    });
+
+    const registry = {
+      async getProcess(_extensionId: string): Promise<ExtensionProcess> {
+        return {
+          isRunning: false,
+          ensureRunning() { throw new Error("spawn ENOENT"); },
+        } as unknown as ExtensionProcess;
+      },
+    } as unknown as ExtensionRegistry;
+    const { fn: wireRpc } = makeWireRpc();
+
+    const result = await bootSpawnFlaggedBundledExtensions(registry, wireRpc);
+
+    expect(result.failed).toContain("lessons-distiller");
+    expect(result.spawned).not.toContain("lessons-distiller");
+  });
 });

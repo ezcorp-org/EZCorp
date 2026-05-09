@@ -203,7 +203,7 @@ describe("bootSpawnFlaggedBundledExtensions — real subprocess (Phase 53.6)", (
     // The dispatcher's bus listener is async (awaits the wired-ext
     // lookup), then the subprocess has to read its stdin and write a
     // line back to stdout, then the host has to flush its read loop.
-    // 200ms is generous for the round-trip on a healthy machine; raise
+    // 2000ms is generous for the round-trip on a healthy machine; raise
     // if this becomes flaky on slower CI hardware.
     await waitFor(() => received.some((n) => n.method === "test/received"), 2000);
 

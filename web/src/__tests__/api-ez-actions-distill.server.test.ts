@@ -463,7 +463,13 @@ describe("forwardDistillToBundled — wiring invariants", () => {
     // [S2] Pre-fix this was `ez-action-distill-${Date.now()}` which
     // collided under burst load. The randomUUID rewrite means the
     // sentinel always carries the prefix + a UUIDv4 suffix.
-    expect(sentinel).toMatch(/^ez-action-distill-[0-9a-f-]{36}$/i);
+    //
+    // v1.4 — the generic forwarder builds the prefix from the
+    // resolved `<ext>-<tool>` pair (the legacy `distill` alias
+    // rewrites to `lessons-distiller:distill_now` before reaching the
+    // forwarder). Pre-v1.4 prefix was `ez-action-distill-`; new
+    // prefix is `ez-action-lessons-distiller-distill_now-`.
+    expect(sentinel).toMatch(/^ez-action-lessons-distiller-distill_now-[0-9a-f-]{36}$/i);
   });
 
   test("[S2] two back-to-back dispatches in the same ms → distinct messageIdSentinels", async () => {

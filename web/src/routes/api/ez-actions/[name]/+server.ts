@@ -32,6 +32,7 @@ import { requireAuth } from "$server/auth/middleware";
 import { requireScope } from "$lib/server/security/api-keys";
 import { getConversation, createMessage, getLatestLeaf } from "$server/db/queries/conversations";
 import { getEzAction } from "$server/runtime/ez-actions/registry";
+import { resolveBundledEzAction } from "$server/runtime/ez-actions/resolve-bundled";
 import type { EzActionResult } from "$server/runtime/ez-actions/types";
 import type { RequestHandler } from "./$types";
 import { ensureInitialized, getBus } from "$lib/server/context";
@@ -40,27 +41,39 @@ import { ToolExecutor } from "$server/extensions/tool-executor";
 import { getPermissionEngine } from "$server/extensions/permission-engine";
 
 /**
- * Phase 53 Stage 2 — forward `!EZ:distill` to the bundled
- * lessons-distiller extension's `distill_now` tool. The legacy
- * in-process handler has been deleted; the registry no longer carries
- * a `distill` entry. The dispatch endpoint below therefore takes a
- * special path for `name === "distill"`: skip the registry lookup,
- * run the forwarder directly. Other action names still flow through
- * the registry and 404 if not found.
+ * v1.4 — generic `!EZ:<extName>:<tool>` forwarder.
  *
- * The bundled tool returns a JSON envelope `{ __ezDistillerOutcome:
- * true, outcome: DistillationOutcome }` in the result text. We parse
- * it and map to the same `EzActionResult` chat-card shape the legacy
- * handler produced. Mapping is exhaustive across the 7 outcome
- * variants + the `settings_disabled` decline added by the bundled
- * implementation.
+ * Generalises the v1.3 `forwardDistillToBundled` shim so any bundled
+ * extension's tools can be invoked from chat. The dispatch flow is
+ * unchanged from the distill case: registry lookup → executeToolCall
+ * → result-card mapping. The only branching point is the result
+ * mapping:
+ *
+ *   - `lessons-distiller:distill_now` (or its legacy `!EZ:distill`
+ *     alias) parses the `__ezDistillerOutcome` envelope and maps to
+ *     the rich `EzActionResult` variants the chat UI knows about.
+ *     This branch keeps the v1.3 behavior bit-for-bit so persisted
+ *     `![EZ:distill]` tokens render identically.
+ *   - Every other bundled `<ext>:<tool>` lands on the **minimal
+ *     card** mapping: `kind: "success" | "error"` keyed off
+ *     `result.isError`, body lifted from the tool's text output.
+ *     No generic envelope contract is introduced in v1.4 — that's a
+ *     v1.5+ design conversation per the spec.
+ *
+ * Auth chain stays as-is — the route's `requireAuth +
+ * requireScope("read")` + conversation-ownership gate runs BEFORE
+ * this forwarder; the per-tool PermissionEngine gate runs INSIDE
+ * `executeToolCall`. No new gate is added here.
  */
-async function forwardDistillToBundled(
+async function forwardToBundled(
+  extensionName: string,
+  toolName: string,
   conversationId: string,
   userId: string,
+  useDistillerEnvelope: boolean,
 ): Promise<EzActionResult> {
   const registry = ExtensionRegistry.getInstance();
-  const namespacedTool = "lessons-distiller__distill_now";
+  const namespacedTool = `${extensionName}__${toolName}`;
 
   let registered = registry.getRegisteredTool(namespacedTool);
   if (!registered) {
@@ -68,11 +81,28 @@ async function forwardDistillToBundled(
     registered = registry.getRegisteredTool(namespacedTool);
   }
   if (!registered) {
+    // The route's pre-check has already verified the extension is
+    // bundled-trusted; a missing namespaced tool here means the
+    // extension is bundled but the specific tool isn't registered
+    // (typo, install failed mid-flight, etc.). Surface a precise
+    // 404-ish error card rather than the legacy "distiller
+    // unavailable" string so users can debug `!EZ:foo:nonexistent`
+    // typos.
+    if (useDistillerEnvelope) {
+      return {
+        kind: "error",
+        card: {
+          title: "Distiller unavailable",
+          body: "The lessons-distiller extension is not installed. Try restarting the server.",
+          variant: "error",
+        },
+      };
+    }
     return {
       kind: "error",
       card: {
-        title: "Distiller unavailable",
-        body: "The lessons-distiller extension is not installed. Try restarting the server.",
+        title: `${extensionName} not available`,
+        body: `Tool '${toolName}' is not registered on the bundled extension '${extensionName}'. Check the extension is installed and the tool name is correct.`,
         variant: "error",
       },
     };
@@ -86,7 +116,7 @@ async function forwardDistillToBundled(
   const engine = getPermissionEngine({
     registry,
     bus: getBus(),
-    db: { _token: "ez-action-distill" },
+    db: { _token: "ez-action-forward" },
   });
   const executor = new ToolExecutor(registry, engine, { bus: getBus() });
   executor.setCurrentUserId(userId);
@@ -94,7 +124,7 @@ async function forwardDistillToBundled(
   // dispatcher calls in the same ms produce identical sentinels which
   // breaks per-call attribution). randomUUID is the smallest diff that
   // guarantees uniqueness without changing the call signature.
-  const messageIdSentinel = `ez-action-distill-${crypto.randomUUID()}`;
+  const messageIdSentinel = `ez-action-${extensionName}-${toolName}-${crypto.randomUUID()}`;
 
   let result;
   try {
@@ -108,7 +138,7 @@ async function forwardDistillToBundled(
     return {
       kind: "error",
       card: {
-        title: "Distiller failed",
+        title: useDistillerEnvelope ? "Distiller failed" : `${extensionName} failed`,
         body: `Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
         variant: "error",
       },
@@ -116,6 +146,35 @@ async function forwardDistillToBundled(
   }
 
   const text = result.content.map((c) => c.text).join("");
+
+  if (!useDistillerEnvelope) {
+    // v1.4 minimal card mapping for every non-distill bundled tool.
+    // No generic envelope contract; the body is the tool's text
+    // verbatim (or `(no output)` for empty), and `kind` follows
+    // `result.isError`. This is intentionally shallow — wider mapping
+    // is a v1.5+ design conversation.
+    if (result.isError) {
+      return {
+        kind: "error",
+        card: {
+          title: `${extensionName} returned an error`,
+          body: text || "(no detail)",
+          variant: "error",
+        },
+      };
+    }
+    return {
+      kind: "success",
+      card: {
+        title: `${extensionName} ran successfully`,
+        body: text || "(no output)",
+        variant: "success",
+      },
+    };
+  }
+
+  // Distiller envelope branch (preserves v1.3 behavior for
+  // `!EZ:distill` and `!EZ:lessons-distiller:distill_now`).
   let envelope: { __ezDistillerOutcome?: unknown; outcome?: unknown } | null = null;
   try {
     envelope = JSON.parse(text);
@@ -262,14 +321,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const name = params.name;
 	if (!name) return errorJson(400, "Missing action name");
 
-	// Phase 53 Stage 2: `distill` is registered as a metadata stub —
-	// `getEzAction("distill")` returns the stub entry (whose handler
-	// throws), and the route forwarder below special-cases the name to
-	// dispatch to the bundled lessons-distiller. The registry lookup
-	// stays useful for the popover wire format and 404-gates every
-	// other (real) action name.
-	const action = getEzAction(name);
-	if (!action) return errorJson(404, "No such EZ action");
+	// v1.4 — generic bundled-extension dispatch. The resolver returns
+	// non-null for the legacy `distill` alias AND any
+	// `<bundled-ext>:<tool>` shape; everything else falls back to the
+	// static `getEzAction()` registry (which today carries only the
+	// `distill` metadata stub). Order matters: try the bundled
+	// resolver first so `<ext>:<tool>` doesn't collide with a future
+	// registry entry that happens to have a colon in its name.
+	const bundled = resolveBundledEzAction(name);
+	const action = bundled ? null : getEzAction(name);
+	if (!bundled && !action) return errorJson(404, "No such EZ action");
 
 	const body = (await request.json().catch(() => null)) as
 		| { conversationId?: unknown; projectId?: unknown }
@@ -307,17 +368,33 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// transport / persistence failures.
 	let result: EzActionResult;
 	try {
-		// Phase 53 Stage 2: `distill` forwards to the bundled
-		// lessons-distiller extension's `distill_now` tool. The
-		// registry's `distill` entry is a stub (its handler throws —
-		// see `src/runtime/ez-actions/registry.ts`); this branch is
-		// what actually services the manual `!EZ:distill` flow. Other
-		// EZ actions go through the registry handler.
-		if (name === "distill") {
+		// v1.4 — when the resolver bound the name to a bundled
+		// `<extension>:<tool>` (or the legacy `distill` alias), forward
+		// to that tool. Otherwise dispatch through the static EzActions
+		// registry (today only the `distill` metadata stub lives there,
+		// but future code-defined EZ actions will). The
+		// `useDistillerEnvelope` flag preserves v1.3 behavior for
+		// lessons-distiller: the distiller's tool returns a
+		// `__ezDistillerOutcome` JSON envelope which the forwarder
+		// expands into the rich 11-variant `EzActionResult` mapping.
+		// Every other bundled tool gets the v1.4 minimal-card mapping.
+		if (bundled) {
 			await ensureInitialized();
-			result = await forwardDistillToBundled(conversationId, user.id);
+			const useDistillerEnvelope =
+				bundled.extensionName === "lessons-distiller" &&
+				bundled.toolName === "distill_now";
+			result = await forwardToBundled(
+				bundled.extensionName,
+				bundled.toolName,
+				conversationId,
+				user.id,
+				useDistillerEnvelope,
+			);
 		} else {
-			result = await action.handler({
+			// Non-null branch — `action` is set when `bundled` is null
+			// per the gate above. The non-null assertion keeps the
+			// types tight without an extra runtime check.
+			result = await action!.handler({
 				conversationId,
 				userId: user.id,
 				// Use the conversation's projectId, NOT the body's. The body

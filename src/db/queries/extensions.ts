@@ -17,6 +17,17 @@ function serializeJsonbFields<T extends Record<string, unknown>>(data: T): T {
   if ("grantedPermissions" in out && out.grantedPermissions !== undefined && typeof out.grantedPermissions !== "string") {
     out.grantedPermissions = sql`${JSON.stringify(out.grantedPermissions)}::jsonb`;
   }
+  // v1.3 security review HIGH 2 — `installed_permissions` is jsonb and
+  // nullable. Match the granted_permissions serialization pattern; null
+  // passes through to the driver verbatim.
+  if (
+    "installedPermissions" in out
+    && out.installedPermissions !== undefined
+    && out.installedPermissions !== null
+    && typeof out.installedPermissions !== "string"
+  ) {
+    out.installedPermissions = sql`${JSON.stringify(out.installedPermissions)}::jsonb`;
+  }
   return out as T;
 }
 

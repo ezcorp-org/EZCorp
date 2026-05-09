@@ -1234,4 +1234,17 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
     ON lessons (project_id, COALESCE(author_extension_id, ''), slug, visibility)
     WHERE visibility IN ('project', 'global')
   `);
+
+  // (8) v1.3 release-readiness security review HIGH 2 —
+  //     `installed_permissions` captures the install-time NARROWED choice
+  //     so the reapprove handler can clamp against the user's actual
+  //     consent, not the full manifest. Nullable: legacy rows fall back to
+  //     manifest-clamp (pre-fix behavior). Backfill is intentionally NOT
+  //     done from `granted_permissions` — that snapshot may already have
+  //     been narrowed by the expiry sweep, and locking it in would freeze
+  //     a transient state. See `tasks/v1.3-security-review.md` HIGH 2.
+  await db.execute(sql`
+    ALTER TABLE extensions
+    ADD COLUMN IF NOT EXISTS installed_permissions JSONB
+  `);
 }

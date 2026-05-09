@@ -317,6 +317,150 @@ describe("cap-expiry flow — banner load → reapprove → grantedAt resets", (
 	});
 });
 
+// ── v1.3 security review HIGH 2 — reapprove clamp ─────────────────
+//
+// Three scenarios, each asserts both the clamped grant value AND the
+// `metadata.reason: "user-reapprove"` audit row contract.
+//
+//   1. Bundled extension whose manifest exceeds BUNDLED_CEILING →
+//      reapprove clamps to ceiling, NOT manifest.
+//   2. User-installed extension with installedPermissions narrower
+//      than manifest → reapprove restores narrowed choice only.
+//   3. Legacy row (installedPermissions = NULL) → falls back to
+//      manifest clamp (preserves pre-fix behavior).
+//
+// The bundled scenario uses extension name "github-stats" so
+// `isBundledExtensionName` returns true and the bundled-ceiling
+// second-stage clamp fires.
+
+describe("v1.3 security review HIGH 2 — reapprove clamps to install-time ceiling", () => {
+	test("(1) bundled extension manifest exceeds BUNDLED_CEILING → reapprove clamps to ceiling", async () => {
+		// github-stats's BUNDLED_CEILING is `network: ["api.github.com"]`.
+		// Simulate a tampered manifest that declares a wider list. Pre-fix,
+		// reapprove would write the manifest verbatim — bundled-ceiling
+		// bypassed. Post-fix, the second-stage clamp narrows to ceiling.
+		vi.mocked(getExtension).mockResolvedValue({
+			id: "ext-gh",
+			name: "github-stats",
+			isBundled: true,
+			manifest: {
+				permissions: {
+					network: ["api.github.com", "api.attacker.com"],
+					env: ["GITHUB_TOKEN"],
+				},
+			},
+			// installedPermissions intentionally NOT set — legacy bundled
+			// row exercises the second-stage clamp on its own.
+			installedPermissions: null,
+			grantedPermissions: { grantedAt: {} },
+		} as any);
+
+		const res = await reapproveRoute.POST(
+			makeEvent({
+				method: "POST",
+				path: "/api/extensions/ext-gh/reapprove",
+				locals: { user: memberUser },
+				body: { capability: "network" },
+			}),
+		);
+		expect(res.status).toBe(200);
+
+		expect(vi.mocked(updateExtension)).toHaveBeenCalledTimes(1);
+		const call = vi.mocked(updateExtension).mock.calls[0]!;
+		const nextGrant = (call[1] as any).grantedPermissions;
+		// Clamped to bundled ceiling (api.github.com only) — api.attacker.com
+		// from the (tampered) manifest is dropped.
+		expect(nextGrant.network).toEqual(["api.github.com"]);
+		expect(nextGrant.network).not.toContain("api.attacker.com");
+
+		// Audit row contract — reason marks this as user-reapprove.
+		expect(vi.mocked(insertAuditEntry)).toHaveBeenCalled();
+		const auditCall = vi.mocked(insertAuditEntry).mock.calls[0]!;
+		const auditMeta = auditCall[3] as any;
+		expect(auditMeta.reason).toBe("user-reapprove");
+	});
+
+	test("(2) user-installed extension w/ installedPermissions narrower than manifest → reapprove restores narrowed", async () => {
+		// User originally approved api.foo.com only, even though the
+		// manifest requested both. After a sweep, network is gone.
+		// Reapprove must restore the narrowed list, NOT the full manifest.
+		vi.mocked(getExtension).mockResolvedValue({
+			id: "ext-user",
+			name: "third-party-fetcher", // NOT bundled
+			isBundled: false,
+			manifest: {
+				permissions: {
+					network: ["api.foo.com", "api.bar.com"],
+				},
+			},
+			installedPermissions: {
+				network: ["api.foo.com"],
+				grantedAt: { network: Date.now() - 30 * DAY_MS },
+			},
+			grantedPermissions: { grantedAt: {} },
+		} as any);
+
+		const res = await reapproveRoute.POST(
+			makeEvent({
+				method: "POST",
+				path: "/api/extensions/ext-user/reapprove",
+				locals: { user: memberUser },
+				body: { capability: "network" },
+			}),
+		);
+		expect(res.status).toBe(200);
+
+		const call = vi.mocked(updateExtension).mock.calls[0]!;
+		const nextGrant = (call[1] as any).grantedPermissions;
+		// Narrowed install-time choice survived — api.bar.com (manifest
+		// only, never approved) does NOT come back.
+		expect(nextGrant.network).toEqual(["api.foo.com"]);
+		expect(nextGrant.network).not.toContain("api.bar.com");
+
+		const auditCall = vi.mocked(insertAuditEntry).mock.calls[0]!;
+		const auditMeta = auditCall[3] as any;
+		expect(auditMeta.reason).toBe("user-reapprove");
+	});
+
+	test("(3) legacy row (installedPermissions = NULL) → falls back to manifest clamp", async () => {
+		// Pre-fix install rows have no `installedPermissions`. Reapprove
+		// falls back to clamping against the manifest — pre-fix
+		// behavior is preserved for non-bundled extensions.
+		vi.mocked(getExtension).mockResolvedValue({
+			id: "ext-legacy",
+			name: "legacy-third-party", // NOT bundled
+			isBundled: false,
+			manifest: {
+				permissions: {
+					network: ["api.legacy.com"],
+				},
+			},
+			installedPermissions: null, // legacy row
+			grantedPermissions: { grantedAt: {} },
+		} as any);
+
+		const res = await reapproveRoute.POST(
+			makeEvent({
+				method: "POST",
+				path: "/api/extensions/ext-legacy/reapprove",
+				locals: { user: memberUser },
+				body: { capability: "network" },
+			}),
+		);
+		expect(res.status).toBe(200);
+
+		const call = vi.mocked(updateExtension).mock.calls[0]!;
+		const nextGrant = (call[1] as any).grantedPermissions;
+		// Legacy fallback: full manifest restored (pre-fix behavior for
+		// non-bundled rows).
+		expect(nextGrant.network).toEqual(["api.legacy.com"]);
+
+		const auditCall = vi.mocked(insertAuditEntry).mock.calls[0]!;
+		const auditMeta = auditCall[3] as any;
+		expect(auditMeta.reason).toBe("user-reapprove");
+	});
+});
+
 /**
  * POST /api/extensions/[id]/reapprove — gap-filler input-validation tests.
  *

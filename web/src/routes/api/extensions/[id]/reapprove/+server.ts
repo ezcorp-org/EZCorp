@@ -6,6 +6,9 @@ import { requireScope } from "$lib/server/security/api-keys";
 import { errorJson } from "$lib/server/http-errors";
 import { insertAuditEntry } from "$server/db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS } from "$server/extensions/audit-actions";
+import { clampExtensionPermissions } from "$lib/server/extension-helpers";
+import { isBundledExtensionName } from "$server/extensions/bundled";
+import { getCeiling } from "$server/extensions/bundled-ceiling";
 import type { ExtensionPermissions } from "$server/extensions/types";
 import type { RequestHandler } from "./$types";
 
@@ -118,27 +121,82 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
   const grantKey = expiryKindToGrantKey(capability);
   if (!grantKey) return errorJson(400, `Unknown capability: ${capability}`);
 
-  // Re-grant from the manifest. The manifest is the install-time
-  // ceiling — re-granting from it cannot elevate beyond what the
-  // extension's author declared (and what the install-time admin
-  // already approved).
-  const manifestPerms = (ext.manifest?.permissions ?? {}) as Record<string, unknown>;
-  const manifestValue = manifestPerms[grantKey as keyof typeof manifestPerms];
+  // v1.3 security review HIGH 2 — reapprove must clamp.
+  //
+  // Pre-fix: this handler wrote `manifest.permissions[grantKey]` verbatim,
+  // which (a) bypassed `BUNDLED_CEILING` for bundled extensions whose
+  // manifest declares wider perms than the hardcoded ceiling, and (b)
+  // silently restored a user's install-time NARROWED choice to the full
+  // manifest declaration.
+  //
+  // Post-fix:
+  //   1. The clamp source is `installedPermissions` if present (the
+  //      user's install-time NARROWED choice, captured by the activate
+  //      handler + bundled install path).
+  //   2. Legacy rows installed before the new column existed have
+  //      `installedPermissions = NULL`; fall back to clamping against
+  //      `manifest.permissions` (the pre-fix behavior — a non-admin
+  //      cannot elevate beyond the manifest ceiling).
+  //   3. For bundled extensions, ALSO clamp against `getCeiling(name)`
+  //      so even legacy rows pick up the bundled-ceiling guarantee.
+  //      `clampExtensionPermissions` is the single permissions clamper;
+  //      we run it twice (once against the install ceiling, once against
+  //      the bundled ceiling) so the result is the intersection of both.
+  const installedPerms = (ext.installedPermissions ?? null) as ExtensionPermissions | null;
+  const ceilingTarget = (installedPerms ?? ext.manifest?.permissions ?? {}) as ExtensionPermissions;
+
+  // First-stage clamp: against `installedPermissions` (or manifest fallback).
+  // The second arg is the manifest, which `clampExtensionPermissions`
+  // requires as its absolute ceiling. We pass `ceilingTarget` as the
+  // "submitted" set so anything wider than the install-time choice
+  // is dropped.
+  let clamped = clampExtensionPermissions(
+    ceilingTarget,
+    (ext.manifest?.permissions ?? {}) as ExtensionPermissions,
+    {
+      acceptsCallerCaps: ext.manifest?.acceptsCallerCaps,
+      escalateChildCaps: ext.manifest?.escalateChildCaps,
+    },
+  );
+
+  // Second-stage clamp: bundled extensions are additionally clamped
+  // against the hardcoded ceiling. This applies even when
+  // `installedPermissions` is NULL (legacy bundled rows), so the
+  // `BUNDLED_CEILING` invariant survives a sweep + reapprove cycle.
+  if (isBundledExtensionName(ext.name)) {
+    const bundledCeiling = getCeiling(ext.name);
+    if (bundledCeiling) {
+      clamped = clampExtensionPermissions(
+        clamped,
+        bundledCeiling,
+        {
+          acceptsCallerCaps: ext.manifest?.acceptsCallerCaps,
+          escalateChildCaps: ext.manifest?.escalateChildCaps,
+        },
+      );
+    }
+  }
+
+  const clampedValue = (clamped as unknown as Record<string, unknown>)[grantKey];
 
   // Build the next granted permissions snapshot. We start from the
-  // current value, restore the matching slot from the manifest (if
-  // declared), and bump `grantedAt[grantKey]` to now.
+  // current value, restore the matching slot from the CLAMPED ceiling
+  // (post-fix), and bump `grantedAt[grantKey]` to now.
   const prior = (ext.grantedPermissions ?? null) as ExtensionPermissions | null;
   const priorGrantedAt = prior?.grantedAt ?? {};
   const nextGrantedAt: Record<string, number> = { ...priorGrantedAt, [grantKey]: Date.now() };
 
-  // The mutator merges the prior snapshot, applies the manifest value
+  // The mutator merges the prior snapshot, applies the clamped value
   // to the affected slot, and overwrites grantedAt. We allow `any`
   // here because `ExtensionPermissions` has heterogeneous field types
   // and TS can't narrow on a runtime `grantKey` string.
   const next: any = { ...(prior ?? {}), grantedAt: nextGrantedAt };
-  if (manifestValue !== undefined) {
-    next[grantKey] = manifestValue;
+  if (clampedValue !== undefined) {
+    next[grantKey] = clampedValue;
+  } else {
+    // The capability isn't present in the clamped ceiling — drop the
+    // slot from the snapshot rather than leave a stale wider value.
+    delete next[grantKey];
   }
 
   const updated = await updateExtension(params.id, {
@@ -154,7 +212,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
     await insertAuditEntry(user.id, EXT_AUDIT_ACTIONS.PERMISSION_GRANTED, params.id, {
       permission: grantKey,
       oldValue: prior?.[grantKey as keyof ExtensionPermissions],
-      newValue: manifestValue,
+      newValue: clampedValue,
       actor: user.id,
       reason: scope === "forever" ? "user-reapprove (admin: forever)" : "user-reapprove",
       capability,

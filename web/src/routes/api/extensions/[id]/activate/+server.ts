@@ -76,7 +76,11 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 	}
 	const submittedPerms = parsed.data.grantedPermissions;
 
-	const update: { enabled: boolean; grantedPermissions?: ExtensionPermissions } = {
+	const update: {
+		enabled: boolean;
+		grantedPermissions?: ExtensionPermissions;
+		installedPermissions?: ExtensionPermissions;
+	} = {
 		enabled: true,
 	};
 
@@ -85,7 +89,7 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 			return errorJson(400, "grantedPermissions must be an object");
 		}
 		const manifestPerms = ext.manifest?.permissions ?? {};
-		update.grantedPermissions = clampExtensionPermissions(
+		const clamped = clampExtensionPermissions(
 			submittedPerms as Partial<ExtensionPermissions>,
 			manifestPerms,
 			{
@@ -93,6 +97,15 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 				escalateChildCaps: ext.manifest?.escalateChildCaps,
 			},
 		);
+		update.grantedPermissions = clamped;
+		// v1.3 security review HIGH 2 — persist the install-time NARROWED
+		// choice so the reapprove handler can clamp against the user's
+		// actual consent rather than the full manifest. We intentionally
+		// store the SAME clamped object as `grantedPermissions`: at
+		// activate time these two are equal, and any later sweep that
+		// narrows `grantedPermissions` must NOT widen
+		// `installedPermissions`. See `tasks/v1.3-security-review.md` §HIGH 2.
+		update.installedPermissions = clamped;
 	}
 
 	const updated = await updateExtension(params.id, update);

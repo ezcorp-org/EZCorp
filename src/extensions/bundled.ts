@@ -725,8 +725,15 @@ export async function ensureBundledExtensions(): Promise<void> {
       // Mark provenance AFTER the row exists. installFromLocal is shared
       // with the user install path (which must default isBundled=false),
       // so bundled trust is granted here, in the one place that knows.
+      // v1.3 security review HIGH 2 — also persist `installedPermissions`
+      // so the reapprove handler clamps against the bundled-ceiling-clamped
+      // shape, not the (potentially wider) raw manifest. See
+      // `tasks/v1.3-security-review.md` HIGH 2.
       try {
-        await updateExtension(installed.id, { isBundled: true });
+        await updateExtension(installed.id, {
+          isBundled: true,
+          installedPermissions: clampedPerms,
+        });
       } catch (flagErr) {
         log.warn("Failed to set isBundled on fresh bundled install", {
           name: entry.name,

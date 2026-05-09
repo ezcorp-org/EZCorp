@@ -249,6 +249,23 @@ export const extensions = pgTable("extensions", {
   installPath: text("install_path"),
   enabled: boolean("enabled").notNull().default(true),
   grantedPermissions: jsonb("granted_permissions").notNull().$type<import("../extensions/types").ExtensionPermissions>().default({} as any),
+  /**
+   * v1.3 release-readiness security review HIGH 2 — install-time NARROWED choice.
+   *
+   * Distinct from `manifest.permissions` (the extension's REQUEST) and from
+   * `grantedPermissions` (the CURRENT effective grant, which the
+   * capability-expiry sweep may have narrowed to {}). Captures exactly what
+   * the user/admin approved at install/activate time, including any narrowing
+   * relative to the manifest's declared ceiling AND, for bundled extensions,
+   * any clamping against `BUNDLED_CEILING`.
+   *
+   * The reapprove handler (`/api/extensions/[id]/reapprove`) reads this as
+   * the authoritative ceiling for re-grants, so the user's narrowing survives
+   * a sweep + reapprove cycle. Legacy rows installed before this column
+   * existed are NULL and fall back to clamping against the manifest, which
+   * is the pre-fix behavior. See `tasks/v1.3-security-review.md` HIGH 2.
+   */
+  installedPermissions: jsonb("installed_permissions").$type<import("../extensions/types").ExtensionPermissions>(),
   checksumVerified: boolean("checksum_verified").notNull().default(false),
   // Provenance flag: true ONLY when this row was created by bundled.ts's
   // ensureBundledExtensions path. Authorizes skipping the runtime checksum

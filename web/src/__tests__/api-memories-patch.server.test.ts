@@ -332,7 +332,7 @@ describe("PATCH /api/memories/[id] — successful flip", () => {
 		mockUpdateInjectionEligibility.mockResolvedValue(
 			makeMemory({ injectionEligible: false }),
 		);
-		mockGetMemoryProjectIds.mockResolvedValue([]);
+		mockGetMemoryProjectIds.mockResolvedValue(["proj-a", "proj-b"]);
 		const res = await PATCH(
 			makePatchEvent({
 				locals: { user: USER },
@@ -354,6 +354,7 @@ describe("PATCH /api/memories/[id] — successful flip", () => {
 			oldValue: true,
 			newValue: false,
 			actor: "u1",
+			projectIds: ["proj-a", "proj-b"],
 		});
 	});
 
@@ -362,7 +363,7 @@ describe("PATCH /api/memories/[id] — successful flip", () => {
 		mockUpdateInjectionEligibility.mockResolvedValue(
 			makeMemory({ injectionEligible: true }),
 		);
-		mockGetMemoryProjectIds.mockResolvedValue([]);
+		mockGetMemoryProjectIds.mockResolvedValue(["proj-c"]);
 		const res = await PATCH(
 			makePatchEvent({
 				locals: { user: USER },
@@ -376,6 +377,7 @@ describe("PATCH /api/memories/[id] — successful flip", () => {
 			memoryId: "mem-1",
 			oldValue: false,
 			newValue: true,
+			projectIds: ["proj-c"],
 		});
 	});
 

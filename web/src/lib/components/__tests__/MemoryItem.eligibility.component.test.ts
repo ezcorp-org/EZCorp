@@ -347,6 +347,76 @@ describe("MemoryItem — injection-eligibility — revert on error", () => {
 	});
 });
 
+describe("MemoryItem — injection-eligibility — inflight guard", () => {
+	test("two rapid clicks before PATCH resolves dispatch only ONE fetch", async () => {
+		// Pin the `if (togglingEligibility) return;` guard at
+		// MemoryItem.svelte:226 — without it, a double-click fires
+		// two PATCHes (and two audit rows). Use a deferred-resolve
+		// stub so the second click happens while the first is in
+		// flight.
+		let resolveFetch!: (res: Response) => void;
+		const fetchSpy = vi.fn(
+			() =>
+				new Promise<Response>((resolve) => {
+					resolveFetch = resolve;
+				}),
+		);
+		vi.stubGlobal("fetch", fetchSpy);
+		const { summary } = renderRow(makeMemory({ injectionEligible: true }));
+		await fireEvent.click(summary);
+		const toggle = await waitFor(() =>
+			screen.getByTestId("injection-eligibility-toggle"),
+		);
+		// Two clicks back-to-back, before the first PATCH resolves.
+		await fireEvent.click(toggle);
+		await fireEvent.click(toggle);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		// Resolve the inflight fetch so the test cleans up cleanly.
+		resolveFetch(
+			new Response(
+				JSON.stringify({
+					...makeMemory({ injectionEligible: false }),
+					projectIds: [],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			),
+		);
+	});
+});
+
+describe("MemoryItem — injection-eligibility — stopPropagation", () => {
+	test("clicking the toggle does NOT collapse the expanded row", async () => {
+		// The toggle lives inside the expanded section, and the
+		// row's summary has a click-to-collapse handler. The
+		// toggle's `event.stopPropagation()` at
+		// MemoryItem.svelte:225 must prevent the click from
+		// bubbling into the row collapse.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				new Response(
+					JSON.stringify({
+						...makeMemory({ injectionEligible: false }),
+						projectIds: [],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			),
+		);
+		const { summary } = renderRow(makeMemory({ injectionEligible: true }));
+		await fireEvent.click(summary);
+		const toggle = await waitFor(() =>
+			screen.getByTestId("injection-eligibility-toggle"),
+		);
+		await fireEvent.click(toggle);
+		// Row stays expanded — the status element (only rendered
+		// in the expanded branch) is still in the DOM.
+		await waitFor(() => {
+			expect(screen.queryByTestId("injection-eligibility-status")).not.toBeNull();
+		});
+	});
+});
+
 describe("MemoryItem — injection-eligibility — accessibility regression", () => {
 	test("aria-label on the toggle button switches between the two state-strings", async () => {
 		// Pin the actual a11y strings — screen-reader users rely on

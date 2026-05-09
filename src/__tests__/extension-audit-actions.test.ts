@@ -88,6 +88,8 @@ describe("extension audit action constants", () => {
       "SDK_SCHEDULE_FIRE_NOW",
       "SDK_SCHEDULE_QUOTA_EXCEEDED",
       "SDK_SCHEDULE_REAPED",
+      // v1.4 — memory injection-eligibility admin UI
+      "MEMORY_INJECTION_ELIGIBILITY_CHANGED",
     ]));
   });
 

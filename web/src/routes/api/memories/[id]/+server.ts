@@ -158,11 +158,18 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
     return errorJson(404, "Memory not found");
   }
 
-  // Audit row in the shared `audit_log` table — picked up by the
-  // governance dashboard alongside other `ext:*` actions. The
-  // helper is fire-and-forget on its own DB-error path (see
-  // `insertAuditEntry`'s try/catch); we still `await` to surface
-  // ordering issues but a hiccup won't abort the PATCH.
+  // Source the project list for cross-project audit reconstruction.
+  // Memories belong to N projects (M2M via `memory_projects`), so
+  // `projectIds: string[]` — never a single id.
+  const projectIds = await getMemoryProjectIds(params.id);
+
+  // Audit write is intentionally OUTSIDE a transaction — audit-log
+  // failures must not abort the caller's column update; see
+  // `src/db/queries/audit-log.ts:42-74` (Pitfall #2) for the project
+  // pattern. The PATCH is idempotent, so a partial-write recovery is
+  // at worst a missed audit row, not data corruption. Spec § Phase
+  // 1.3 step 4 said "SAME transaction" but that would break the
+  // established audit-decoupling invariant.
   await insertAuditEntry(
     user.id,
     EXT_AUDIT_ACTIONS.MEMORY_INJECTION_ELIGIBILITY_CHANGED,
@@ -172,13 +179,10 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       oldValue,
       newValue: injectionEligible,
       actor: user.id,
-      reason: injectionEligible
-        ? "User re-included memory in chat context"
-        : "User excluded memory from chat context",
+      projectIds,
     },
   );
 
-  const projectIds = await getMemoryProjectIds(params.id);
   return json({ ...updated, projectIds });
 };
 

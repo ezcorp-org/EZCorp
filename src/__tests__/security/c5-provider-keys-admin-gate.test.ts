@@ -42,11 +42,16 @@ mock.module("../../../web/src/routes/api/providers/$types", () => ({}));
 
 // requireScope must stay a no-op passthrough — we're exercising the NEW
 // requireRole gate, not an api-key scope check.
+// verifyApiKey: included so this mock doesn't leak an incomplete shape to
+// sibling tests (e.g. c2-session-revocation) via Bun's module cache —
+// mock.module() persists across test files.
 mock.module("$lib/server/security/api-keys", () => ({
   requireScope: () => null,
+  verifyApiKey: async () => null,
 }));
 mock.module("../../../web/src/lib/server/security/api-keys", () => ({
   requireScope: () => null,
+  verifyApiKey: async () => null,
 }));
 
 // ── Capture settings writes/deletes ──────────────────────────────

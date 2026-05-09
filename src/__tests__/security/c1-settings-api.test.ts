@@ -25,8 +25,12 @@ mock.module("$lib/server/security/validation", () =>
 );
 // requireScope is a no-op in production for cookie auth. Keep it that way in
 // tests so we're testing the *new* requireRole gate, not a stub of the old one.
+// verifyApiKey: included so this mock doesn't leak an incomplete shape to
+// sibling tests (e.g. c2-session-revocation) via Bun's module cache —
+// mock.module() persists across test files.
 mock.module("$lib/server/security/api-keys", () => ({
   requireScope: () => null,
+  verifyApiKey: async () => null,
 }));
 
 // In-memory settings store backs the fake query module.

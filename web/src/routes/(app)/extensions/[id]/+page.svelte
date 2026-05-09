@@ -4,6 +4,22 @@
 	import type { SettingsSchema } from "$server/extensions/types";
 	import SettingsPanel from "./SettingsPanel.svelte";
 	import { invalidateExtensionSettings } from "$lib/stores/extensionSettings";
+	import ExpiredGrantsBanner, {
+		type ExpiredGrant,
+	} from "$lib/components/permissions/ExpiredGrantsBanner.svelte";
+	import ExpiredReapproveModal from "$lib/components/permissions/ExpiredReapproveModal.svelte";
+
+	// Phase 4 — default new-TTL surfaced in the re-approve modal copy.
+	// The server's per-capability TTL table (`perm-expiry-config.ts`) is
+	// the source of truth, but this page renders the banner client-side
+	// and the audit row already encodes the original `ttlMs`. For the
+	// modal preview we use the same default the design doc § 3.2 quotes
+	// as a representative value (90 days = 90 * 24 * 60 * 60 * 1000 ms).
+	// A future iteration could thread the per-capability TTL through the
+	// audit row's metadata, but the audit row's `ttlMs` is the *expired*
+	// TTL, not the *new* TTL the user would get on re-approve. Use the
+	// default until v1.5 surfaces a per-capability lookup endpoint.
+	const DEFAULT_NEW_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 	interface ExtensionDetail {
 		id: string;
@@ -211,6 +227,68 @@
 		}
 	}
 
+	// Phase 4 (capability-expiry) — expired-grants banner state. Loaded
+	// for any authenticated user (the audit rows for a single extension
+	// are not admin-gated; the more detailed audit drill-down at
+	// /audit IS).
+	let expiredGrants = $state<ExpiredGrant[]>([]);
+	let expiredGrantsError = $state("");
+
+	// Inline re-approve modal state. The settings page does NOT have an
+	// active tool call to gate (those are chat-side); the in-chat
+	// PermissionGate handles those. The banner here pops a small
+	// `ExpiredReapproveModal` that shares the design doc § 3.2 copy
+	// contract with PermissionGate's expired branch but POSTs to
+	// /api/extensions/[id]/reapprove (the install-time-equivalent
+	// re-grant path) instead of /api/tool-calls/:id/permission.
+	type ReapproveTarget = { capability: string; ageMs: number };
+	let reapproveModal = $state<ReapproveTarget | null>(null);
+	let reapproveSubmitting = $state(false);
+
+	async function loadExpiredGrants() {
+		try {
+			const res = await fetch(`/api/extensions/${extId}/expired-grants`);
+			if (!res.ok) {
+				expiredGrantsError = `Failed to load expired grants (HTTP ${res.status})`;
+				return;
+			}
+			const data = await res.json();
+			expiredGrants = (data.grants ?? []) as ExpiredGrant[];
+		} catch (e) {
+			expiredGrantsError = e instanceof Error ? e.message : "Failed to load expired grants";
+		}
+	}
+
+	function handleReapproveOpen(target: ReapproveTarget) {
+		reapproveModal = target;
+	}
+
+	async function handleReapproveSubmit(scope?: "forever") {
+		if (!reapproveModal || !ext) return;
+		reapproveSubmitting = true;
+		try {
+			const res = await fetch(`/api/extensions/${ext.id}/reapprove`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(
+					scope ? { capability: reapproveModal.capability, scope } : { capability: reapproveModal.capability },
+				),
+			});
+			if (!res.ok) throw new Error(`Re-approve failed (HTTP ${res.status})`);
+			showTemporarySuccess("Permission re-approved");
+			reapproveModal = null;
+			await Promise.all([loadExpiredGrants(), loadExtension()]);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : "Re-approve failed";
+		} finally {
+			reapproveSubmitting = false;
+		}
+	}
+
+	function handleReapproveCancel() {
+		reapproveModal = null;
+	}
+
 	// Permission-change audit trail (admin-only). Rows sourced from the
 	// shared `audit_log` table via `/api/extensions/[id]/audit`; covers
 	// both typed `ext:*` events and legacy `extension:*` strings.
@@ -264,7 +342,13 @@
 
 	onMount(async () => {
 		await checkAdmin();
-		await Promise.all([loadExtension(), loadViolations(), loadAuditTrail(), loadSettings()]);
+		await Promise.all([
+			loadExtension(),
+			loadViolations(),
+			loadAuditTrail(),
+			loadSettings(),
+			loadExpiredGrants(),
+		]);
 	});
 
 	function showTemporarySuccess(msg: string) {
@@ -356,6 +440,36 @@
 		{/if}
 		{#if errorMsg}
 			<div class="rounded-lg bg-red-900/40 px-4 py-2 text-sm text-red-400">{errorMsg}</div>
+		{/if}
+		{#if expiredGrantsError}
+			<div class="rounded-lg bg-amber-900/40 px-4 py-2 text-xs text-amber-300" data-testid="expired-grants-error">
+				{expiredGrantsError}
+			</div>
+		{/if}
+
+		<!--
+			Phase 4 (capability-expiry) — recently-expired grants banner.
+			Renders nothing if there are no rows. Click → opens the inline
+			re-approve modal below.
+		-->
+		<ExpiredGrantsBanner
+			expiredGrants={expiredGrants}
+			isAdmin={isAdmin}
+			onReapprove={handleReapproveOpen}
+		/>
+
+		{#if reapproveModal && ext}
+			<ExpiredReapproveModal
+				extensionName={ext.name}
+				capability={reapproveModal.capability}
+				ageMs={reapproveModal.ageMs}
+				newTtlMs={DEFAULT_NEW_TTL_MS}
+				isAdmin={isAdmin}
+				loading={reapproveSubmitting}
+				onApproveDefault={() => handleReapproveSubmit()}
+				onApproveForever={() => handleReapproveSubmit("forever")}
+				onCancel={handleReapproveCancel}
+			/>
 		{/if}
 
 		<!-- Security Violations -->

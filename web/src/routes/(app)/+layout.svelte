@@ -215,15 +215,27 @@
 
 </script>
 
+<!--
+	Phase 49.1 — Mobile-responsive sidebar.
+
+	Breakpoint policy: at `<lg` (`<1024px`), the project rail and the
+	desktop sidebar are hidden; a hamburger button in the mobile header
+	opens `SwipeDrawer` instead. At `≥lg` they render inline as before.
+
+	The drawer infrastructure (`SwipeDrawer` + `store.mobileMenuOpen`)
+	already existed for `<md`; this phase widens the threshold to `<lg`
+	so tablets and small laptops also get the drawer treatment, per
+	v1.3 Phase 49 spec § 49.1.1.
+-->
 <div class="flex h-[100dvh] bg-[var(--color-surface)] text-[var(--color-text-primary)]" style="height: 100vh; height: 100dvh; padding-bottom: env(safe-area-inset-bottom, 0px);">
-	<!-- Project Rail (hidden on mobile, shown in overlay) -->
-	<div class="hidden md:flex">
+	<!-- Project Rail (hidden below `lg`, shown in overlay drawer) -->
+	<div class="hidden lg:flex">
 		<ProjectRail />
 	</div>
 
 	<!-- Desktop sidebar -->
 	<aside
-		class="hidden md:flex shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-secondary)] transition-[width] duration-200 ease-in-out overflow-hidden {store.sidebarCollapsed ? 'w-0 border-r-0' : 'w-56'}"
+		class="hidden lg:flex shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-secondary)] transition-[width] duration-200 ease-in-out overflow-hidden {store.sidebarCollapsed ? 'w-0 border-r-0' : 'w-56'}"
 		aria-label="Sidebar"
 	>
 		<div class="border-b border-[var(--color-border)] px-4 py-3">
@@ -314,11 +326,11 @@
 		</nav>
 	</aside>
 
-	<!-- Expand button (when sidebar collapsed on desktop) -->
+	<!-- Expand button (when sidebar collapsed on desktop, ≥lg only) -->
 	{#if store.sidebarCollapsed}
 		<button
 			onclick={toggleSidebar}
-			class="hidden md:flex items-center justify-center w-6 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)]"
+			class="hidden lg:flex items-center justify-center w-6 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)]"
 			title="Expand sidebar (Ctrl+\\)"
 			aria-label="Expand sidebar"
 		>
@@ -340,13 +352,15 @@
 		class="relative flex-1 overflow-y-auto {isChatRoute ? 'flex flex-col' : ''}"
 		style="padding-right: {reservedDockPx}px; transition: padding-right 200ms ease-in-out;"
 	>
-		<!-- Mobile header (hidden on chat routes - chat has its own mobile header) -->
+		<!-- Mobile/tablet header (hidden on chat routes - chat has its own header).
+		     Visible at `<lg` so tablets get the hamburger too (Phase 49.1). -->
 		{#if !isChatRoute}
-		<div class="flex md:hidden items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3">
+		<div class="flex lg:hidden items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3" data-testid="mobile-header">
 			<button
 				onclick={() => (store.mobileMenuOpen = true)}
 				class="flex items-center justify-center rounded-md p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-primary)]"
 				aria-label="Open menu"
+				data-testid="mobile-menu-toggle"
 				style="min-width: 44px; min-height: 44px;"
 			>
 				<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

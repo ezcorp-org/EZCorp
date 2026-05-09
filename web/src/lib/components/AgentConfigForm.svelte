@@ -4,6 +4,7 @@
 	import InfoTooltip from "$lib/components/InfoTooltip.svelte";
 	import ModelSearchPicker from "$lib/components/ModelSearchPicker.svelte";
 	import ExtensionSearchPicker from "$lib/components/ExtensionSearchPicker.svelte";
+	import ExtensionAttachPicker from "$lib/components/ExtensionAttachPicker.svelte";
 	import { CURRENT_MODEL_SENTINEL } from "$lib/api";
 
 	let {
@@ -49,6 +50,11 @@
 	);
 
 	let errorMsg = $state("");
+	// Phase 49.4 — visual attach picker. Triggered from the "Browse
+	// extensions" button next to the inline ExtensionSearchPicker.
+	// Submitting the modal replaces `extensions` wholesale with the
+	// modal's selection — same wire shape the inline picker uses.
+	let attachPickerOpen = $state(false);
 
 	function addField() {
 		fields = [...fields, { key: "", type: "string", label: "", required: false }];
@@ -170,6 +176,21 @@
 			placeholder="Search extensions to attach..."
 			onchange={(ids) => { extensions = ids; }}
 		/>
+		<!-- Phase 49.4 — visual modal alternative. Same model + chip
+		     surface as the inline picker; users pick whichever interaction
+		     style fits their workflow. -->
+		<button
+			type="button"
+			onclick={() => (attachPickerOpen = true)}
+			data-testid="agent-config-form-attach-extensions"
+			class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-border)]"
+			style="min-height: 36px;"
+		>
+			<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+			</svg>
+			Browse extensions
+		</button>
 	</div>
 
 	<!-- Input Schema Builder -->
@@ -215,3 +236,13 @@
 		{submitting ? "Saving..." : "Save Agent"}
 	</button>
 </form>
+
+<!-- Phase 49.4 — Visual extension attach picker. Mounted at form
+     scope so it overlays everything, including the focus traps of
+     other components further up the tree. -->
+<ExtensionAttachPicker
+	open={attachPickerOpen}
+	initialSelected={extensions}
+	onclose={() => (attachPickerOpen = false)}
+	onsubmit={(ids) => { extensions = ids; }}
+/>

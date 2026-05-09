@@ -70,6 +70,24 @@ export async function handleToolPermission(
     );
   }
 
+  // Phase 4 (capability-expiry) — defense in depth: the modal's "Approve
+  // forever (admin only)" button is gated client-side via the `isAdmin`
+  // prop on PermissionGate, but a tampered DOM (or a hand-rolled curl)
+  // could still post `scope: "forever"` from a non-admin session. Reject
+  // here so the always-allow `forever` row never lands without the role
+  // check matching the design doc § 3.2 contract.
+  //
+  // Other scopes (`session`, `conversation`, `project`) remain open to
+  // any authenticated caller — they're per-user trust decisions, not
+  // policy decisions, and the install-time grant already passed the
+  // admin gate.
+  if (body.approved === true && body.scope === "forever" && user.role !== "admin") {
+    return json(
+      { error: "scope=forever requires admin role" },
+      403,
+    );
+  }
+
   // sec-H2: only enforce ownership when a gate is actually pending. If no
   // gate is registered for this toolCallId `resolvePermission` is a no-op,
   // and returning 200 here preserves the pre-fix "unknown id → no-op" shape

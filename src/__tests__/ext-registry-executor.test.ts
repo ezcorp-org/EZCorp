@@ -255,8 +255,13 @@ describe("buildAllowedEnv", () => {
     const env = buildAllowedEnv(manifest, granted, "ext-leak-test");
 
     const keys = Object.keys(env);
-    expect(keys).toEqual(expect.arrayContaining(["PATH", "HOME", "NODE_ENV", "TMPDIR"]));
-    expect(keys.length).toBe(4);
+    expect(keys).toEqual(
+      expect.arrayContaining(["PATH", "HOME", "NODE_ENV", "TMPDIR", "EZCORP_PROJECT_ROOT"]),
+    );
+    // Phase post-perm-cleanup: registry now also injects EZCORP_PROJECT_ROOT
+    // unconditionally (when a `.git` ancestor is found, which is true under
+    // the test runner). PATH + HOME + NODE_ENV + TMPDIR + EZCORP_PROJECT_ROOT = 5.
+    expect(keys.length).toBe(5);
   });
 
   test("handles empty permissions on both manifest and granted", () => {
@@ -264,7 +269,8 @@ describe("buildAllowedEnv", () => {
     const granted: ExtensionPermissions = { grantedAt: {} };
 
     const env = buildAllowedEnv(manifest, granted, "ext-empty");
-    expect(Object.keys(env).length).toBe(4); // PATH, HOME, NODE_ENV, TMPDIR
+    // PATH, HOME, NODE_ENV, TMPDIR, EZCORP_PROJECT_ROOT (Phase post-perm-cleanup)
+    expect(Object.keys(env).length).toBe(5);
   });
 
   test("handles manifest env but no granted env", () => {

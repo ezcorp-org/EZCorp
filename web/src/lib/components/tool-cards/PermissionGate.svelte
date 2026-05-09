@@ -2,13 +2,47 @@
 	import type { ToolCallState } from "$lib/stores.svelte.js";
 	import { sendToolPermissionResponse } from "$lib/stores.svelte.js";
 	import { getSecurityNote, extractInputSummary } from "./utils.js";
+	import { expiryCopy } from "$lib/components/permissions/expiry-copy";
 
-	let { toolCall }: { toolCall: ToolCallState } = $props();
+	/**
+	 * Phase 4 (capability-expiry): the gate now has THREE rendering modes,
+	 * picked top-down:
+	 *   1. `expiredCapability` set       → "expired — re-approve" branch.
+	 *      Fires after the sweep revoked a grant; the next tool-call hit
+	 *      surfaces this branch instead of the install-time prompt.
+	 *   2. `extensionId` set             → four-scope chooser (Phase 6).
+	 *   3. neither set                   → legacy two-button Allow / Deny.
+	 *
+	 * The `expiredCapability` branch is purely additive — when undefined,
+	 * the existing four-scope flow renders unchanged. The "Approve forever
+	 * (admin only)" button is gated by the `isAdmin` prop AND defended in
+	 * depth by `/api/tool-calls/:id/permission` (which rejects
+	 * `scope: "forever"` from non-admin callers).
+	 */
+	let {
+		toolCall,
+		expiredCapability,
+		isAdmin = false,
+	}: {
+		toolCall: ToolCallState;
+		expiredCapability?: {
+			capability: string;
+			ageMs: number;
+			newTtlMs: number;
+		};
+		isAdmin?: boolean;
+	} = $props();
 	let loading = $state(false);
 
 	let securityNote = $derived(getSecurityNote(toolCall.category));
 
 	let inputSummary = $derived(extractInputSummary(toolCall.input) ?? '');
+
+	// Phase 4: expired-capability branch overrides everything else when
+	// set — the modal renders re-approve copy, not the install-time
+	// chooser, so users can't be confused into thinking this is a fresh
+	// grant for a capability they never approved before.
+	let isExpiredRequest = $derived(expiredCapability !== undefined);
 
 	// Phase 6: extension-scoped permission request? Routes the modal to
 	// the four-scope chooser when extensionId is set. Built-in tool
@@ -29,6 +63,21 @@
 		return `Use capability ${toolCall.capabilityKind ?? '(unknown)'}`;
 	});
 
+	// Phase 4 expired-branch derivations. Pulled from the shared
+	// `expiry-copy.ts` module so chat-side and settings-side surfaces
+	// render identical strings (design doc § 3.2 verbatim contract).
+	let extensionDisplayName = $derived(toolCall.extensionId ?? 'extension');
+	let expiredCopy = $derived(
+		expiredCapability
+			? expiryCopy(
+					extensionDisplayName,
+					expiredCapability.capability,
+					expiredCapability.ageMs,
+					expiredCapability.newTtlMs,
+				)
+			: null,
+	);
+
 	type Scope = 'session' | 'conversation' | 'project' | 'forever';
 
 	async function handleAllow(scope?: Scope) {
@@ -47,6 +96,42 @@
 		if (!toolCall.id) return;
 		await sendToolPermissionResponse(toolCall.id, false);
 	}
+
+	// Phase 4 — re-approve handlers. The "Approve $newTtl" path posts
+	// `{approved: true}` with no scope; the server resolves the actual
+	// TTL on approve (mirrors the install-time flow). Admin "forever"
+	// adds `scope: "forever"` AND expects the server-side guard to
+	// confirm the caller's role.
+	async function handleReapproveDefault() {
+		if (!toolCall.id) return;
+		loading = true;
+		try {
+			await sendToolPermissionResponse(toolCall.id, true);
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleReapproveForever() {
+		if (!toolCall.id) return;
+		loading = true;
+		try {
+			await sendToolPermissionResponse(toolCall.id, true, 'forever');
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleReapproveCancel() {
+		// Dismissal is non-authoritative per design doc § 3.3 — sweep
+		// already revoked, the cancel just defers the next prompt. We
+		// still POST `{approved: false}` so the gate resolves and the
+		// pending state clears (otherwise the UI would hang on the
+		// modal). Subsequent tool calls will re-prompt until the user
+		// approves.
+		if (!toolCall.id) return;
+		await sendToolPermissionResponse(toolCall.id, false);
+	}
 </script>
 
 <div class="rounded-md border border-amber-500/40 bg-amber-900/10 overflow-hidden" data-testid="permission-gate">
@@ -55,8 +140,20 @@
 			<svg class="h-4 w-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
 				<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
 			</svg>
-			<span class="text-sm font-medium text-[var(--color-text-primary)]">{toolCall.toolName}</span>
-			{#if isExtensionRequest && toolCall.extensionId}
+			{#if isExpiredRequest && expiredCopy}
+				<!--
+					Phase 4 expired branch — title from shared
+					`expiry-copy.ts`. The settings-side
+					ExpiredReapproveModal renders the SAME constant.
+				-->
+				<span
+					class="text-sm font-medium text-[var(--color-text-primary)]"
+					data-testid="permission-expired-title"
+				>{expiredCopy.title}</span>
+			{:else}
+				<span class="text-sm font-medium text-[var(--color-text-primary)]">{toolCall.toolName}</span>
+			{/if}
+			{#if (isExtensionRequest || isExpiredRequest) && toolCall.extensionId}
 				<span class="rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-medium text-blue-300" data-testid="permission-extension-badge">{toolCall.extensionId}</span>
 			{/if}
 			{#if toolCall.category}
@@ -64,7 +161,18 @@
 			{/if}
 		</div>
 
-		{#if isExtensionRequest}
+		{#if isExpiredRequest && expiredCopy}
+			<!--
+				Phase 4 body copy from shared `expiry-copy.ts` (design
+				doc § 3.2 verbatim). Both surfaces render the same
+				constant; component tests for either surface assert
+				against this string independently.
+			-->
+			<p
+				class="mb-2 text-sm text-[var(--color-text-primary)]"
+				data-testid="permission-expired-body"
+			>{expiredCopy.body}</p>
+		{:else if isExtensionRequest}
 			<p class="mb-2 text-sm text-[var(--color-text-primary)]" data-testid="permission-extension-description">
 				This extension wants to: <span class="font-medium">{extensionRequestDescription}</span>
 			</p>
@@ -74,11 +182,51 @@
 			<pre class="mb-2 rounded bg-[var(--color-surface-secondary)] p-2 text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap break-all max-h-32 overflow-y-auto">{inputSummary}</pre>
 		{/if}
 
-		{#if securityNote}
+		{#if securityNote && !isExpiredRequest}
 			<p class="mb-3 text-xs text-amber-300/80">{securityNote}</p>
 		{/if}
 
-		{#if isExtensionRequest}
+		{#if isExpiredRequest && expiredCopy}
+			<!--
+				Phase 4 expired-branch buttons. Labels come from shared
+				`expiry-copy.ts` (design doc § 3.2 verbatim):
+				  • copy.approveDefault   — "Approve $newTtl" — primary, all users
+				  • copy.approveForever   — "Approve forever (admin only)" — admin-gated
+				  • copy.cancel           — "Cancel" — closes modal, no POST scope
+				The forever button is also defended server-side: the
+				`/api/tool-calls/:id/permission` handler rejects
+				`scope: "forever"` from non-admin callers (defense in
+				depth, even if a tampered DOM bypasses the gate).
+			-->
+			<div class="flex flex-wrap gap-2" data-testid="permission-expired-actions">
+				<button
+					onclick={handleReapproveDefault}
+					disabled={loading}
+					data-testid="permission-expired-approve-default"
+					class="rounded px-3 py-1.5 text-xs font-medium bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-50"
+				>
+					{loading ? 'Working...' : expiredCopy.approveDefault}
+				</button>
+				{#if isAdmin}
+					<button
+						onclick={handleReapproveForever}
+						disabled={loading}
+						data-testid="permission-expired-approve-forever"
+						class="rounded px-3 py-1.5 text-xs font-medium bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-50"
+					>
+						{expiredCopy.approveForever}
+					</button>
+				{/if}
+				<button
+					onclick={handleReapproveCancel}
+					disabled={loading}
+					data-testid="permission-expired-cancel"
+					class="rounded px-3 py-1.5 text-xs font-medium bg-[var(--color-surface-tertiary)] hover:bg-[var(--color-surface-secondary)] text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+				>
+					{expiredCopy.cancel}
+				</button>
+			</div>
+		{:else if isExtensionRequest}
 			<!--
 				Phase 6: extension-scoped four-scope chooser. The default
 				is "session" (least surprise — expires on conversation

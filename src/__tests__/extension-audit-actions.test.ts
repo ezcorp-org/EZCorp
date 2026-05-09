@@ -56,6 +56,8 @@ describe("extension audit action constants", () => {
       "PERM_ALLOWED",
       "PERM_DENIED",
       "PERM_PROMPTED",
+      // Cap-expiry Phase 1 — sweep emits this when a grant ages past TTL
+      "PERM_GRANT_EXPIRED",
       // Phase 5 — bundled cap-ceiling clamp + manifest tamper detection
       "BUNDLED_CEILING_CLAMP",
       "BUNDLED_MANIFEST_TAMPER",
@@ -95,6 +97,15 @@ describe("extension audit action constants", () => {
     // switch on action without re-inferring from the permission field.
     expect(EXT_AUDIT_ACTIONS.CAPABILITY_GRANTED).not.toBe(EXT_AUDIT_ACTIONS.PERMISSION_GRANTED);
     expect(EXT_AUDIT_ACTIONS.CAPABILITY_REVOKED).not.toBe(EXT_AUDIT_ACTIONS.PERMISSION_REVOKED);
+  });
+
+  test("PERM_GRANT_EXPIRED wire value is locked — Phase 2 sweep + downstream consumers depend on it", () => {
+    // Phase 1 ships only the constant; Phase 2 (the sweep) and any
+    // governance dashboard / migration script keying off the audit-log
+    // action column rely on this exact string. Changing it is a wire-
+    // protocol break — fail the test loudly so a future refactor
+    // notices.
+    expect(EXT_AUDIT_ACTIONS.PERM_GRANT_EXPIRED).toBe("ext:permission-grant-expired");
   });
 });
 

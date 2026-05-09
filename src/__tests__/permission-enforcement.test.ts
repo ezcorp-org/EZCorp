@@ -296,9 +296,21 @@ describe("empty grantedPermissions — process.env secrets are not leaked to the
     };
   }
 
-  test("with no granted env, only PATH/HOME/NODE_ENV/TMPDIR reach the subprocess", () => {
+  test("with no granted env, only PATH/HOME/NODE_ENV/TMPDIR/EZCORP_PROJECT_ROOT reach the subprocess", () => {
+    // Phase post-perm-cleanup: registry.ts:108 unconditionally injects
+    // EZCORP_PROJECT_ROOT (when a `.git` ancestor is found, which is true
+    // under the test runner) so sandboxed extensions can locate the
+    // project root without their own poisoned `.git` walk. Sister tests
+    // (ext-registry-executor.test.ts:259-272 and
+    // extension-security-runtime.test.ts:470-478) already track this.
     const env = buildAllowedEnv(manifest(), { grantedAt: {} }, `ext-clean-${randomUUID()}`);
-    expect(Object.keys(env).sort()).toEqual(["HOME", "NODE_ENV", "PATH", "TMPDIR"]);
+    expect(Object.keys(env).sort()).toEqual([
+      "EZCORP_PROJECT_ROOT",
+      "HOME",
+      "NODE_ENV",
+      "PATH",
+      "TMPDIR",
+    ]);
   });
 
   // Task #11 case 4 — core claim

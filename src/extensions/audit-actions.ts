@@ -224,6 +224,27 @@ export const EXT_AUDIT_ACTIONS = {
    *  declared cron immediately. Counts against
    *  `permissions.schedule.maxRunsPerDay`. */
   SDK_SCHEDULE_FIRE_NOW: "ext:sdk-schedule-fire-now",
+  /**
+   * Capability-expiry sweep revoked a permission grant whose
+   * `grantedAt` aged past the per-capability TTL (see
+   * `./perm-expiry-config.ts`). Phase 1 ships only the constant; the
+   * sweep that emits this row lands in Phase 2 (see
+   * `tasks/capability-expiry-milestone.md` § Phase 2).
+   *
+   * Metadata shape (Phase 2 contract — DO NOT widen without amending
+   * the milestone plan):
+   *   {
+   *     capability: CapabilityExpiryKind,  // family that expired
+   *     scope:      AlwaysAllowScope | "extensions-row",
+   *     ttlMs:      number,                // resolved TTL at sweep time
+   *     ageMs:      number,                // now() - grantedAt
+   *   }
+   *
+   * `scope: "extensions-row"` distinguishes a per-extension grant on
+   * the `extensions.granted_permissions` JSON column from an always-
+   * allow row on `settings`. Phase 2 will refine if needed.
+   */
+  PERM_GRANT_EXPIRED: "ext:permission-grant-expired",
   /** ScheduleDaemon refused to dispatch because the day's
    *  `maxRunsPerDay` cap was exceeded. */
   SDK_SCHEDULE_QUOTA_EXCEEDED: "ext:sdk-schedule-quota-exceeded",

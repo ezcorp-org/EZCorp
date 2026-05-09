@@ -1,23 +1,86 @@
-import { test, expect, beforeEach, afterAll, describe } from "bun:test";
+import { test, expect, beforeAll, beforeEach, afterAll, describe, spyOn } from "bun:test";
 import { join } from "path";
-import { mkdirSync, rmSync } from "fs";
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
 import {
   loadStore, saveStore, genId, ensureStack, getStackTasks, reindex,
   setStorePath, handleRequest, resolveProjectRoot,
 } from "./index";
 import type { JsonRpcRequest } from "@ezcorp/sdk";
+import { getChannel, JsonRpcError } from "@ezcorp/sdk/runtime";
 
 const TMP_DIR = join("/tmp", `task-stack-test-${Date.now()}`);
 const TMP_PATH = join(TMP_DIR, "task-stack.json");
+
+// ── Phase post-perm-cleanup: in-test fs RPC stub ──────────────────
+//
+// The extension now routes IO through the host's `ezcorp/fs.*`
+// reverse-RPC (host-mediated, sandbox-friendly). Bun unit tests run
+// in-process and have no host attached, so we stub `getChannel().request`
+// for the three methods this extension uses (`read`, `write`, `mkdir`)
+// and route them to real disk IO under `TMP_DIR`. Missing-file ENOENT
+// surfaces as a `JsonRpcError(-32000, "ENOENT: ...")` to match the
+// production host's wire shape — that's what `loadStore` matches on
+// to fall back to the default store. Other unexpected RPC methods
+// throw so test bugs are loud.
+//
+// `EZCORP_FS_ALLOWED=1` satisfies the SDK's pre-flight gate
+// (`ensureFsAllowed`) without granting any real permission — the stub
+// IS the host.
+//
+// Re-installed in beforeEach because the global `src/__tests__/preload.ts`
+// runs `__resetChannelForTests()` after every test (drops the singleton
+// to prevent cross-test leakage). That's the correct hygiene; we just
+// have to re-stub on the fresh channel.
+
+const ORIG_FS_ALLOWED = process.env.EZCORP_FS_ALLOWED;
+
+function installFsStub(): void {
+  const ch = getChannel();
+  spyOn(ch, "request").mockImplementation((async (
+    method: string,
+    params: unknown,
+  ): Promise<unknown> => {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const path = p.path as string;
+    if (method === "ezcorp/fs.read") {
+      if (!existsSync(path)) {
+        // Match the host's error shape (see fs-handler.ts gatePath
+        // ENOENT branch + ioErrorMsg). loadStore matches on this.
+        throw new JsonRpcError(-32000, `ENOENT: no such file or directory: ${path}`);
+      }
+      const text = readFileSync(path, "utf-8");
+      const body = btoa(text);
+      return { encoding: "utf-8", body, bytes: text.length, resolvedPath: path };
+    }
+    if (method === "ezcorp/fs.write") {
+      const content = p.content as string;
+      writeFileSync(path, content);
+      return { bytes: content.length, resolvedPath: path };
+    }
+    if (method === "ezcorp/fs.mkdir") {
+      mkdirSync(path, { recursive: p.recursive === true });
+      return { resolvedPath: path };
+    }
+    throw new Error(`task-stack test stub: unexpected RPC method ${method}`);
+  }) as ReturnType<typeof getChannel>["request"]);
+}
+
+beforeAll(() => {
+  process.env.EZCORP_FS_ALLOWED = "1";
+});
+
+afterAll(() => {
+  if (ORIG_FS_ALLOWED === undefined) delete process.env.EZCORP_FS_ALLOWED;
+  else process.env.EZCORP_FS_ALLOWED = ORIG_FS_ALLOWED;
+  try { rmSync(TMP_DIR, { recursive: true }); } catch {}
+});
 
 beforeEach(() => {
   // Reset store for each test
   try { rmSync(TMP_PATH); } catch {}
   setStorePath(TMP_DIR, TMP_PATH);
-});
-
-afterAll(() => {
-  try { rmSync(TMP_DIR, { recursive: true }); } catch {}
+  // Re-install stub — preload's afterEach drops the channel singleton.
+  installFsStub();
 });
 
 function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
@@ -75,6 +138,60 @@ describe("resolveProjectRoot", () => {
   });
 });
 
+// --- Unit Tests: Project Root Detection — env-var fast path ---
+//
+// Phase post-perm-cleanup, validator coverage gap: the host-injected
+// `EZCORP_PROJECT_ROOT` env-var path (resolution-order step 1 in
+// `resolveProjectRoot`) had no direct test. Under the Phase 3
+// sandbox-preload, `node:fs` is poisoned at module-load — the extension
+// CANNOT walk for `.git` itself. The host walks once at spawn time and
+// injects the answer. These tests pin that fast path so a future
+// refactor can't silently drop it (forcing every sandboxed extension
+// back into the require-fs fallback, which would crash under poison).
+
+describe("resolveProjectRoot env-var path", () => {
+  const ORIG = process.env.EZCORP_PROJECT_ROOT;
+
+  test("returns env-var value verbatim when set, without filesystem walk", () => {
+    // Use a sentinel path that does NOT exist on disk. If
+    // resolveProjectRoot were doing an fs.existsSync walk it would fall
+    // through to the `from` fallback; instead it MUST return the env
+    // value directly.
+    const SENTINEL = "/tmp/sentinel-project-root";
+    process.env.EZCORP_PROJECT_ROOT = SENTINEL;
+    try {
+      // Pass a `from` arg that has its own real `.git` ancestor (the
+      // repo root) — env-var path takes precedence, so we should NOT
+      // see the repo root come back.
+      expect(resolveProjectRoot(process.cwd())).toBe(SENTINEL);
+      // Same with a deep subdirectory — env-var still wins.
+      expect(resolveProjectRoot(join(process.cwd(), "web", "src"))).toBe(SENTINEL);
+    } finally {
+      if (ORIG === undefined) delete process.env.EZCORP_PROJECT_ROOT;
+      else process.env.EZCORP_PROJECT_ROOT = ORIG;
+    }
+  });
+
+  test("empty-string env-var falls through to fs walk (treated as unset)", () => {
+    // Edge: `EZCORP_PROJECT_ROOT=""` should NOT be treated as a hint —
+    // the host emits the var only when `findProjectRoot()` succeeded,
+    // so any empty value is a malformed-test-env case. The implementation
+    // uses `fromEnv.length > 0` to gate the fast path.
+    process.env.EZCORP_PROJECT_ROOT = "";
+    try {
+      // Falls through to the lazy require-fs walk; from cwd it should
+      // find this repo's `.git` ancestor (cwd itself is a worktree).
+      const root = resolveProjectRoot(process.cwd());
+      expect(root).not.toBe(""); // didn't return the empty env value
+      // Repo root must contain a .git entry (worktree's `.git` is a file).
+      expect(Bun.file(join(root, ".git")).size).toBeGreaterThan(0);
+    } finally {
+      if (ORIG === undefined) delete process.env.EZCORP_PROJECT_ROOT;
+      else process.env.EZCORP_PROJECT_ROOT = ORIG;
+    }
+  });
+});
+
 // --- Unit Tests: Store Helpers ---
 
 describe("Store helpers", () => {
@@ -121,6 +238,65 @@ describe("Store helpers", () => {
     ] as any[];
     reindex(tasks);
     expect(tasks.map(t => t.priority)).toEqual([0, 1, 2]);
+  });
+});
+
+// --- loadStore non-ENOENT JsonRpcError branch ---
+//
+// Phase post-perm-cleanup, validator coverage gap: the existing
+// "Store helpers" tests cover the happy path (file exists, JSON
+// parses) and the corrupt-JSON branch ("corrupt store does not
+// overwrite with defaults"). The ENOENT-fallback branch is also
+// covered ("loadStore returns default store when file doesn't exist"
+// — the stub throws JsonRpcError(-32000, "ENOENT...")).
+//
+// What WAS missing: the non-ENOENT JsonRpcError branch in `loadStore`
+// (index.ts:139-150), which surfaces real host failures (permission
+// denied, host crash, etc.) as "Failed to load store" instead of
+// silently returning defaults. A future refactor could accidentally
+// widen the ENOENT match (e.g. catch-all `if (err instanceof
+// JsonRpcError)`) and start eating EACCES too — defaulting silently
+// instead of erroring would be a real footgun.
+describe("loadStore non-ENOENT JsonRpcError branch", () => {
+  test("EACCES JsonRpcError surfaces as 'Failed to load store'", async () => {
+    // Override the beforeEach-installed stub: this test uniquely needs
+    // the channel to throw a non-ENOENT JsonRpcError. spyOn on the same
+    // method replaces the prior mockImplementation on the channel
+    // singleton (preload.ts's afterEach drops the singleton after each
+    // test, so this override is scoped to this test only).
+    const ch = getChannel();
+    spyOn(ch, "request").mockImplementation((async (
+      method: string,
+      _params: unknown,
+    ): Promise<unknown> => {
+      if (method === "ezcorp/fs.read") {
+        // Mirror the host's gatePath EACCES surface (fs-handler.ts).
+        throw new JsonRpcError(-32000, "EACCES: permission denied: /tmp/x");
+      }
+      throw new Error(`unexpected RPC method ${method}`);
+    }) as ReturnType<typeof getChannel>["request"]);
+
+    await expect(loadStore()).rejects.toThrow(/Failed to load store/);
+  });
+
+  test("non-JsonRpcError generic Error also surfaces as 'Failed to load store'", async () => {
+    // Generic Error from the channel (e.g. transport blew up before
+    // the host could respond) should ALSO be wrapped — not silently
+    // defaulted. The implementation's `instanceof JsonRpcError` gate
+    // is the discriminator that limits ENOENT-fallback to true host
+    // ENOENT responses, not arbitrary client-side failures.
+    const ch = getChannel();
+    spyOn(ch, "request").mockImplementation((async (
+      method: string,
+      _params: unknown,
+    ): Promise<unknown> => {
+      if (method === "ezcorp/fs.read") {
+        throw new Error("transport error: channel closed");
+      }
+      throw new Error(`unexpected RPC method ${method}`);
+    }) as ReturnType<typeof getChannel>["request"]);
+
+    await expect(loadStore()).rejects.toThrow(/Failed to load store/);
   });
 });
 

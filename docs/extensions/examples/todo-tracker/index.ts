@@ -1,16 +1,29 @@
 #!/usr/bin/env bun
 // todo-tracker - Scan project files for TODO/FIXME/HACK comments.
 // Migrated onto @ezcorp/sdk/runtime (rpc wrappers) in Phase 2.3.
+// Migrated onto host-mediated fsList/fsRead in Phase post-perm-cleanup
+// — see tasks/post-perm-cleanup.md Phase B. Raw `Bun.$` (find shell-out)
+// and `Bun.file().text()` are poisoned by the sandbox-preload (Phase 3),
+// so this extension now walks the source tree via `ezcorp/fs.list` and
+// reads each file via `ezcorp/fs.read`.
 
 import {
   createToolDispatcher,
+  fsList,
+  fsRead,
   getChannel,
   toolResult,
   toolError,
   type ToolHandler,
 } from "@ezcorp/sdk/runtime";
+import { join } from "node:path";
 
 const cwd = process.cwd();
+
+// Source-file extensions and directory exclusions, mirroring the
+// pre-migration `find` shell-out (see ezcorp.config.ts history).
+const SOURCE_EXTS = [".ts", ".js", ".svelte"] as const;
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".svelte-kit"]);
 
 interface TodoEntry {
   file: string;
@@ -26,7 +39,10 @@ interface TodoEntry {
 // Or simply: // TODO: description
 const TODO_PATTERN = /\/\/\s*(TODO|FIXME|HACK)\s*(?:\(([^)]*)\))?\s*:?\s*(.*)/i;
 
-function parseTodoLine(line: string, file: string, lineNum: number): TodoEntry | null {
+/** Parse a single line into a TodoEntry, returning null if it doesn't
+ *  match the TODO/FIXME/HACK comment pattern. Exported for unit
+ *  testing — pure function, no fs IO. */
+export function parseTodoLine(line: string, file: string, lineNum: number): TodoEntry | null {
   const match = line.match(TODO_PATTERN);
   if (!match) return null;
 
@@ -54,13 +70,43 @@ function parseTodoLine(line: string, file: string, lineNum: number): TodoEntry |
   return { file, line: lineNum, type, priority, tags, deadline, text };
 }
 
-async function findSourceFiles(): Promise<string[]> {
-  try {
-    const result = await Bun.$`find ${cwd} -type f \( -name "*.ts" -o -name "*.js" -o -name "*.svelte" \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/.svelte-kit/*"`.text();
-    return result.trim().split("\n").filter(Boolean);
-  } catch {
-    return [];
+/**
+ * Walk the project tree under `root` collecting source files we care
+ * about. Mirrors the pre-migration `find` shell-out: include `.ts`,
+ * `.js`, `.svelte`; skip `node_modules`, `.git`, `dist`, `.svelte-kit`.
+ *
+ * Phase post-perm-cleanup: routed through host-mediated `fsList` so
+ * the sandbox-preload's `Bun.$` denier doesn't break it. Errors at any
+ * directory (permission denied, ENOENT mid-walk) are swallowed — the
+ * pre-migration `find` would have logged a non-fatal warning to stderr;
+ * we just skip the entry. The host's grant-prefix check + per-tool
+ * `capabilities.filesystem.mode` gating filters paths the extension
+ * shouldn't see; from the extension's POV, any error from `fsList`
+ * means "skip and continue" so a single inaccessible subtree doesn't
+ * tank the whole scan.
+ */
+async function findSourceFiles(root: string = cwd): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    let entries: Awaited<ReturnType<typeof fsList>>;
+    try {
+      entries = await fsList(dir);
+    } catch {
+      return; // skip dirs we can't list (permission, gone, etc.)
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        await walk(join(dir, entry.name));
+      } else if (entry.isFile) {
+        if (SOURCE_EXTS.some((ext) => entry.name.endsWith(ext))) {
+          out.push(join(dir, entry.name));
+        }
+      }
+    }
   }
+  await walk(root);
+  return out;
 }
 
 const scanTodos: ToolHandler = async (args) => {
@@ -76,7 +122,10 @@ const scanTodos: ToolHandler = async (args) => {
 
     for (const file of files) {
       try {
-        const content = await Bun.file(file).text();
+        // `fsRead` defaults to utf-8 → returns string. The cast is
+        // safe given the encoding default; we don't ask for binary
+        // anywhere in this extension.
+        const content = (await fsRead(file)) as string;
         const lines = content.split("\n");
         for (let i = 0; i < lines.length; i++) {
           const lineText = lines[i];
@@ -84,7 +133,7 @@ const scanTodos: ToolHandler = async (args) => {
           const entry = parseTodoLine(lineText, file.slice(cwd.length + 1), i + 1);
           if (entry) todos.push(entry);
         }
-      } catch { /* skip unreadable files */ }
+      } catch { /* skip unreadable files (denied, gone mid-scan, etc.) */ }
     }
 
     // Apply filters
@@ -134,7 +183,11 @@ const scanTodos: ToolHandler = async (args) => {
   }
 };
 
-const tools: Record<string, ToolHandler> = {
+// Exported for `index.test.ts` so the scan-todos handler can be invoked
+// directly with stubbed `getChannel().request` for `ezcorp/fs.list` and
+// `ezcorp/fs.read`. Smallest API surface change vs. introducing a
+// dedicated helper — the dispatcher contract is already public.
+export const tools: Record<string, ToolHandler> = {
   "scan-todos": scanTodos,
 };
 

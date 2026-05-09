@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-08T09:01:38.278Z",
+  "generatedAt": "2026-05-08T18:01:53.414Z",
   "extensions": {
     "ai-kit": {
       "version": "0.1.0",
@@ -10,12 +10,12 @@
     "ask-user": {
       "version": "1.0.0",
       "entrypoint": "./index.ts",
-      "toolsHash": "sha256-cQNuyWLi5v9shZRvYf/v64NHQGvwarJI5UzQ1rq5Vvo="
+      "toolsHash": "sha256-lYerjNPlYIl7x5j3KFMd4s2G2GMtG9rnRf/0MACSZTw="
     },
     "claude-design": {
       "version": "0.1.0",
       "entrypoint": "./index.ts",
-      "toolsHash": "sha256-l4gkP2y783ABRUNxFSEM1UjiNIFnZPaPk27Zs9YRZoE="
+      "toolsHash": "sha256-u0CEXzGRrtU8nMcVspIekRiYylOTBXz1pyFAHc66+Yw="
     },
     "code-review-delegator": {
       "version": "1.0.0",
@@ -75,7 +75,7 @@
     "orchestration": {
       "version": "1.2.0",
       "entrypoint": "./index.ts",
-      "toolsHash": "sha256-xF6NMmAZrI7Vu7Rk+OhPsigNjEzvbhFkLKHmEN00Yh0="
+      "toolsHash": "sha256-EQ2SkAi/Z3/mdk3Ptp19CjHzx+VcH/MkxF+Efq34Rso="
     },
     "project-analyzer": {
       "version": "1.0.0",
@@ -105,12 +105,12 @@
     "task-tracking": {
       "version": "1.0.0",
       "entrypoint": "./index.ts",
-      "toolsHash": "sha256-AX4yNtbTwvJYc2RjaLO3HeLKwqX2TTDFYDo7cczhOtc="
+      "toolsHash": "sha256-ExYEdSw+2CePLvdtKZugwZb8VrdbCXxwZffOqMdj4aY="
     },
     "todo-tracker": {
       "version": "1.0.0",
       "entrypoint": "./index.ts",
-      "toolsHash": "sha256-0KZtrMuViUYIAlcNjQqNrolIeV892lmc4VwouyDC84s="
+      "toolsHash": "sha256-64NRn7GzgAhgGmRhi9tbSLhEhudyBeUKWYvj5CX+fA8="
     },
     "web-search": {
       "version": "1.0.0",

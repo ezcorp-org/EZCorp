@@ -1,13 +1,18 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import { goto } from "$app/navigation";
-	import { browseMarketplace, importManifest, type MarketplaceListing } from "$lib/api.js";
+	import { browseMarketplace, fetchMarketplaceCategories, importManifest, type MarketplaceListing, type MarketplaceCategoryCount } from "$lib/api.js";
 	import MarketplaceCard from "$lib/components/MarketplaceCard.svelte";
 	import CategoryGrid from "$lib/components/CategoryGrid.svelte";
 	import EmptyState from "$lib/components/EmptyState.svelte";
 
 	let query = $state("");
 	let category = $state<string | null>(null);
+	// Phase 49.3 — independent tag selection (sourced from manifest.tags
+	// via /api/marketplace/categories). Distinct from `category` which
+	// targets the canonical category column.
+	let activeTag = $state<string | null>(null);
+	let tagCounts = $state<MarketplaceCategoryCount[]>([]);
 	let sort = $state<string>("popular");
 	let listings = $state<MarketplaceListing[]>([]);
 	let featured = $state<MarketplaceListing[]>([]);
@@ -28,6 +33,7 @@
 			const result = await browseMarketplace({
 				q: query || undefined,
 				category: category ?? undefined,
+				tag: activeTag ?? undefined,
 				sort,
 				limit: LIMIT,
 				offset,
@@ -37,7 +43,7 @@
 			} else {
 				listings = [...listings, ...result.listings];
 			}
-			if (result.featured && offset === 0 && !query && !category) {
+			if (result.featured && offset === 0 && !query && !category && !activeTag) {
 				featured = result.featured;
 			}
 			hasMore = result.listings.length === LIMIT;
@@ -57,6 +63,23 @@
 		category = cat;
 		loadListings();
 	}
+
+	function onTagSelect(tag: string | null) {
+		activeTag = activeTag === tag ? null : tag;
+		loadListings();
+	}
+
+	async function loadTagCounts() {
+		try {
+			const res = await fetchMarketplaceCategories();
+			tagCounts = res.categories;
+		} catch {
+			// Non-fatal: the page still works without the sidebar.
+			tagCounts = [];
+		}
+	}
+
+	let showFeatured = $derived(!query && !category && !activeTag && featured.length > 0);
 
 	function onSortChange() {
 		loadListings();
@@ -87,10 +110,9 @@
 		input.click();
 	}
 
-	let showFeatured = $derived(!query && !category && featured.length > 0);
-
 	onMount(() => {
 		loadListings();
+		loadTagCounts();
 	});
 </script>
 
@@ -161,14 +183,71 @@
 		</section>
 	{/if}
 
-	<!-- Category Filter -->
-	<section>
-		<h2 class="mb-3 text-lg font-semibold text-[var(--color-text-primary)]">Categories</h2>
-		<CategoryGrid selected={category} onselect={onCategorySelect} />
-	</section>
+	<!-- Phase 49.3 — Two-column layout at ≥lg: tag sidebar on the left,
+	     results on the right. At <lg the sidebar collapses to a
+	     horizontally-scrollable chip row above the results so categories
+	     stay one tap away on mobile/tablet without taking a drawer. -->
+	<div class="flex flex-col gap-6 lg:flex-row" data-testid="marketplace-layout">
+		<!-- Tag sidebar -->
+		<aside
+			class="lg:w-56 lg:shrink-0"
+			aria-label="Filter by tag"
+			data-testid="marketplace-tag-sidebar"
+		>
+			<h2 class="mb-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+				Tags
+			</h2>
+			<!-- Mobile/tablet: horizontal scroll. Desktop: vertical column. -->
+			<div class="flex gap-2 overflow-x-auto pb-2 lg:flex-col lg:overflow-x-visible lg:pb-0">
+				<button
+					type="button"
+					onclick={() => onTagSelect(null)}
+					data-testid="marketplace-tag-all"
+					class="shrink-0 rounded-full px-3 py-1.5 text-sm font-medium transition-colors lg:rounded-md lg:text-left {activeTag === null
+						? 'bg-blue-600 text-white'
+						: 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]'}"
+					style="min-height: 36px;"
+				>
+					All
+				</button>
+				{#each tagCounts as { tag, count } (tag)}
+					<button
+						type="button"
+						onclick={() => onTagSelect(tag)}
+						data-testid="marketplace-tag-chip"
+						data-tag={tag}
+						class="flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors lg:rounded-md lg:justify-between lg:text-left {activeTag === tag
+							? 'bg-blue-600 text-white'
+							: 'bg-[var(--color-surface-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]'}"
+						style="min-height: 36px;"
+						aria-pressed={activeTag === tag}
+					>
+						<span class="truncate">{tag}</span>
+						<span
+							class="rounded-full px-1.5 text-xs {activeTag === tag
+								? 'bg-blue-500/40 text-white'
+								: 'bg-[var(--color-surface-secondary)] text-[var(--color-text-muted)]'}"
+						>
+							{count}
+						</span>
+					</button>
+				{/each}
+				{#if tagCounts.length === 0}
+					<p class="text-xs text-[var(--color-text-muted)]">No tags yet.</p>
+				{/if}
+			</div>
+		</aside>
 
-	<!-- Results -->
-	<section>
+		<!-- Right column: canonical category grid + results -->
+		<div class="min-w-0 flex-1 space-y-6">
+			<!-- Category Filter -->
+			<section>
+				<h2 class="mb-3 text-lg font-semibold text-[var(--color-text-primary)]">Categories</h2>
+				<CategoryGrid selected={category} onselect={onCategorySelect} />
+			</section>
+
+			<!-- Results -->
+			<section>
 		{#if loading && listings.length === 0}
 			<div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
 				{#each Array(6) as _}
@@ -218,5 +297,9 @@
 				</div>
 			{/if}
 		{/if}
-	</section>
+			</section>
+		</div>
+		<!-- /right column -->
+	</div>
+	<!-- /marketplace-layout (Phase 49.3 sidebar+results flex) -->
 </div>

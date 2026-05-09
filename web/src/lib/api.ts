@@ -852,6 +852,13 @@ export interface InstallResult {
 export async function browseMarketplace(opts?: {
 	q?: string;
 	category?: string;
+	/**
+	 * Phase 49.3 — filter by a single manifest tag (sidebar chip
+	 * selection). The API has supported this for a while; only the
+	 * client wrapper had no surface for it. Distinct from `category`
+	 * which matches the canonical category column (Productivity etc.).
+	 */
+	tag?: string;
 	sort?: string;
 	limit?: number;
 	offset?: number;
@@ -859,11 +866,28 @@ export async function browseMarketplace(opts?: {
 	const params = new URLSearchParams();
 	if (opts?.q) params.set("q", opts.q);
 	if (opts?.category) params.set("category", opts.category);
+	if (opts?.tag) params.set("tag", opts.tag);
 	if (opts?.sort) params.set("sort", opts.sort);
 	if (opts?.limit) params.set("limit", String(opts.limit));
 	if (opts?.offset) params.set("offset", String(opts.offset));
 	const qs = params.toString();
 	const res = await fetch(`${BASE}/api/marketplace${qs ? `?${qs}` : ""}`);
+	await checkResponse(res);
+	return res.json();
+}
+
+export interface MarketplaceCategoryCount {
+	tag: string;
+	count: number;
+}
+
+/**
+ * Phase 49.3 — list of tag chips for the marketplace category sidebar,
+ * with live counts aggregated over active listings. Tags come from
+ * `manifest.tags` (set on publish; see POST /api/marketplace).
+ */
+export async function fetchMarketplaceCategories(): Promise<{ categories: MarketplaceCategoryCount[] }> {
+	const res = await fetch(`${BASE}/api/marketplace/categories`);
 	await checkResponse(res);
 	return res.json();
 }

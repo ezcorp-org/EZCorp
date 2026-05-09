@@ -467,12 +467,15 @@ describe("handlePiInvoke cross-extension calls", () => {
 describe("buildAllowedEnv environment variable isolation", () => {
   const baseManifest = makeManifest();
 
-  test("only includes PATH, HOME, NODE_ENV, TMPDIR by default", () => {
+  test("only includes PATH, HOME, NODE_ENV, TMPDIR, EZCORP_PROJECT_ROOT by default", () => {
     const granted: ExtensionPermissions = { grantedAt: {} };
     const env = buildAllowedEnv(baseManifest, granted, `env-test-${randomUUID()}`);
 
     const keys = Object.keys(env);
-    expect(keys).toEqual(["PATH", "HOME", "NODE_ENV", "TMPDIR"]);
+    // Phase post-perm-cleanup: EZCORP_PROJECT_ROOT is unconditionally
+    // injected so sandboxed extensions can locate the project root
+    // without their own (poisoned) `.git` walk. See registry.ts:108.
+    expect(keys).toEqual(["PATH", "HOME", "NODE_ENV", "TMPDIR", "EZCORP_PROJECT_ROOT"]);
   });
 
   test("only adds env vars in BOTH manifest permissions AND granted permissions", () => {

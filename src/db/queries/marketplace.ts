@@ -142,3 +142,50 @@ export async function getFeaturedListings(limit = 6): Promise<MarketplaceListing
     .orderBy(desc(marketplaceListings.featured), desc(marketplaceListings.installCount))
     .limit(limit);
 }
+
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
+/**
+ * Phase 49.3 — aggregate active-listing tag counts for the marketplace
+ * category sidebar. Results are sorted by descending count, then tag
+ * name asc so the chip order is stable across requests.
+ *
+ * Uses Postgres' `jsonb_array_elements_text` to unnest the `tags`
+ * array column. Cheaper than pulling every row's tags into the app
+ * and counting in JS — the SQL engine groups + sorts in one pass and
+ * we ship only the aggregate.
+ *
+ * Aggregation source: `marketplace_listings` ONLY. Installed-extension
+ * `manifest.tags` are deliberately excluded — categories filter the
+ * public marketplace, and installed extensions don't appear there.
+ * Including installed-only tags would surface chips that match zero
+ * listings (misleading UX). v1.5 may add a separate "My installed
+ * extensions" tag filter on the Installed tab if user research
+ * validates the need. Spec §49.3.1 mentioned aggregating both sources,
+ * but that wording was loose — the implementation is intentionally
+ * marketplace-only.
+ */
+export async function getMarketplaceTagCounts(): Promise<TagCount[]> {
+  const rows = await getDb().execute(
+    sql`
+      SELECT tag, COUNT(*)::int AS count
+      FROM ${marketplaceListings},
+           jsonb_array_elements_text(${marketplaceListings.tags}) AS tag
+      WHERE ${marketplaceListings.status} = 'active'
+      GROUP BY tag
+      ORDER BY count DESC, tag ASC
+    `,
+  );
+  // PGlite occasionally returns COUNT as a string — coerce defensively.
+  // Drizzle's `execute()` returns either an array (postgres-js) or
+  // `{ rows: [...] }` (PGlite); normalise so the caller always gets a
+  // flat array. Cast through `unknown` because the return type from
+  // `execute()` varies by adapter.
+  type Row = { tag: string; count: string | number };
+  const result = rows as unknown as Row[] | { rows: Row[] };
+  const list: Row[] = Array.isArray(result) ? result : (result.rows ?? []);
+  return list.map((r) => ({ tag: r.tag, count: Number(r.count) }));
+}

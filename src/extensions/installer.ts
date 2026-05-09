@@ -22,10 +22,32 @@ import { tmpdir } from "node:os";
 
 // ── Local Install ───────────────────────────────────────────────────
 
+/**
+ * v1.4 install-gate options. The bundled-install caller passes
+ * `isBundled: true` + the entry's `envEscapeHatch` flag so the gate
+ * can allow credential-shaped env grants on the small set of
+ * bundled extensions that use them today (`web-search`,
+ * `openai-image-gen-2`, `ai-kit`). User installs always pass
+ * `isBundled: false` and never hit the escape-hatch branch.
+ *
+ * Plumbing: explicit parameter (option 4a in the v1.4 spec) rather
+ * than reading the manifest, so the caller's `isBundled` decision is
+ * the single source of truth — manifests can't smuggle in a bundled
+ * trust claim.
+ */
+export interface InstallFromLocalOpts {
+  /** Defaults to false; bundled-install path passes true. */
+  isBundled?: boolean;
+  /** Defaults to false; bundled-install path passes the entry's
+   *  per-manifest opt-in. Ignored when `isBundled` is false. */
+  envEscapeHatch?: boolean;
+}
+
 export async function installFromLocal(
   localPath: string,
   grantedPermissions: ExtensionPermissions,
   enabled = false,
+  opts: InstallFromLocalOpts = {},
 ): Promise<InstalledExtension> {
   // Read manifest
   const manifest = await loadManifest(localPath);
@@ -39,6 +61,23 @@ export async function installFromLocal(
 
   // Compute full-package checksums
   const packageChecksums = await computePackageChecksums(localPath);
+
+  // v1.4 — hard install-time gate for credential-shaped env grants.
+  // Run BEFORE `createExtension` so a refused install never persists a
+  // row (audit-log writes its forensic trail keyed on manifest name).
+  // Bundled extensions with `envEscapeHatch: true` are allowed and
+  // emit `ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED`; everything else
+  // throws `EnvKeyLeakInstallError` and the caller surfaces it.
+  const { checkEnvKeyLeakInstallGate } = await import("./clamp-permissions");
+  const gateError = await checkEnvKeyLeakInstallGate(
+    manifest.name,
+    grantedPermissions.env,
+    {
+      isBundled: opts.isBundled === true,
+      envEscapeHatch: opts.envEscapeHatch === true,
+    },
+  );
+  if (gateError) throw gateError;
 
   // Create DB record
   const ext = await createExtension({

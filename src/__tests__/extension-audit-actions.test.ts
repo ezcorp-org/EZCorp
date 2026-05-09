@@ -83,6 +83,11 @@ describe("extension audit action constants", () => {
       "SDK_EVENT_DELIVERED",
       "SDK_SCHEDULE_DISABLED",
       "ENV_KEY_LEAK_WARNING",
+      // v1.4 — hard `*_API_KEY` install gate (regression guard against
+      // last week's miss: this test went red because the build agent
+      // forgot to add the new key here).
+      "ENV_KEY_LEAK_INSTALL_BLOCKED",
+      "ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED",
       "SDK_LLM_DENIED_AND_DISABLED",
       "SDK_LESSONS_VISIBILITY_CLAMPED",
       "SDK_SCHEDULE_FIRE_NOW",

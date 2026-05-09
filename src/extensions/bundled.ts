@@ -46,6 +46,40 @@ interface BundledExtension {
    * brick host startup; the next boot retries.
    */
   bootSpawn?: boolean;
+  /**
+   * v1.4 transitional opt-in for bundled extensions that legitimately
+   * need credential-shaped env grants (`*_API_KEY|TOKEN|SECRET`)
+   * before the v1.5+ `ctx.secrets` host-brokered cred surface lands.
+   *
+   * The hard `*_API_KEY` install gate at
+   * `src/extensions/clamp-permissions.ts:checkEnvKeyLeakInstallGate`
+   * fails closed for ANY install with credential-shaped env names,
+   * with one carve-out: bundled extensions with this flag set to
+   * `true`. Each escape-hatch install writes a
+   * `ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED` audit row for traceability,
+   * separate from the existing `ENV_KEY_LEAK_WARNING` migration-soft
+   * row.
+   *
+   * Set this ONLY for bundled extensions whose env grant is either:
+   *   - A host-internal cred (`EZCORP_API_KEY`, `EZCORP_SESSION_COOKIE`)
+   *     that the host injects via `bootstrapBundledCredentials` rather
+   *     than expecting the user to populate. Different category from
+   *     user-supplied API keys; will likely never need migration.
+   *   - A third-party API cred that is BYOK + injected via a
+   *     per-extension cred resolver (see e.g.
+   *     `web/src/lib/server/security/openai-extension-creds.ts`).
+   *     Pending the v1.5+ `ctx.secrets` migration.
+   *
+   * GREP `envEscapeHatch` to find every escape-hatch entry when the
+   * migration lands. Removing this flag should remove `permissions.env`
+   * entries that match `_API_KEY|TOKEN|SECRET` at the same time —
+   * leaving the env grant without the flag will fail-closed at install.
+   *
+   * User-installed extensions never get this opt-in; the install-gate
+   * caller hardcodes `isBundled` from the bundled-install path. The
+   * flag is bundled-only by construction.
+   */
+  envEscapeHatch?: boolean;
 }
 
 /** Resolve project root — works in both direct Bun execution and SvelteKit bundled contexts. */
@@ -202,6 +236,13 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
   {
     name: "ai-kit",
     path: "packages/@ezcorp/ai-kit",
+    // v1.4 envEscapeHatch — `EZCORP_API_KEY` is a host-internal cred
+    // injected by `bootstrapBundledCredentials` (NOT a user-supplied
+    // third-party API key). Different category from web-search /
+    // openai-image-gen-2 — this one will likely never migrate to
+    // ctx.secrets because the cred is host-self-issued. Grep for
+    // `envEscapeHatch` when the v1.5+ ctx.secrets migration lands.
+    envEscapeHatch: true,
     permissions: {
       network: ["localhost", "127.0.0.1"],
       filesystem: ["$CWD"],
@@ -212,6 +253,12 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
   {
     name: "web-search",
     path: "docs/extensions/examples/web-search",
+    // v1.4 envEscapeHatch — third-party search-provider keys
+    // (Tavily/Brave/Exa/SerpAPI/Jina) are user-supplied BYOK creds.
+    // Pending the v1.5+ `ctx.secrets` host-brokering migration which
+    // will remove the direct env grant. Grep for `envEscapeHatch`
+    // when migrating.
+    envEscapeHatch: true,
     permissions: {
       network: [
         "r.jina.ai",
@@ -240,6 +287,14 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     // without one.
     name: "openai-image-gen-2",
     path: "docs/extensions/examples/openai-image-gen-2",
+    // v1.4 envEscapeHatch — third-party API creds. `OPENAI_API_KEY`
+    // is the BYOK fallback path (admin settings → decrypt → inject;
+    // see `web/src/lib/server/security/openai-extension-creds.ts:40`),
+    // and `OPENAI_ACCESS_TOKEN` is the OAuth-Codex path. Both are
+    // resolved per-spawn by `wireOpenAIExtensionCredentials`. Pending
+    // the v1.5+ `ctx.secrets` migration which will remove the direct
+    // env grant. Grep for `envEscapeHatch` when migrating.
+    envEscapeHatch: true,
     permissions: {
       network: ["api.openai.com", "chatgpt.com"],
       env: ["OPENAI_API_KEY", "OPENAI_ACCESS_TOKEN"],
@@ -654,7 +709,19 @@ export async function ensureBundledExtensions(): Promise<void> {
         });
       }
 
-      const installed = await installFromLocal(resolvedPath, clampedPerms, true);
+      // v1.4 — install-gate symmetry. `installFromLocal` runs the
+      // `*_API_KEY` install gate; pass `isBundled: true` + the entry's
+      // `envEscapeHatch` flag so the gate can allow credential-shaped
+      // env grants on the small set of bundled extensions that opt in
+      // (`ai-kit`, `web-search`, `openai-image-gen-2`). Bundled
+      // extensions WITHOUT `envEscapeHatch` still fail closed — the
+      // catch in `ensureBundledExtensions` swallows the throw and the
+      // next boot retries (matching the existing
+      // `versionBlockedUpdate`/refresh-failure semantics).
+      const installed = await installFromLocal(resolvedPath, clampedPerms, true, {
+        isBundled: true,
+        envEscapeHatch: entry.envEscapeHatch === true,
+      });
       // Mark provenance AFTER the row exists. installFromLocal is shared
       // with the user install path (which must default isBundled=false),
       // so bundled trust is granted here, in the one place that knows.

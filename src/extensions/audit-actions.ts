@@ -212,6 +212,25 @@ export const EXT_AUDIT_ACTIONS = {
    *  `ctx.llm` (host-brokered credentials, key never crosses the
    *  RPC boundary). */
   ENV_KEY_LEAK_WARNING: "ext:env-key-leak-warning",
+  /** v1.4: install gate refused to persist an extension because
+   *  its manifest declared a credential-shaped env name
+   *  (`*_API_KEY|TOKEN|SECRET`). One row per leaked name; the
+   *  installer also throws `EnvKeyLeakInstallError` so the row
+   *  exists alongside an aborted install. Sibling of
+   *  `ENV_KEY_LEAK_WARNING`: the warning is "we see this; please
+   *  migrate", this is "we refused to install".
+   *
+   *  Migration path stays `ctx.llm` (LLM creds, host-brokered)
+   *  and future `ctx.secrets` (third-party API creds, v1.5+). */
+  ENV_KEY_LEAK_INSTALL_BLOCKED: "ext:env-key-leak-install-blocked",
+  /** v1.4: bundled extension with `envEscapeHatch: true` installed
+   *  successfully despite declaring a credential-shaped env name.
+   *  Bundled-trust + code-review-is-the-approval-gate model;
+   *  `envEscapeHatch` is a transitional flag pending the v1.5+
+   *  `ctx.secrets` host-brokered cred surface. Grep for
+   *  `envEscapeHatch` to find every bundled exception when the
+   *  migration lands. One row per credential-shaped env name. */
+  ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED: "ext:env-key-leak-bundled-escape-hatch-used",
   /** ctx.llm.complete() denyAndDisable graduation — repeated attempts
    *  to use an un-granted provider in a 60s window. */
   SDK_LLM_DENIED_AND_DISABLED: "ext:sdk-llm-denied-and-disabled",

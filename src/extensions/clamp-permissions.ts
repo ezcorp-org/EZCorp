@@ -298,3 +298,87 @@ export async function emitEnvKeyLeakWarnings(
     // Audit failure is non-fatal.
   }
 }
+
+/**
+ * v1.4 — typed install-gate failure. Thrown by `installFromLocal`
+ * when an extension's `permissions.env` declares credential-shaped
+ * names AND the install isn't a bundled extension with the
+ * `envEscapeHatch: true` opt-in. The caller surfaces the error to
+ * the operator (admin UI or CLI); the audit row is written
+ * separately so a forensic trail exists alongside the throw.
+ *
+ * Migration path stays `ctx.llm` for LLM creds (already shipped) and
+ * future `ctx.secrets` for third-party API creds (v1.5+).
+ */
+export class EnvKeyLeakInstallError extends Error {
+  /** Credential-shaped env names that tripped the gate. */
+  readonly leakedNames: readonly string[];
+  constructor(leakedNames: string[]) {
+    super(
+      `Install refused: extension manifest declares credential-shaped env name(s) ` +
+        `[${leakedNames.join(", ")}]. The deprecation has been live since Phase 51; ` +
+        `v1.4 is the cliff. Migrate LLM credentials to ctx.llm (host-brokered) and ` +
+        `third-party API creds to the upcoming ctx.secrets surface (v1.5+).`,
+    );
+    this.name = "EnvKeyLeakInstallError";
+    this.leakedNames = Object.freeze([...leakedNames]);
+  }
+}
+
+/**
+ * v1.4 — install-time gate. Returns `null` when the install may
+ * proceed; otherwise writes audit rows AND returns the typed error
+ * the caller should throw.
+ *
+ *   - **User-installed extension** (`isBundled=false`) with
+ *     credential-shaped env names → `ENV_KEY_LEAK_INSTALL_BLOCKED`
+ *     row per name; returns `EnvKeyLeakInstallError`.
+ *   - **Bundled extension** (`isBundled=true`) WITHOUT the
+ *     `envEscapeHatch` opt-in with credential-shaped env names →
+ *     same as user-installed (fails closed).
+ *   - **Bundled extension** (`isBundled=true`) WITH
+ *     `envEscapeHatch=true` and credential-shaped env names →
+ *     `ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED` row per name;
+ *     returns `null` (install proceeds). The flag is grep-able
+ *     so the eventual ctx.secrets migration knows what to touch.
+ *
+ * Audit rows are NOT keyed on the eventual extension id (the row
+ * doesn't exist yet) — the caller passes the manifest name as the
+ * audit target so a forensic trail can correlate by name even when
+ * the install aborts before persistence.
+ */
+export async function checkEnvKeyLeakInstallGate(
+  extensionName: string,
+  envNames: string[] | undefined,
+  opts: { isBundled: boolean; envEscapeHatch: boolean },
+): Promise<EnvKeyLeakInstallError | null> {
+  const leaks = detectEnvKeyLeaks(envNames);
+  if (leaks.length === 0) return null;
+
+  const allowEscapeHatch = opts.isBundled && opts.envEscapeHatch === true;
+  try {
+    const { insertAuditEntry } = await import("../db/queries/audit-log");
+    const { EXT_AUDIT_ACTIONS } = await import("./audit-actions");
+    const action = allowEscapeHatch
+      ? EXT_AUDIT_ACTIONS.ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED
+      : EXT_AUDIT_ACTIONS.ENV_KEY_LEAK_INSTALL_BLOCKED;
+    const reason = allowEscapeHatch
+      ? `Bundled extension '${extensionName}' opted into envEscapeHatch — credential-shaped env name allowed pending ctx.secrets (v1.5+).`
+      : `Install refused for '${extensionName}': credential-shaped env name. Migrate to ctx.llm (LLM creds) or wait for ctx.secrets (v1.5+).`;
+    for (const name of leaks) {
+      await insertAuditEntry(null, action, extensionName, {
+        permission: "env",
+        oldValue: undefined,
+        newValue: name,
+        actor: "system",
+        reason,
+        extensionName,
+      });
+    }
+  } catch {
+    // Audit failure is non-fatal — the throw still happens (or doesn't)
+    // based on the gate's allow/deny decision so the gate never silently
+    // permits an install just because the audit table is unreachable.
+  }
+  return allowEscapeHatch ? null : new EnvKeyLeakInstallError(leaks);
+}

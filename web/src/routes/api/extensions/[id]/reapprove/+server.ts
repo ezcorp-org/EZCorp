@@ -78,6 +78,15 @@ function expiryKindToGrantKey(capability: string): string | null {
 export const POST: RequestHandler = async ({ request, params, locals }) => {
   const scopeErr = requireScope(locals, "extensions");
   if (scopeErr) return scopeErr;
+  // Auth model: requireAuth (not requireRole(admin)). Reapprove is user
+  // self-service recovery from the system-driven expiry sweep — the user
+  // reasserts consent for a capability they already approved at install
+  // time. The manifest ceiling (line 116-132) bounds the re-grant to what
+  // the extension's author declared; a non-admin cannot escalate beyond
+  // install-time scope. The peer PUT /api/extensions/[id]/permissions uses
+  // requireRole(admin) because that endpoint is admin policy override
+  // (arbitrary grant/revoke), a distinct operation. scope="forever" is
+  // separately admin-gated below as defense in depth.
   const user = requireAuth(locals);
 
   let body: { capability?: unknown; scope?: unknown };

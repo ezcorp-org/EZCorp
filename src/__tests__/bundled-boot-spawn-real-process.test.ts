@@ -319,7 +319,7 @@ describe("bootSpawnFlaggedBundledExtensions — real subprocess (Phase 53.6)", (
     const stubEngine = {
       authorize: async () => ({ outcome: "allow" as const }),
       resolvePrompt: async () => undefined,
-    } as unknown as Parameters<typeof ToolExecutor>[1];
+    } as unknown as ConstructorParameters<typeof ToolExecutor>[1];
     const bus = new EventBus<import("../types").AgentEvents>();
     const bootExecutor = new ToolExecutor(registry, stubEngine, {
       bus,

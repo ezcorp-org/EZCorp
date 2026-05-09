@@ -211,6 +211,7 @@ function setupHarness(builtinToolDefsMap: Map<string, BuiltinToolDef>): BuiltinH
     stateMediator: undefined,
     spawnQuota: {} as StreamChatHost["spawnQuota"],
     executor: {} as StreamChatHost["executor"],
+    permissionEngine: {} as StreamChatHost["permissionEngine"],
   };
 
   const piAgent = makePiAgent();

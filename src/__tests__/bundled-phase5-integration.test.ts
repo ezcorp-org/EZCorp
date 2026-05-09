@@ -302,10 +302,10 @@ describe("N2 — ai-kit's on-disk manifest is a subset of the bundled ceiling", 
     // Translate the manifest's declared permissions into the
     // ExtensionPermissions grant shape expected by clampToBundledCeiling.
     // (Manifest `permissions` block ≈ grant shape, modulo grantedAt.)
-    const declared: ExtensionPermissions = {
+    const declared = {
       ...(manifest.permissions ?? {}),
       grantedAt: {},
-    };
+    } as ExtensionPermissions;
     // Strip Phase-4 flags that only live on grant shapes, never the
     // manifest's permissions block, so the comparison is apples-to-apples.
     delete (declared as { acceptsCallerCaps?: boolean }).acceptsCallerCaps;

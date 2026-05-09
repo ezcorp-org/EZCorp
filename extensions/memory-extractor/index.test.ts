@@ -13,10 +13,12 @@ import {
   handleRunComplete,
   handleCompactionTick,
   extract,
+  EXTRACTION_SYSTEM_PROMPT,
   _setRuntimeApiForTests,
   _resetRuntimeApiForTests,
   type MemoryExtractorRuntimeApi,
 } from "./index";
+import manifestConfig from "./ezcorp.config";
 
 interface RecordedCall {
   api: keyof MemoryExtractorRuntimeApi;
@@ -514,5 +516,63 @@ describe("handleCompactionTick — schedule handler", () => {
 
     const out = await handleCompactionTick();
     expect(out).toEqual({ mergedCount: 0 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Regression pins — prompt contents + manifest selfOnly flag.
+//
+// These tests pin invariants that aren't covered by the behavior-driven
+// tests above. They exist to flag silent regressions when:
+//   1) someone tweaks EXTRACTION_SYSTEM_PROMPT to "improve" LLM output
+//      and accidentally drops a category / confidence level / guardrail
+//   2) someone edits ezcorp.config.ts and flips selfOnly to true; the
+//      dedup tests would still pass because they bypass the manifest
+//      clamp by calling the helper directly.
+//
+// Replaces coverage from the deleted src/__tests__/memory-extraction-
+// helpers.test.ts (commit 6875600 → c3b14a4) for the prompt; adds new
+// coverage for the manifest flag.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("EXTRACTION_SYSTEM_PROMPT — pinned contents", () => {
+  test("names all four memory categories", () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("preferences");
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("biographical");
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("technical");
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("decisions_goals");
+  });
+
+  test("names all three confidence levels", () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("high");
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("medium");
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("low");
+  });
+
+  test("requests JSON array output with empty-array escape hatch", () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("JSON array");
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("[]");
+  });
+
+  test("includes Do-NOT guardrail directive", () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("Do NOT");
+  });
+
+  test("includes messageIds field instruction", () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain("messageIds");
+  });
+});
+
+describe("manifest — cross-extension memory dedup invariant", () => {
+  // memory-extractor is the ONLY bundled extension granted
+  // permissions.memory.selfOnly = false. This is intentional — the
+  // extractor must dedup against memories authored by the legacy host
+  // pipeline (and any future first-party extractor); without
+  // cross-extension visibility, every extension would re-extract the
+  // same fact and the table would fill with near-duplicates. Flipping
+  // this flag would break dedup silently because the dedup helper
+  // tests bypass the manifest clamp.
+  test("permissions.memory.selfOnly is false", () => {
+    expect(manifestConfig.permissions?.memory?.selfOnly).toBe(false);
   });
 });

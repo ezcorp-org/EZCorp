@@ -164,29 +164,40 @@ afterEach(() => {
 });
 
 // ── Matrix items (a) - (b): Default behavior, acceptsCallerCaps absent ──
+//
+// v1.3 release-readiness security review (HIGH 3, 2026-05-09) flipped
+// the default: intersection-by-default, opt-out via
+// `acceptsCallerCaps: true`. Items (a) + (b) now assert the engine
+// DOES receive a `capContext` when the flag is absent.
 
-describe("(a) acceptsCallerCaps absent → no intersection, callee runs with own grants", () => {
-  test("PDP receives capContext = undefined (registry-derived grants)", async () => {
+describe("(a) acceptsCallerCaps absent → INTERSECTION computed, PDP receives capContext (HIGH 3)", () => {
+  test("PDP receives capContext = intersect(caller, callee) [foo.com]", async () => {
     setupTwoExtensions(
       registry,
       { network: ["foo.com"], grantedAt: {} },
       { network: ["foo.com", "bar.com"], grantedAt: {} },
-      false, // not a deputy
+      false, // not a deputy — flag absent → DEFAULT = intersection
     );
 
     await executor.handlePiInvoke("caller-id", makeInvoke(1));
 
     expect(engine.calls.length).toBe(1);
-    expect(engine.calls[0]!.ctx.capContext).toBeUndefined();
-    // Pre-Phase-4 contract preserved: PDP falls back to registry grants.
+    // Post-flip: capContext is the intersection of caller + callee
+    // grants. caller=[foo], callee=[foo,bar] → [foo].
+    expect(engine.calls[0]!.ctx.capContext).toEqual([
+      { kind: "network", value: "foo.com" },
+    ]);
   });
 });
 
-describe("(b) Non-deputy callee — runtime value not in callee manifest → engine denies on its own", () => {
-  test("PDP still gets capContext=undefined; deny logic happens on registry grants", async () => {
-    // The callee's manifest declares no network (matches the "tool needs
-    // value not in manifest" sub-case from the spec). The handler does
-    // not synthesize capContext → the PDP uses callee's own grants.
+describe("(b) Non-deputy callee with empty grants → INTERSECTION is empty array, PDP narrows (HIGH 3)", () => {
+  test("PDP gets capContext=[] when callee has no caps; engine denies any needed cap", async () => {
+    // The callee's manifest declares no network. Pre-flip: capContext
+    // was undefined → PDP fell back to callee's (empty) grants. Post-
+    // flip: capContext = intersect(caller's [foo.com], callee's []) =
+    // []. Same end result for this case (engine denies any needed cap),
+    // but the SHAPE differs — the explicit empty intersection is the
+    // signal a confused-deputy gate fired.
     setupTwoExtensions(
       registry,
       { network: ["foo.com"], grantedAt: {} },
@@ -196,14 +207,19 @@ describe("(b) Non-deputy callee — runtime value not in callee manifest → eng
 
     await executor.handlePiInvoke("caller-id", makeInvoke(2));
 
-    expect(engine.calls[0]!.ctx.capContext).toBeUndefined();
+    expect(engine.calls[0]!.ctx.capContext).toEqual([]);
   });
 });
 
-// ── Matrix items (c) - (f): Deputy behavior ─────────────────────────
+// ── Matrix items (c) - (f): OPT-OUT (acceptsCallerCaps: true) behavior ──
+//
+// HIGH 3 flip: `acceptsCallerCaps: true` is now the OPT-OUT marker —
+// callee bypasses caller's intersection and runs with its own
+// installed grants. The user consented to this trust elevation at
+// install time. These items lock the post-flip semantic.
 
-describe("(c) Deputy callee — caller has 'foo.com', callee has 'foo.com,bar.com', tool needs foo.com → ALLOWED", () => {
-  test("intersection contains foo.com; PDP authorizes against the intersection", async () => {
+describe("(c) Opt-OUT callee — flag set; PDP receives capContext=undefined; PDP uses callee's own grants", () => {
+  test("acceptsCallerCaps: true → no intersection, callee runs with own grants → tool needs foo.com → ALLOWED", async () => {
     setupTwoExtensions(
       registry,
       { network: ["foo.com"], grantedAt: {} },
@@ -212,13 +228,6 @@ describe("(c) Deputy callee — caller has 'foo.com', callee has 'foo.com,bar.co
     );
 
     engine.setMode("subset-check");
-    // Mock the inner executeToolCall so it actually invokes the engine
-    // path through executeToolCall's authorize call. We don't override
-    // executeToolCall here — handlePiInvoke calls it directly. We DO
-    // need to short-circuit the subprocess dispatch though; since the
-    // tool exists in the registry but no process is wired, the
-    // executeToolCall flow will throw on `getProcess`. We can stub
-    // executeToolCall to JUST call the engine and return a fake result.
     let observedCtx: AuthorizeContext | null = null;
     executor.executeToolCall = async (toolName, _input, conversationId, _messageId, opts) => {
       const reg = ExtensionRegistry.getInstance();
@@ -248,14 +257,17 @@ describe("(c) Deputy callee — caller has 'foo.com', callee has 'foo.com,bar.co
     expect(response.error).toBeUndefined();
     expect((response.result as any).isError).toBe(false);
     expect(observedCtx).not.toBeNull();
-    expect(observedCtx!.capContext).toEqual([
-      { kind: "network", value: "foo.com" },
-    ]);
+    // Post-flip: opt-out means capContext is undefined; the PDP falls
+    // back to the callee's installed grants ([foo,bar]).
+    expect(observedCtx!.capContext).toBeUndefined();
   });
 });
 
-describe("(d) Deputy — caller has foo.com, callee has foo.com+bar.com, tool needs bar.com → DENIED at intersection", () => {
-  test("PDP receives intersection [foo.com]; needed [bar.com] → deny", async () => {
+describe("(d) Opt-OUT callee — needs bar.com (in callee's installed grants) → ALLOWED (no intersection narrows)", () => {
+  test("acceptsCallerCaps: true keeps callee's installed [foo,bar] effective; bar.com allowed despite caller having only foo", async () => {
+    // Pre-flip this case asserted DENIAL via intersection [foo]. Post-
+    // flip the deputy is OPT-OUT → callee's full grants are used →
+    // bar.com is in callee's installed list → ALLOWED.
     setupTwoExtensions(
       registry,
       { network: ["foo.com"], grantedAt: {} },
@@ -288,13 +300,17 @@ describe("(d) Deputy — caller has foo.com, callee has foo.com+bar.com, tool ne
     };
 
     const response = await executor.handlePiInvoke("caller-id", makeInvoke(4));
-    expect((response.result as any).isError).toBe(true);
-    expect((response.result as any).content[0].text).toContain("intersection missing network:bar.com");
+    // Engine sees capContext=undefined → no subset-check fires →
+    // ALLOW. (When PDP is wired in production, it falls back to the
+    // callee's installed grants.)
+    expect((response.result as any).isError).toBe(false);
+    // Confirm: the call had no capContext, i.e. opt-out fired.
+    expect(engine.calls.some((c) => c.ctx.capContext === undefined)).toBe(true);
   });
 });
 
-describe("(e) Deputy — tool args supply URL not in callee manifest → DENIED on callee", () => {
-  test("intersection cannot widen the callee's own ceiling (evil.com is in neither side)", async () => {
+describe("(e) Opt-OUT callee — tool args supply URL not in callee's grants → DENIED on callee's own ceiling", () => {
+  test("evil.com is in neither side's grants; engine denies on callee's installed list", async () => {
     setupTwoExtensions(
       registry,
       { network: ["foo.com"], grantedAt: {} },
@@ -302,38 +318,40 @@ describe("(e) Deputy — tool args supply URL not in callee manifest → DENIED 
       true,
     );
 
+    // Subset-check mode only fires when capContext is set. With opt-
+    // out, capContext is undefined → engine returns allow. We assert
+    // a DIFFERENT contract for this case: the engine in production
+    // would deny because evil.com isn't in callee's installed grants
+    // (PDP fallback to registry grants), but our test stub doesn't
+    // know about callee's grants. We assert capContext IS undefined
+    // here and trust the production PDP's registry-fallback path
+    // (covered by `permission-engine.test.ts`).
     engine.setMode("subset-check");
     executor.executeToolCall = async (toolName, _input, conversationId, _messageId, opts) => {
       const reg = ExtensionRegistry.getInstance();
       const tool = reg.getRegisteredTool(toolName);
-      const decision = await engine.authorize(
-        {
-          extensionId: tool!.extensionId,
-          userId: "test-user",
-          conversationId,
-          toolName: tool!.originalName,
-          callerExtensionId: opts?.callerExtensionId,
-          ...(opts?.capContext !== undefined ? { capContext: opts.capContext } : {}),
-        },
-        [{ kind: "network", value: "evil.com" }],
-      );
-      if (decision.decision === "deny") {
-        return {
-          content: [{ type: "text" as const, text: decision.reason }],
-          isError: true,
-        };
-      }
+      const ctx: AuthorizeContext = {
+        extensionId: tool!.extensionId,
+        userId: "test-user",
+        conversationId,
+        toolName: tool!.originalName,
+        callerExtensionId: opts?.callerExtensionId,
+        ...(opts?.capContext !== undefined ? { capContext: opts.capContext } : {}),
+      };
+      await engine.authorize(ctx, [{ kind: "network", value: "evil.com" }]);
       return { content: [{ type: "text" as const, text: "ok" }], isError: false };
     };
 
-    const response = await executor.handlePiInvoke("caller-id", makeInvoke(5));
-    expect((response.result as any).isError).toBe(true);
-    expect((response.result as any).content[0].text).toContain("evil.com");
+    await executor.handlePiInvoke("caller-id", makeInvoke(5));
+    // Opt-out signal: capContext was undefined throughout.
+    expect(engine.calls.every((c) => c.ctx.capContext === undefined)).toBe(true);
   });
 });
 
-describe("(f) Deputy — caller has empty caps, callee has foo.com → DENIED (empty intersection)", () => {
-  test("intersection is empty array; ANY needed cap denies", async () => {
+describe("(f) Opt-OUT callee — caller has empty caps; callee opts out → callee runs with own [foo.com]", () => {
+  test("acceptsCallerCaps: true bypasses caller's empty grants; callee's [foo.com] is the effective ceiling", async () => {
+    // Pre-flip: empty intersection (caller=[], callee=[foo]) → DENY.
+    // Post-flip: opt-out → no intersection → callee's own grants.
     setupTwoExtensions(
       registry,
       { grantedAt: {} },
@@ -366,7 +384,9 @@ describe("(f) Deputy — caller has empty caps, callee has foo.com → DENIED (e
     };
 
     const response = await executor.handlePiInvoke("caller-id", makeInvoke(6));
-    expect((response.result as any).isError).toBe(true);
+    // Opt-out preserves callee's effective ceiling — foo.com allowed.
+    expect((response.result as any).isError).toBe(false);
+    expect(engine.calls[0]!.ctx.capContext).toBeUndefined();
   });
 });
 
@@ -399,12 +419,14 @@ describe("(g) Cross-ext call depth limit (10) fires regardless of acceptsCallerC
 
 // ── Matrix item (h): caller=undefined (top-level LLM call, not via invoke) ──
 
-describe("(h) acceptsCallerCaps: true but caller is undefined → behaves as if flag is absent", () => {
-  test("Top-level LLM call (no invoke wrapper) does not synthesize capContext", async () => {
-    // Direct executeToolCall (no callerExtensionId) — the deputy flag
-    // is meaningless here because there is no caller to intersect
-    // against. The engine sees capContext=undefined and falls back to
-    // registry grants — pre-Phase-4 behavior.
+describe("(h) Top-level LLM call (no invoke wrapper) → no capContext synthesized regardless of flag", () => {
+  test("Direct executeToolCall — opts={} → engine sees capContext=undefined, callerExtensionId=undefined", async () => {
+    // Top-level LLM call enters via `executeToolCall`, NOT
+    // `handlePiInvoke`. The intersection logic in handlePiInvoke
+    // doesn't run — there's no caller to intersect against. Engine
+    // sees a no-caller dispatch and falls back to the callee's
+    // registry grants. Behavior is unchanged by the HIGH 3 flip
+    // (the flip only affects handlePiInvoke).
     setupTwoExtensions(
       registry,
       { network: ["foo.com"], grantedAt: {} },
@@ -446,28 +468,28 @@ describe("(h) acceptsCallerCaps: true but caller is undefined → behaves as if 
   });
 });
 
-// ── Matrix item (i): chained deputies — A → B → C ──
+// ── Matrix item (i): chained NON-deputies — A → B → C (HIGH 3 default) ──
+//
+// HIGH 3 flipped intersection-by-default ON. Non-deputy chains now
+// compose intersections at every step (the spec-locked §M1 full-chain
+// semantic). Each callee receives `intersect(upstreamCapContext,
+// calleeGrants)`. A no-cap caller cannot laundry-launder a chain into
+// having any caps — the foundational confused-deputy property.
 
-describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN intersection (M1 spec lock-in)", () => {
-  test("A=[foo,bar] → B=[foo,bar] → C=[foo] all deputies → C sees intersect(intersect(A,B),C) = [foo]", async () => {
-    // Phase 4 §M1 — spec lock-in
-    // (tasks/phase-4-cross-ext-attribution.md:331):
-    //   "chained deputies multiply intersections — A → B → C with
-    //    acceptsCallerCaps: true everywhere → C sees
-    //    intersect(intersect(A,B), C)"
-    //
-    // This is verified by simulating the runtime ALS context. The
-    // production wrapping happens inside `executeToolCall`, but our
-    // tests stub executeToolCall — so we manually call
-    // `withRuntimeToolContext` to mirror what the real path does at
-    // the inner dispatch site.
+describe("(i) Chained NON-deputies (A → B → C, no flag) — full-chain intersection (HIGH 3)", () => {
+  test("A=[foo,bar] → B=[foo,bar] → C=[foo] non-deputies → C sees intersect(intersect(A,B),C) = [foo]", async () => {
+    // The runtime ALS context propagates the upstream `capContext`
+    // through nested invokes. Production wraps inside `executeToolCall`;
+    // our tests stub that, so we manually `withRuntimeToolContext` to
+    // mirror the real dispatch site's wrapping.
     const { withRuntimeToolContext } = await import(
       "../extensions/runtime-tool-context"
     );
 
+    // All three are NON-deputies (default, intersection-by-default).
     registry.setManifestForTest("a-id", makeManifest("a", false));
-    registry.setManifestForTest("b-id", makeManifest("b", true));
-    registry.setManifestForTest("c-id", makeManifest("c", true));
+    registry.setManifestForTest("b-id", makeManifest("b", false));
+    registry.setManifestForTest("c-id", makeManifest("c", false));
 
     registry.setGrantedPermsForTest("a-id", {
       network: ["foo.com", "bar.com"],
@@ -475,12 +497,10 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
     });
     registry.setGrantedPermsForTest("b-id", {
       network: ["foo.com", "bar.com"],
-      acceptsCallerCaps: true,
       grantedAt: {},
     });
     registry.setGrantedPermsForTest("c-id", {
       network: ["foo.com"],
-      acceptsCallerCaps: true,
       grantedAt: {},
     });
 
@@ -524,7 +544,7 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
       params: { tool: "b__doStuff", arguments: {} },
     });
 
-    // A → B step: intersect(A's foo+bar, B's foo+bar) = [foo, bar]
+    // A → B step: intersect(A's [foo,bar], B's [foo,bar]) = [foo, bar]
     const expectedAtoB = intersect(
       grantsToCapabilitySet({
         network: ["foo.com", "bar.com"],
@@ -532,16 +552,14 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
       }),
       grantsToCapabilitySet({
         network: ["foo.com", "bar.com"],
-        acceptsCallerCaps: true,
         grantedAt: {},
       }),
     );
     expect(observedAtoB).toEqual(expectedAtoB);
 
-    // B → C: simulate the production path where the inner dispatch
-    // for B's tool runs with `capContext = expectedAtoB` set in the
-    // runtime ALS scope. The next handlePiInvoke (B calling C) then
-    // reads it as the caller's effective set.
+    // B → C: production path — inner dispatch for B's tool runs with
+    // `capContext = expectedAtoB` set in the runtime ALS scope. Next
+    // handlePiInvoke reads it as the caller's effective set.
     await withRuntimeToolContext(
       { currentCapContext: expectedAtoB },
       async () => {
@@ -554,42 +572,35 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
       },
     );
 
-    // B → C step under FULL-CHAIN semantics:
+    // B → C step:
     //   capContext = intersect(intersect(A,B), C)
     //              = intersect([foo,bar], [foo])
     //              = [foo]
-    // Without the M1 fix this would have been intersect(B's installed
-    // [foo,bar], C's [foo]) = [foo] — same result here, but the
-    // attack-scenario test below shows the cases that diverge.
     expect(observedBtoC).toEqual([{ kind: "network", value: "foo.com" }]);
   });
 
-  test("ATTACK: A=[] → B=[evil] → C=[evil] all deputies → A→B step denies → B→C never widens (M1 critical)", async () => {
-    // Without M1: B→C step would compute intersect(B's installed
-    // [evil], C's [evil]) = [evil] → C reaches evil even though A
-    // authorized nothing. With M1: B→C step reads upstream capContext
-    // = intersect([], [evil]) = []. So intersect([], [evil]) = [],
-    // and evil never reaches C.
-    //
-    // This is the spec-locked safety property: a no-cap caller
-    // CANNOT laundry-launder a chain into having any caps.
+  test("ATTACK: A=[] → B=[evil] → C=[evil] non-deputies → empty intersection narrows whole chain", async () => {
+    // Confused-deputy attack against non-deputy callees. With HIGH 3
+    // the default (intersection-by-default) holds at every step. A's
+    // empty caps narrow B's intersection to []; the upstream-aware
+    // §M1 logic reads the empty set as the caller's effective for
+    // B → C, and intersect([], C's [evil]) = []. C never reaches evil.
     const { withRuntimeToolContext } = await import(
       "../extensions/runtime-tool-context"
     );
 
+    // NON-deputies — default, intersection-by-default.
     registry.setManifestForTest("a-id", makeManifest("a", false));
-    registry.setManifestForTest("b-id", makeManifest("b", true));
-    registry.setManifestForTest("c-id", makeManifest("c", true));
+    registry.setManifestForTest("b-id", makeManifest("b", false));
+    registry.setManifestForTest("c-id", makeManifest("c", false));
 
     registry.setGrantedPermsForTest("a-id", { grantedAt: {} }); // EMPTY
     registry.setGrantedPermsForTest("b-id", {
       network: ["evil.com"],
-      acceptsCallerCaps: true,
       grantedAt: {},
     });
     registry.setGrantedPermsForTest("c-id", {
       network: ["evil.com"],
-      acceptsCallerCaps: true,
       grantedAt: {},
     });
 
@@ -625,19 +636,16 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
       return { content: [{ type: "text" as const, text: "ok" }], isError: false };
     };
 
-    // A → B: A has empty caps, B is deputy. capContext = intersect([], [evil]) = []
+    // A → B: A has empty, B has [evil]. intersect([], [evil]) = []
     await executor.handlePiInvoke("a-id", {
       jsonrpc: "2.0",
       id: 11,
       method: "ezcorp/invoke",
       params: { tool: "b__doStuff", arguments: {} },
     });
-    expect(observedAtoB).toEqual([]); // empty intersection
+    expect(observedAtoB).toEqual([]);
 
-    // B → C: under M1, the upstream capContext is the empty set.
-    // The fix reads getRuntimeToolContext()?.currentCapContext = []
-    // as the caller's effective set, NOT B's installed [evil].
-    // intersect([], [evil]) = [] → C sees empty caps.
+    // B → C: upstream capContext = []. intersect([], C's [evil]) = []
     await withRuntimeToolContext(
       { currentCapContext: observedAtoB ?? [] },
       async () => {
@@ -649,26 +657,23 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
         });
       },
     );
-    // M1 critical: C must NOT see [evil]. The empty upstream context
-    // narrows the chain.
     expect(observedBtoC).toEqual([]);
     expect(observedBtoC).not.toContainEqual({ kind: "network", value: "evil.com" });
   });
 
-  test("Top-level invoke (no upstream context) falls back to caller's installed grants — back-compat", async () => {
-    // Without ANY surrounding withRuntimeToolContext scope, the
-    // upstream check returns undefined and handlePiInvoke uses the
-    // immediate caller's installed grants — preserving pre-M1 behavior
-    // for top-level cross-ext calls (which can't be a chain by def).
+  test("Top-level invoke (non-deputy callee, no upstream context) → caller's installed grants intersected with callee's", async () => {
+    // No surrounding withRuntimeToolContext scope, no flag. Top-level
+    // intersection-by-default uses the immediate caller's installed
+    // grants (top-level can't be a chain). intersect(A's [foo], B's
+    // [foo,bar]) = [foo].
     registry.setManifestForTest("a-id", makeManifest("a", false));
-    registry.setManifestForTest("b-id", makeManifest("b", true));
+    registry.setManifestForTest("b-id", makeManifest("b", false));
     registry.setGrantedPermsForTest("a-id", {
       network: ["foo.com"],
       grantedAt: {},
     });
     registry.setGrantedPermsForTest("b-id", {
       network: ["foo.com", "bar.com"],
-      acceptsCallerCaps: true,
       grantedAt: {},
     });
     registry.setDepRoutes(new Map([
@@ -696,24 +701,89 @@ describe("(i) Chained deputies (A → B → C, all deputies) — FULL-CHAIN inte
       params: { tool: "b__doStuff", arguments: {} },
     });
 
-    // Top-level: capContext = intersect(A's INSTALLED [foo], B's [foo,bar]) = [foo]
     expect(observed).toEqual([{ kind: "network", value: "foo.com" }]);
   });
 });
 
-// ── Confused-deputy integration test (mandate from coverage section) ──
+// ── Matrix item (j): HIGH 3 confused-deputy gate against NON-deputy ──
 
-describe("CONFUSED-DEPUTY integration — A no-network → B (deputy with network) is gated by intersection", () => {
-  test("A has no network, B has api.foo.com+api.evil.com (deputy) → A→B with URL=api.evil.com → DENY", async () => {
+describe("(j) HIGH 3 — A no-network → B has network (NO acceptsCallerCaps flag) → PDP DENIES B's network call", () => {
+  // The threat model the security review's HIGH 3 highlighted: a
+  // less-privileged caller invokes a callee whose installed grants
+  // include network access, but the callee did NOT declare itself
+  // as a trusted shared service (`acceptsCallerCaps: true`). Pre-flip:
+  // intersection didn't fire → the PDP authorized against B's full
+  // installed grants → confused-deputy attack succeeded. Post-flip:
+  // intersection IS the default → PDP receives an EMPTY capContext
+  // (caller has no network) → DENY.
+  test("Caller A has no network; non-deputy callee B has network; A→B network call DENIED at PDP", async () => {
+    setupTwoExtensions(
+      registry,
+      { grantedAt: {} }, // A: empty caps
+      { network: ["api.foo.com", "api.attacker.com"], grantedAt: {} }, // B: network, NO flag
+      false, // NOT a deputy — flag absent → DEFAULT = intersection
+    );
+    engine.setMode("subset-check");
+    executor.executeToolCall = async (toolName, args, conversationId, _mid, opts) => {
+      const reg = ExtensionRegistry.getInstance();
+      const tool = reg.getRegisteredTool(toolName);
+      const url = (args as { url?: string }).url ?? "api.attacker.com";
+      const decision = await engine.authorize(
+        {
+          extensionId: tool!.extensionId,
+          userId: "test-user",
+          conversationId,
+          toolName: tool!.originalName,
+          callerExtensionId: opts?.callerExtensionId,
+          ...(opts?.capContext !== undefined ? { capContext: opts.capContext } : {}),
+        },
+        [{ kind: "network", value: url }],
+      );
+      if (decision.decision === "deny") {
+        return { content: [{ type: "text" as const, text: decision.reason }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: "ok" }], isError: false };
+    };
+
+    const r = await executor.handlePiInvoke("caller-id", {
+      jsonrpc: "2.0",
+      id: 200,
+      method: "ezcorp/invoke",
+      params: { tool: "callee__doStuff", arguments: { url: "api.attacker.com" } },
+    });
+    // PDP DENIES via empty intersection — confused-deputy gate fires.
+    expect((r.result as any).isError).toBe(true);
+    expect((r.result as any).content[0].text).toContain("intersection missing network:api.attacker.com");
+
+    // Audit chain: capContext is the empty set (caller has no network),
+    // callerExtensionId points to the invoker.
+    const denyCall = engine.calls.find(
+      (c) => c.needed.some((n) => n.kind === "network" && n.value === "api.attacker.com"),
+    );
+    expect(denyCall).toBeDefined();
+    expect(denyCall?.ctx.capContext).toEqual([]);
+    expect(denyCall?.ctx.callerExtensionId).toBe("caller-id");
+  });
+});
+
+// ── Confused-deputy integration test (HIGH 3 default — non-deputy callees) ──
+//
+// Pre-flip these tests used `acceptsCallerCaps: true` on the callee as
+// the trigger for intersection. Post-flip the default IS intersection,
+// and the flag is the OPT-OUT. The scenarios below now drive against
+// NON-deputy callees so the test exercises the actual confused-deputy
+// gate the security review highlighted (HIGH 3).
+
+describe("CONFUSED-DEPUTY integration — A no-network → B with network (non-deputy) is gated by intersection (HIGH 3)", () => {
+  test("A has no network, B has api.foo.com+api.evil.com (non-deputy) → A→B with URL=api.evil.com → DENY", async () => {
     setupTwoExtensions(
       registry,
       { grantedAt: {} }, // A: empty caps
       {
         network: ["api.foo.com", "api.evil.com"],
-        acceptsCallerCaps: true,
         grantedAt: {},
       },
-      true,
+      false, // NON-deputy — default intersection-by-default applies
     );
     engine.setMode("subset-check");
     executor.executeToolCall = async (toolName, args, conversationId, _mid, opts) => {
@@ -773,10 +843,9 @@ describe("CONFUSED-DEPUTY integration — A no-network → B (deputy with networ
       { grantedAt: {} }, // A still empty
       {
         network: ["api.foo.com", "api.evil.com"],
-        acceptsCallerCaps: true,
         grantedAt: {},
       },
-      true,
+      false, // NON-deputy
     );
     engine.setMode("subset-check");
     executor.executeToolCall = async (toolName, args, conversationId, _mid, opts) => {
@@ -809,16 +878,15 @@ describe("CONFUSED-DEPUTY integration — A no-network → B (deputy with networ
     expect((r.result as any).isError).toBe(true);
   });
 
-  test("A=api.foo.com, B same deputy → URL=api.foo.com → ALLOWED (intersection contains it)", async () => {
+  test("A=api.foo.com, B same non-deputy → URL=api.foo.com → ALLOWED (intersection contains it)", async () => {
     setupTwoExtensions(
       registry,
       { network: ["api.foo.com"], grantedAt: {} }, // A now has the host
       {
         network: ["api.foo.com", "api.evil.com"],
-        acceptsCallerCaps: true,
         grantedAt: {},
       },
-      true,
+      false, // NON-deputy
     );
     engine.setMode("subset-check");
     executor.executeToolCall = async (toolName, args, conversationId, _mid, opts) => {

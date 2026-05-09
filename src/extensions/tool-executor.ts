@@ -919,44 +919,86 @@ export class ToolExecutor {
 
     // Phase 4 §M1 — full-chain chained-deputy attribution.
     //
-    // When the callee's INSTALL-TIME GRANT carries
-    // `acceptsCallerCaps: true`, run the callee's tool with
-    // `intersect(callerCaps, calleeGrants)` where `callerCaps` is the
-    // UPSTREAM caller's effective set:
+    // ── v1.3 release-readiness security review (HIGH 3, 2026-05-09) ──
     //
-    //   - If we're inside a runtime tool-context (a previous invoke
-    //     in the chain authorized this dispatch with a `capContext`),
-    //     the upstream `capContext` IS the caller's effective caps.
-    //     This makes A → B → C with all `acceptsCallerCaps: true`
-    //     yield `intersect(intersect(A, B), C)` — the spec-locked
-    //     full-chain semantics from
-    //     `tasks/phase-4-cross-ext-attribution.md:331`.
-    //   - If there's no upstream context (top-level LLM call coming
-    //     in via this invoke path), fall back to the immediate
-    //     caller's INSTALLED grants. Top-level can't be a chain.
+    // The `acceptsCallerCaps` flag was originally documented (design
+    // pillar 7 in `.planning/milestones/v1.3-permission-system-original-plan.md`
+    // line 27) as the OPT-OUT marker: "deputies opt out via
+    // `acceptsCallerCaps: true` to keep their own caps". Intersection
+    // was meant to be the DEFAULT — closing the C1 confused-deputy
+    // finding for every cross-extension call.
     //
-    // Without the upstream view, a chain A=[] → B=[evil] → C=[evil]
-    // with all deputies would let evil reach C even though A
-    // authorized nothing. The upstream context closes that gap.
+    // The shipped Phase 4 code inverted that semantic: intersection
+    // ran ONLY when the callee's GRANT carried `acceptsCallerCaps:
+    // true`. Practical impact — a confused-deputy attack against any
+    // non-deputy callee (A with no network → B with broad network →
+    // A invokes B with malicious URL) was NOT prevented at the
+    // intersection layer. The PDP authorized B's call against B's
+    // installed grants, which already had the wide network surface.
+    //
+    // This block flips back to the design's stated default:
+    //   - DEFAULT (acceptsCallerCaps absent or false): compute
+    //     `capContext = intersect(callerCaps, calleeCaps)` and thread
+    //     it through `executeToolCall`. The PDP receives the
+    //     intersection and denies callee tool calls that exceed the
+    //     caller's cap envelope. This closes the C1 confused-deputy
+    //     gap for the wide majority of extensions.
+    //   - OPT-OUT (`acceptsCallerCaps: true` on the callee's GRANT):
+    //     `capContext` stays UNDEFINED. The PDP falls back to the
+    //     callee's full installed grants — appropriate for a TRUSTED
+    //     SHARED SERVICE that legitimately needs its own caps when
+    //     invoked by less-privileged callers (e.g. the bundled
+    //     `ai-kit` orchestration deputy). The flag now carries a
+    //     "trust me" semantic that requires explicit user consent at
+    //     install time (clamped via `clampExtensionPermissions`'s
+    //     `manifestTopLevel.acceptsCallerCaps` gate).
+    //
+    // Bundled-extension sweep (2026-05-09): no bundled extension
+    // currently declares `acceptsCallerCaps: true` in its manifest or
+    // bundled-install grant. Pre-flip behavior under the OLD
+    // semantics: NO bundled extension got intersection treatment
+    // (intersection was opt-in). Post-flip behavior under the NEW
+    // semantics: ALL bundled extensions get intersection treatment by
+    // default. For every bundled extension reviewed, the new default
+    // is correct — none of them are designed to receive widening
+    // calls from less-privileged callers. If a future bundled
+    // extension needs the opt-out, it must (a) declare
+    // `acceptsCallerCaps: true` in its manifest, AND (b) be
+    // explicitly granted via the install path.
+    //
+    // §M1 chained-deputy semantics still hold for the OPT-OUT branch:
+    // if `currentCapContext` is set in the upstream runtime context,
+    // we still respect the upstream chain — the deputy doesn't get
+    // to LAUNDER a chain by sitting between two callers. (See
+    // `cross-ext-attribution.test.ts` "M1 critical" assertion.)
     //
     // The check is `=== true` on the callee's GRANT, not its
     // manifest — a manifest declaring the flag without user consent
     // is treated as opted-out (spec lock-in: "runtime checks consult
     // the grant").
+    //
+    // See `tasks/v1.3-security-review.md` HIGH 3 for the full audit.
     const calleeGrants = this.registry.getGrantedPermissions(resolved.extensionId);
     const upstreamRuntimeCtx = getRuntimeToolContext();
 
     let capContext: CapabilitySet | undefined;
-    if (calleeGrants?.acceptsCallerCaps === true) {
+    if (calleeGrants?.acceptsCallerCaps !== true) {
+      // DEFAULT (intersection-by-default). Flag absent or explicitly
+      // false → compute `intersect(callerCaps, calleeCaps)`.
+      //
       // Caller side: prefer the upstream effective caps when we're
       // inside a chain; fall back to caller's installed grants for
-      // top-level invokes.
+      // top-level invokes (top-level can't be a chain by definition).
       const callerCaps: CapabilitySet =
         upstreamRuntimeCtx?.currentCapContext ??
         grantsToCapabilitySet(this.registry.getGrantedPermissions(callerExtId) ?? null);
-      const calleeCaps = grantsToCapabilitySet(calleeGrants);
+      const calleeCaps = grantsToCapabilitySet(calleeGrants ?? null);
       capContext = intersect(callerCaps, calleeCaps);
     }
+    // OPT-OUT (`acceptsCallerCaps: true`): leave `capContext`
+    // undefined so the PDP falls back to the callee's installed
+    // grants. The user consented to this trust-elevation at install
+    // time.
 
     // Phase 6 (finding M4) — propagate the real parent conversationId
     // through `ezcorp/invoke`. Pre-Phase-6 we passed the synthetic

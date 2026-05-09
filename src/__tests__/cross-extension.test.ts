@@ -607,9 +607,11 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
     expect(response.error).toBeUndefined();
   });
 
-  // ── Phase 4: capContext is computed only when callee opts in ──────
+  // ── Phase 4 + HIGH 3 (2026-05-09): capContext is computed BY DEFAULT;
+  //     `acceptsCallerCaps: true` on the grant is the OPT-OUT marker.
+  //     See `tasks/v1.3-security-review.md` HIGH 3.
 
-  test("non-deputy callee (acceptsCallerCaps absent) → capContext NOT set", async () => {
+  test("non-deputy callee (acceptsCallerCaps absent) → capContext = intersect(caller, callee) [HIGH 3]", async () => {
     const registry = ExtensionRegistry.getInstance();
 
     registry.setDepRoutes(new Map([
@@ -624,7 +626,7 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
       extensionName: "dep-pkg",
     });
 
-    // Caller and callee with non-deputy grants (flag absent → false)
+    // Caller and callee with non-deputy grants (flag absent)
     registry.setGrantedPermsForTest("caller-ext", {
       network: ["foo.com"],
       grantedAt: {},
@@ -649,62 +651,62 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
     };
 
     await executor.handlePiInvoke("caller-ext", req);
-    // No deputy opt-in → capContext is undefined; PDP falls back to
-    // the registry-derived grant set (pre-Phase-4 behavior).
-    expect(capturedOpts?.capContext).toBeUndefined();
-  });
-
-  test("deputy callee (acceptsCallerCaps: true on grant) → capContext = intersect(callerGrants, calleeGrants)", async () => {
-    const registry = ExtensionRegistry.getInstance();
-
-    registry.setDepRoutes(new Map([
-      ["caller-ext", new Map([["dep-pkg", "dep-ext-id"]])],
-    ]));
-    registry.registerToolForTest("dep-pkg__doStuff", {
-      name: "dep-pkg__doStuff",
-      originalName: "doStuff",
-      description: "does stuff",
-      inputSchema: { type: "object" },
-      extensionId: "dep-ext-id",
-      extensionName: "dep-pkg",
-    });
-
-    // Deputy callee with acceptsCallerCaps: true on the GRANT (not just
-    // the manifest — the runtime consults the user's consent).
-    registry.setGrantedPermsForTest("caller-ext", {
-      network: ["foo.com"],
-      grantedAt: {},
-    });
-    registry.setGrantedPermsForTest("dep-ext-id", {
-      network: ["foo.com", "bar.com"],
-      acceptsCallerCaps: true,
-      grantedAt: {},
-    });
-
-    const executor = new ToolExecutor(registry, createStubPermissionEngine());
-    let capturedOpts: any = null;
-    executor.executeToolCall = async (_tn, _in, _cid, _mid, opts?) => {
-      capturedOpts = opts;
-      return { content: [{ type: "text" as const, text: "ok" }], isError: false };
-    };
-
-    const req: JsonRpcRequest = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "ezcorp/invoke",
-      params: { tool: "dep-pkg__doStuff", arguments: {} },
-    };
-
-    await executor.handlePiInvoke("caller-ext", req);
-    expect(Array.isArray(capturedOpts?.capContext)).toBe(true);
-    // Caller has foo.com only; callee has foo.com + bar.com; the
-    // intersection contains exactly foo.com.
-    expect(capturedOpts.capContext).toEqual([
+    // HIGH 3 — flag absent → DEFAULT = intersection. capContext is
+    // intersect(caller's [foo], callee's [foo,bar]) = [foo].
+    expect(capturedOpts?.capContext).toEqual([
       { kind: "network", value: "foo.com" },
     ]);
   });
 
-  test("deputy callee but caller has zero overlap → capContext is empty array (deny on every needed cap)", async () => {
+  test("opt-OUT callee (acceptsCallerCaps: true on grant) → capContext UNDEFINED (callee runs with own grants)", async () => {
+    const registry = ExtensionRegistry.getInstance();
+
+    registry.setDepRoutes(new Map([
+      ["caller-ext", new Map([["dep-pkg", "dep-ext-id"]])],
+    ]));
+    registry.registerToolForTest("dep-pkg__doStuff", {
+      name: "dep-pkg__doStuff",
+      originalName: "doStuff",
+      description: "does stuff",
+      inputSchema: { type: "object" },
+      extensionId: "dep-ext-id",
+      extensionName: "dep-pkg",
+    });
+
+    // OPT-OUT callee — acceptsCallerCaps: true on the grant means
+    // "trusted shared service", PDP falls back to callee's installed
+    // grants instead of the intersection.
+    registry.setGrantedPermsForTest("caller-ext", {
+      network: ["foo.com"],
+      grantedAt: {},
+    });
+    registry.setGrantedPermsForTest("dep-ext-id", {
+      network: ["foo.com", "bar.com"],
+      acceptsCallerCaps: true,
+      grantedAt: {},
+    });
+
+    const executor = new ToolExecutor(registry, createStubPermissionEngine());
+    let capturedOpts: any = null;
+    executor.executeToolCall = async (_tn, _in, _cid, _mid, opts?) => {
+      capturedOpts = opts;
+      return { content: [{ type: "text" as const, text: "ok" }], isError: false };
+    };
+
+    const req: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ezcorp/invoke",
+      params: { tool: "dep-pkg__doStuff", arguments: {} },
+    };
+
+    await executor.handlePiInvoke("caller-ext", req);
+    // Opt-out: capContext is UNDEFINED so the PDP falls back to the
+    // callee's installed [foo,bar] grants.
+    expect(capturedOpts?.capContext).toBeUndefined();
+  });
+
+  test("opt-OUT callee with caller having no overlap → capContext UNDEFINED (callee's grants in effect)", async () => {
     const registry = ExtensionRegistry.getInstance();
 
     registry.setDepRoutes(new Map([
@@ -743,9 +745,10 @@ describe("ToolExecutor.handlePiInvoke edge cases", () => {
     };
 
     await executor.handlePiInvoke("caller-ext", req);
-    // Empty intersection — caller has no caps, so the deputy's own
-    // caps don't make it through. The PDP will deny on first needed.
-    expect(capturedOpts.capContext).toEqual([]);
+    // Opt-out: caller's empty grants do NOT narrow the callee. The
+    // PDP receives no capContext and falls back to the callee's
+    // installed [foo.com] grants.
+    expect(capturedOpts?.capContext).toBeUndefined();
   });
 });
 

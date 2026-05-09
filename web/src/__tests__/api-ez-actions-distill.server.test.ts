@@ -56,8 +56,16 @@ vi.mock("$server/extensions/tool-executor", () => ({
 }));
 
 // ── PermissionEngine + bus + ensureInitialized mocks ─────────────────
+//
+// Phase 53.7 — capture the deps object passed to `getPermissionEngine`.
+// Pre-fix the forwarder called `getPermissionEngine()` zero-arg, which
+// threw "not initialized" on cold start (the forwarder is the FIRST
+// touch in the boot sequence — no agent has streamed yet so the
+// engine singleton hasn't been built). Commit `275ebce` switched it to
+// `getPermissionEngine({registry, bus, db})`. Lock that signature in.
+const getPermissionEngineSpy = vi.fn((..._args: unknown[]): Record<string, unknown> => ({}));
 vi.mock("$server/extensions/permission-engine", () => ({
-  getPermissionEngine: () => ({}),
+  getPermissionEngine: (...args: unknown[]) => getPermissionEngineSpy(...args),
 }));
 
 vi.mock("$lib/server/context", () => ({
@@ -127,6 +135,7 @@ beforeEach(() => {
   registryLoadFromDb.mockResolvedValue(undefined);
   executeToolCall.mockReset();
   setCurrentUserId.mockReset();
+  getPermissionEngineSpy.mockClear();
   mockGetConversation.mockReset();
   mockCreateMessage.mockReset();
   mockGetLatestLeaf.mockReset();
@@ -469,6 +478,31 @@ describe("forwardDistillToBundled — wiring invariants", () => {
     const [, , , firstSentinel] = executeToolCall.mock.calls[0]!;
     const [, , , secondSentinel] = executeToolCall.mock.calls[1]!;
     expect(firstSentinel).not.toBe(secondSentinel);
+  });
+
+  test("[N4] getPermissionEngine is called with a {registry, bus, db} deps object (cold-start guard for 275ebce)", async () => {
+    // Pre-fix `getPermissionEngine()` zero-arg threw on cold start; the
+    // forwarder is the FIRST PermissionEngine touch in the boot
+    // sequence (no agent has streamed yet), so a missing deps object
+    // would surface as "Distiller failed (Unexpected error: ...not
+    // initialized)" on the first `!EZ:distill` after a restart. Locking
+    // the signature in so a future refactor can't silently drop the
+    // deps argument again.
+    executeToolCall.mockResolvedValueOnce(
+      envelopeResult({
+        kind: "success",
+        lesson: { title: "x", slug: "x" },
+      }),
+    );
+    await dispatchAndParse();
+    expect(getPermissionEngineSpy).toHaveBeenCalled();
+    const callArgs = getPermissionEngineSpy.mock.calls[0]!;
+    expect(callArgs.length).toBeGreaterThanOrEqual(1);
+    const deps = callArgs[0] as { registry?: unknown; bus?: unknown; db?: unknown };
+    expect(deps).toBeDefined();
+    expect(deps.registry).toBeDefined();
+    expect(deps.bus).toBeDefined();
+    expect(deps.db).toBeDefined();
   });
 
   test("the EzActionResult is persisted as a synthetic ez-action-result message", async () => {

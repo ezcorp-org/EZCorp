@@ -141,7 +141,19 @@ export async function ensureInitialized(): Promise<void> {
       bus,
       db: { _token: "boot-spawn" },
     });
-    const bootExecutor = new ToolExecutor(registry, bootEngine, { bus });
+    // Phase 53.7 — `eventDriven: true` switches the runtime-invoke
+    // conversation-scope gate from the strict `currentConversationId`
+    // match (always fails here — no per-turn conversation context) to a
+    // `conversation_extensions` wiring lookup. The dispatcher already
+    // consulted that same source to decide which extensions receive the
+    // run:complete event, so the read is bounded by the same trust
+    // boundary. Per-turn ToolExecutor instances in setup-tools.ts leave
+    // the flag false so cross-extension manual calls keep the strict
+    // gate.
+    const bootExecutor = new ToolExecutor(registry, bootEngine, {
+      bus,
+      eventDriven: true,
+    });
     await bootSpawnFlaggedBundledExtensions(
       registry,
       (extId, proc) => bootExecutor.ensureSubprocessRpcWired(extId, proc),

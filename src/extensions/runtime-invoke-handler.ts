@@ -18,6 +18,17 @@
  *     across users — `conversation_extensions` wiring is not consulted
  *     by the runtime-invoke dispatch in `tool-executor.ts`.
  *
+ *     Phase 53.7 amendment — event-driven path: when `ctx.eventDriven`
+ *     is true (boot-spawned event-only extensions whose only entry
+ *     point is `run:complete`), the strict `currentConversationId`
+ *     check would always fail (the boot executor has no per-turn
+ *     conversation context). For that path, the gate falls back to a
+ *     `conversation_extensions` wiring lookup keyed on the calling
+ *     extension's manifest name — the same trust source the
+ *     `EventSubscriptionDispatcher` uses to decide WHICH extensions
+ *     receive the event. Manual / per-turn invocations still take the
+ *     strict path; the wiring fallback is gated on the explicit flag.
+ *
  *   - `runtime.lessons.triggerGate` — runs the heuristics in
  *     `src/runtime/lessons/triggers.ts` against the conversation's
  *     tool-call history and returns `{shouldDistill, reason}`. The
@@ -25,7 +36,8 @@
  *     (privileged data) and need to evolve without forcing extension
  *     version bumps. Same conversationId-must-match-ctx gate as
  *     getMessages — the trigger reasoning exposes recent user-message
- *     texts, error-recovery flags, and user-correction signals.
+ *     texts, error-recovery flags, and user-correction signals. Same
+ *     event-driven fallback as `getMessages`.
  *
  *   - `runtime.settings.getMine` — resolves the calling extension's
  *     effective per-extension settings for the acting user. The
@@ -81,8 +93,24 @@ export interface RuntimeInvokeContext {
    *  `args.conversationId === ctx.currentConversationId`. Null when
    *  the executor has no conversation context (system-driven /
    *  schedule-fired invocations) — those invocations CANNOT call the
-   *  conversation-scoped methods (the gate rejects with -32604). */
+   *  conversation-scoped methods (the gate rejects with -32604) UNLESS
+   *  `eventDriven` is true and `wiringLookup` is supplied (Phase 53.7). */
   currentConversationId: string | null;
+  /** Phase 53.7 — event-driven invocation flag. When true, the
+   *  conversation-scope gate falls back to a `conversation_extensions`
+   *  wiring lookup if the strict `currentConversationId` match fails.
+   *  Set by the boot-spawn `ToolExecutor` instance constructed in
+   *  `web/src/lib/server/context.ts`; per-turn executors leave this
+   *  false so cross-extension manual calls keep the strict gate. */
+  eventDriven?: boolean;
+  /** Phase 53.7 — async lookup that returns true iff the calling
+   *  extension is wired to `conversationId` via the `conversation_extensions`
+   *  table (same source as `EventSubscriptionDispatcher`). Required
+   *  whenever `eventDriven` is true; ignored otherwise. The host injects
+   *  this from `getConversationExtensionIds` so the gate doesn't have
+   *  to import a DB query directly (keeps the handler unit-testable
+   *  without a PGlite). */
+  wiringLookup?: (conversationId: string, extensionId: string) => Promise<boolean>;
   /** Calling extension's manifest settings schema, used to resolve
    *  effective values without an extra DB roundtrip for the schema
    *  fetch. */
@@ -147,16 +175,26 @@ export async function handleRuntimeInvoke(
  *     same: do not retry, do not log loudly).
  *
  * `ctx.currentConversationId === null` (system-driven invocations,
- * schedule-fired extensions) ALWAYS rejects — those invocations have no
- * conversation context, so the only safe answer is "no". If a
- * legitimate cross-conversation read use case shows up, surface it as
- * a new RPC with its own auth gate, do NOT widen this one.
+ * schedule-fired extensions) rejects on the strict path. Phase 53.7
+ * adds the EVENT-DRIVEN fallback: when `ctx.eventDriven === true` AND
+ * `ctx.wiringLookup` is supplied, a strict-path failure consults
+ * `wiringLookup(conversationId, extensionId)` — the same
+ * `conversation_extensions` source the `EventSubscriptionDispatcher`
+ * uses to decide WHICH extensions receive the event in the first
+ * place. If the wiring confirms the extension is bound to the
+ * conversation, the call passes; otherwise -32604 is preserved.
+ *
+ * The fallback is GATED on the explicit `eventDriven` flag so manual /
+ * per-turn invocations still get the strict gate. If a legitimate
+ * cross-conversation read use case shows up outside the event-driven
+ * path, surface it as a new RPC with its own auth gate — do NOT widen
+ * this one.
  */
-function checkConversationGate(
+async function checkConversationGate(
   args: Record<string, unknown>,
   ctx: RuntimeInvokeContext,
   req: JsonRpcRequest,
-): { ok: true; conversationId: string } | { ok: false; response: JsonRpcResponse } {
+): Promise<{ ok: true; conversationId: string } | { ok: false; response: JsonRpcResponse }> {
   const conversationId = args.conversationId;
   if (typeof conversationId !== "string" || !conversationId) {
     return {
@@ -168,26 +206,52 @@ function checkConversationGate(
       },
     };
   }
-  if (
-    ctx.currentConversationId === null ||
-    conversationId !== ctx.currentConversationId
-  ) {
-    // Match the wording the SDK surfaces verbatim — the test suite
-    // asserts on the message string, and the same wording is reused
-    // for the "not found" branch below.
-    return {
-      ok: false,
-      response: {
-        jsonrpc: "2.0",
-        id: req.id,
-        error: {
-          code: -32604,
-          message: "conversationId must match current conversation",
-        },
-      },
-    };
+  // Strict path — manual / per-turn invocation: the calling extension's
+  // conversation context must equal the requested id.
+  const strictOk =
+    ctx.currentConversationId !== null &&
+    conversationId === ctx.currentConversationId;
+  if (strictOk) {
+    return { ok: true, conversationId };
   }
-  return { ok: true, conversationId };
+  // Phase 53.7 — event-driven fallback. When the strict gate fails on
+  // the boot-spawn path (currentConversationId is null because the boot
+  // executor has no per-turn context) AND the host opted into the
+  // wiring fallback, consult `conversation_extensions`. A wiring hit
+  // proves the dispatcher would have delivered the corresponding
+  // `run:complete` event to this extension, so reading that
+  // conversation's messages is no broader an exposure than the event
+  // payload itself.
+  if (ctx.eventDriven === true && typeof ctx.wiringLookup === "function") {
+    let wired = false;
+    try {
+      wired = await ctx.wiringLookup(conversationId, ctx.extensionId);
+    } catch (err) {
+      log.warn("event-driven wiringLookup threw", {
+        conversationId,
+        extensionId: ctx.extensionId,
+        error: String(err),
+      });
+      wired = false;
+    }
+    if (wired) {
+      return { ok: true, conversationId };
+    }
+  }
+  // Match the wording the SDK surfaces verbatim — the test suite
+  // asserts on the message string, and the same wording is reused
+  // for the "not found" branch below.
+  return {
+    ok: false,
+    response: {
+      jsonrpc: "2.0",
+      id: req.id,
+      error: {
+        code: -32604,
+        message: "conversationId must match current conversation",
+      },
+    },
+  };
 }
 
 async function handleGetMessages(
@@ -195,7 +259,7 @@ async function handleGetMessages(
   ctx: RuntimeInvokeContext,
   req: JsonRpcRequest,
 ): Promise<JsonRpcResponse> {
-  const gate = checkConversationGate(args, ctx, req);
+  const gate = await checkConversationGate(args, ctx, req);
   if (!gate.ok) return gate.response;
   const { conversationId } = gate;
 
@@ -264,7 +328,7 @@ async function handleTriggerGate(
   ctx: RuntimeInvokeContext,
   req: JsonRpcRequest,
 ): Promise<JsonRpcResponse> {
-  const gate = checkConversationGate(args, ctx, req);
+  const gate = await checkConversationGate(args, ctx, req);
   if (!gate.ok) return gate.response;
   const { conversationId } = gate;
 

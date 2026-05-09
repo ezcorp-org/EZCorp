@@ -433,6 +433,27 @@ describe("bootSpawnFlaggedBundledExtensions", () => {
     expect(result.failed).toContain("lessons-distiller");
   });
 
+  // ── Phase 53.7 — persistent:true regression guard ───────────────────
+  //
+  // Commit `70f1d5c` set `persistent: true` on both bundled extensions'
+  // manifests so the subprocess wrapper doesn't idle-out the
+  // boot-spawned process after 5 minutes (which would silently re-
+  // introduce the dropped-event bug). Without `persistent: true` the
+  // ExtensionProcess would shut down on its idle timer between
+  // `run:complete` events, the dispatcher's `getProcessIfRunning` would
+  // start returning null again, and we'd be back to the silent-drop
+  // scenario this whole milestone exists to fix. Lock the flag in.
+  test("lessons-distiller + memory-extractor manifests declare persistent:true (regression guard for 70f1d5c)", async () => {
+    const distillerManifest = (await import(
+      "../../extensions/lessons-distiller/ezcorp.config.ts"
+    )).default;
+    const extractorManifest = (await import(
+      "../../extensions/memory-extractor/ezcorp.config.ts"
+    )).default;
+    expect((distillerManifest as { persistent?: boolean }).persistent).toBe(true);
+    expect((extractorManifest as { persistent?: boolean }).persistent).toBe(true);
+  });
+
   test("a thrown ensureRunning is recorded in failed[] (Phase 53.6)", async () => {
     // Symmetric to the getProcess-throws case above: if the wrapper is
     // constructed but `ensureRunning()` itself throws (e.g. spawn ENOENT

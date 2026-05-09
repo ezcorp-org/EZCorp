@@ -222,6 +222,25 @@ describe("distill_now — happy path", () => {
     const llmCall = fake.calls.find((c) => c.api === "llmComplete");
     expect(llmCall?.args).toMatchObject({ provider: "google", model: "gemini-2.0-flash-lite" });
   });
+
+  test("[N2] ollama provider resolves to gemma2:2b default (Phase 53.7 model swap)", async () => {
+    // Regression guard for the Phase 53.7 Ollama model rename: the
+    // PROVIDER_DEFAULT_MODEL map MUST resolve `provider: "ollama"`
+    // (no explicit model) to `gemma2:2b`, NOT the previous fictional
+    // `gemma4:e2b` identifier. Asserting on the resolved model in the
+    // LLM call args locks the default in.
+    const fake = makeFakeRuntime();
+    _setRuntimeApiForTests(fake.api);
+
+    await distill({
+      conversationId: "conv-1",
+      skipTriggerGate: true,
+      settings: { provider: "ollama" },
+      projectId: "proj-1",
+    });
+    const llmCall = fake.calls.find((c) => c.api === "llmComplete");
+    expect(llmCall?.args).toMatchObject({ provider: "ollama", model: "gemma2:2b" });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

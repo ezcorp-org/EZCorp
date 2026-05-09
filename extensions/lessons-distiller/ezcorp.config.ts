@@ -44,7 +44,7 @@ export default defineExtension({
         // so this list is just the host-provided defaults shown to the
         // distiller settings UI. Custom models work via the
         // `model` text override.
-        ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
+        ollama: ["gemma2:2b", "qwen2.5"],
       },
     },
     lessons: {
@@ -99,7 +99,7 @@ export default defineExtension({
       type: "text",
       label: "Model id (override)",
       description:
-        "Leave blank to use the provider default (gemini-2.0-flash-lite / gpt-4o-mini / claude-haiku-4-5 / gemma4:e2b for Ollama).",
+        "Leave blank to use the provider default (gemini-2.0-flash-lite / gpt-4o-mini / claude-haiku-4-5 / gemma2:2b for Ollama).",
       default: "",
     },
   },

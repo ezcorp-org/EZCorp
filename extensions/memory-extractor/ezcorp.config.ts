@@ -56,7 +56,7 @@ export default defineExtension({
         anthropic: ["claude-haiku-4-5-20250514"],
         // Mirror the lessons-distiller's Ollama defaults; user-installed
         // models are reachable via the `model` text override.
-        ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
+        ollama: ["gemma2:2b", "qwen2.5"],
       },
     },
     memory: {
@@ -107,7 +107,7 @@ export default defineExtension({
       type: "text",
       label: "Model id (override)",
       description:
-        "Leave blank to use the provider default (gemini-2.0-flash-lite / gpt-4o-mini / claude-haiku-4-5 / gemma4:e2b for Ollama).",
+        "Leave blank to use the provider default (gemini-2.0-flash-lite / gpt-4o-mini / claude-haiku-4-5 / gemma2:2b for Ollama).",
       default: "",
     },
     compaction_enabled: {

@@ -61,22 +61,44 @@ export async function migrateDistillerEnabledSetting(
     if (legacy === false) {
       const allUsers = await getDb().select({ id: users.id }).from(users);
       let migrated = 0;
+      let perUserFailures = 0;
       for (const u of allUsers) {
-        // Merge with any existing per-user values so we don't clobber
-        // future migrations that touch other keys on the same row.
-        const existing = await getUserSettings(u.id, lessonsDistillerExtensionId);
-        if (existing.enabled === false) continue; // already migrated by hand
-        await setUserSettings(u.id, lessonsDistillerExtensionId, {
-          ...existing,
-          enabled: false,
-        });
-        migrated += 1;
+        // Per-user try/catch: a single bad row (e.g. orphaned user_settings
+        // foreign key, transient PGlite write contention) must not poison
+        // the whole migration. Track failures so we DON'T write the
+        // sentinel if anything failed — next boot retries the surviving
+        // users without re-clobbering the ones that succeeded
+        // (`getUserSettings` is the existence check that lets the
+        // re-run skip already-migrated rows via the
+        // `existing.enabled === false` branch).
+        try {
+          const existing = await getUserSettings(u.id, lessonsDistillerExtensionId);
+          if (existing.enabled === false) continue; // already migrated by hand
+          await setUserSettings(u.id, lessonsDistillerExtensionId, {
+            ...existing,
+            enabled: false,
+          });
+          migrated += 1;
+        } catch (perUserErr) {
+          perUserFailures += 1;
+          log.warn("per-user distiller migration failed; will retry on next boot", {
+            userId: u.id,
+            extensionId: lessonsDistillerExtensionId,
+            error: perUserErr instanceof Error ? perUserErr.message : String(perUserErr),
+          });
+        }
       }
       log.info("Migrated lessonDistillerEnabled=false to per-user extension settings", {
         userCount: allUsers.length,
         migratedCount: migrated,
+        failureCount: perUserFailures,
         extensionId: lessonsDistillerExtensionId,
       });
+      // Bail before sentinel write so the next boot retries the failed
+      // rows. The legacy listener is still wired during Stage 1 so the
+      // bundled extension's default applies for any user we couldn't
+      // reach this round.
+      if (perUserFailures > 0) return;
     } else if (legacy === true) {
       // Explicit enabled=true preserves the manifest default; nothing
       // to write per-user since the schema's `default: true` already

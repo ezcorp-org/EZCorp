@@ -48,6 +48,9 @@ import type { JsonRpcNotification } from "../extensions/types";
 
 const FIXTURE_DIR = resolve(__dirname, "fixtures/event-only-extension");
 const FIXTURE_ENTRYPOINT = "./entrypoint.ts";
+// Phase 53.7 — second fixture that ALSO performs a reverse-RPC back
+// into the host on `run:complete`. Used by the gate round-trip test.
+const RPC_FIXTURE_DIR = resolve(__dirname, "fixtures/event-driven-rpc-extension");
 // The bundled-extensions list is hardcoded; we hijack the
 // `lessons-distiller` slot (bootSpawn: true, no disable flag) by
 // pointing its registry entry at our fixture. The DB-row id is
@@ -55,12 +58,19 @@ const FIXTURE_ENTRYPOINT = "./entrypoint.ts";
 const HIJACK_NAME = "lessons-distiller";
 const EXT_ID = "ext-real-process-fixture";
 
-// ── DB mock — only `lessons-distiller` row exists ───────────────────
+// ── DB mock — extensions, conversations, conversation_extensions ────
 //
 // memory-extractor (the OTHER `bootSpawn: true` bundled entry) has no
 // row, so the helper logs "row missing" and skips it. That keeps the
 // test focused on a single subprocess and avoids spawning two real
 // `bun` children for one assertion.
+//
+// The reverse-RPC test (Phase 53.7) additionally needs:
+//   - `getConversationExtensionIds` to return EXT_ID for the test
+//     conversation so the `eventDriven` wiring fallback in
+//     `checkConversationGate` succeeds.
+//   - `getConversation` + `getMessages` to return real-ish rows so the
+//     RPC handler has data to echo back.
 
 interface StoredExtension {
   id: string;
@@ -69,11 +79,33 @@ interface StoredExtension {
 }
 
 let store: Map<string, StoredExtension>;
+let conversationStore: Map<string, { id: string; projectId: string | null }>;
+let messagesStore: Map<string, Array<{ id: string; role: string; content: string }>>;
+let wiringStore: Map<string, string[]>;
 
 mock.module("../db/queries/extensions", () => ({
   getExtensionByName: async (name: string) => store.get(name) ?? null,
   updateExtension: async () => null,
   listExtensions: async () => Array.from(store.values()),
+}));
+
+// Spread the real `conversations` queries module so unrelated exports
+// (getConversationSpawnDepth, createMessage, etc. that ToolExecutor
+// imports) aren't dropped by the partial mock. We only override the
+// two queries the runtime-invoke handler reads.
+const realConversations = await import("../db/queries/conversations");
+mock.module("../db/queries/conversations", () => ({
+  ...realConversations,
+  getConversation: async (id: string) =>
+    (conversationStore.get(id) as unknown) ?? null,
+  getMessages: async (id: string) =>
+    (messagesStore.get(id) as unknown) ?? [],
+}));
+
+const realConvExt = await import("../db/queries/conversation-extensions");
+mock.module("../db/queries/conversation-extensions", () => ({
+  ...realConvExt,
+  getConversationExtensionIds: async (id: string) => wiringStore.get(id) ?? [],
 }));
 
 // ── Lazy imports AFTER mocks ────────────────────────────────────────
@@ -84,6 +116,7 @@ const { EventBus } = await import("../runtime/events");
 const { EventSubscriptionDispatcher } = await import(
   "../extensions/event-subscription-dispatcher"
 );
+const { ToolExecutor } = await import("../extensions/tool-executor");
 
 // Build a manifest for the fixture matching the bundled-extension shape.
 function makeFixtureManifest() {
@@ -115,6 +148,9 @@ let dispatcher: InstanceType<typeof EventSubscriptionDispatcher> | null = null;
 
 beforeAll(() => {
   store = new Map();
+  conversationStore = new Map();
+  messagesStore = new Map();
+  wiringStore = new Map();
 });
 
 afterEach(() => {
@@ -133,6 +169,9 @@ afterEach(() => {
   // state between unrelated suites.
   ExtensionRegistry.resetInstance();
   store.clear();
+  conversationStore.clear();
+  messagesStore.clear();
+  wiringStore.clear();
 });
 
 afterAll(() => restoreModuleMocks());
@@ -212,6 +251,139 @@ describe("bootSpawnFlaggedBundledExtensions — real subprocess (Phase 53.6)", (
     expect(echo?.params).toMatchObject({
       conversationId: CONV_ID,
       originalMethod: "ezcorp/event/run:complete",
+    });
+  }, 10_000);
+
+  // ── Phase 53.7 — reverse-RPC round-trip via the eventDriven gate ──
+  //
+  // Pre-fix the boot executor's `currentConversationId` was null, so
+  // ANY runtime.* call from a boot-spawned subprocess (driven by
+  // `run:complete`) was rejected with -32604. The lessons-distiller +
+  // memory-extractor extensions silently swallowed the rejection, so
+  // the auto-trigger flow looked healthy in CI while doing nothing in
+  // production.
+  //
+  // Phase 53.7 fix: when the boot executor sets `eventDriven: true`,
+  // the conversation-scope gate falls back to a `conversation_extensions`
+  // wiring lookup. This test exercises the full chain — fixture
+  // subprocess receives `run:complete`, issues a reverse-RPC, and the
+  // host responds with a real envelope. The fixture echoes the
+  // outcome via a `test/rpc-result` notification the host asserts on.
+  test("reverse-RPC succeeds via wiring fallback when boot executor is eventDriven (M1)", async () => {
+    // 1. DB row for the hijacked bundled slot.
+    store.set(HIJACK_NAME, { id: EXT_ID, name: HIJACK_NAME, enabled: true });
+
+    // 2. Conversation + messages the RPC will read. These have to exist
+    //    so `runtime.conversations.getMessages` returns a real envelope
+    //    instead of -32604 not-found.
+    const CONV_ID = "conv-rpc-1";
+    conversationStore.set(CONV_ID, { id: CONV_ID, projectId: "proj-1" });
+    messagesStore.set(CONV_ID, [
+      { id: "m1", role: "user", content: "hello" },
+      { id: "m2", role: "assistant", content: "world" },
+    ]);
+
+    // 3. Wiring row — same trust source the dispatcher consulted to
+    //    deliver the event in the first place. The gate falls back to
+    //    this when the strict currentConversationId match fails.
+    wiringStore.set(CONV_ID, [EXT_ID]);
+
+    // 4. Real registry, RPC fixture manifest registered via test seams.
+    ExtensionRegistry.resetInstance();
+    registry = ExtensionRegistry.getInstance();
+    registry.setManifestForTest(EXT_ID, {
+      ...makeFixtureManifest(),
+      // Override entrypoint to point at the RPC fixture.
+      entrypoint: "./entrypoint.ts",
+    });
+    registry.setInstallPathForTest(EXT_ID, RPC_FIXTURE_DIR);
+    registry.setGrantedPermsForTest(EXT_ID, { grantedAt: {} });
+
+    // 5. Capture notifications. The fixture echoes a `test/rpc-result`
+    //    notification carrying the round-trip outcome.
+    const received: JsonRpcNotification[] = [];
+
+    // 6. Build a real ToolExecutor with `eventDriven: true` (matches
+    //    the boot executor in `web/src/lib/server/context.ts`). Its
+    //    `ensureSubprocessRpcWired` installs the production reverse-
+    //    RPC handler that routes `runtime.*` through
+    //    `handleRuntimeInvoke` with the eventDriven flag + wiringLookup
+    //    threaded into the ctx.
+    //
+    //    The PermissionEngine here is the minimal stub the boot path
+    //    uses — runtime.* invocations route past the engine entirely
+    //    (see tool-executor.ts handlePiInvoke), so a no-op stub is
+    //    sufficient. If a future refactor adds engine.authorize on the
+    //    runtime.* path, this test will fail loudly and the harness
+    //    needs a real engine.
+    const stubEngine = {
+      authorize: async () => ({ outcome: "allow" as const }),
+      resolvePrompt: async () => undefined,
+    } as unknown as Parameters<typeof ToolExecutor>[1];
+    const bus = new EventBus<import("../types").AgentEvents>();
+    const bootExecutor = new ToolExecutor(registry, stubEngine, {
+      bus,
+      eventDriven: true,
+    });
+
+    const wireRpc = async (
+      extId: string,
+      proc: import("../extensions/subprocess").ExtensionProcess,
+    ) => {
+      // Capture notifications BEFORE wiring the request handler so the
+      // fixture's echo lands in `received`. The boot executor only
+      // installs a notification handler if a state mediator is
+      // configured (which we don't here), so our handler stays
+      // installed for the lifetime of the proc.
+      proc.setNotificationHandler((n) => received.push(n));
+      await bootExecutor.ensureSubprocessRpcWired(extId, proc);
+    };
+
+    // 7. Boot-spawn — same chain as the existing test but with the
+    //    real reverse-RPC handler installed.
+    const result = await bootSpawnFlaggedBundledExtensions(registry, wireRpc);
+
+    expect(result.spawned).toContain(HIJACK_NAME);
+    expect(result.failed).not.toContain(HIJACK_NAME);
+
+    const proc = registry.getProcessIfRunning(EXT_ID);
+    expect(proc).not.toBeNull();
+    expect(proc?.isRunning).toBe(true);
+
+    // 8. Dispatch the event. The fixture will issue
+    //    `runtime.conversations.getMessages` back into the host.
+    dispatcher = new EventSubscriptionDispatcher(
+      bus,
+      registry,
+      async (convId: string) => wiringStore.get(convId) ?? [],
+    );
+    dispatcher.registerExtension(EXT_ID, ["run:complete"]);
+    dispatcher.start();
+
+    bus.emit("run:complete", {
+      conversationId: CONV_ID,
+    } as import("../types").AgentEvents["run:complete"]);
+
+    // 9. Wait for the fixture's `test/rpc-result` notification. The
+    //    round-trip is async (event delivery → fixture writes RPC →
+    //    host reads, dispatches, replies → fixture reads response →
+    //    fixture writes echo). 4000ms is generous.
+    await waitFor(
+      () => received.some((n) => n.method === "test/rpc-result"),
+      4000,
+    );
+
+    const echo = received.find((n) => n.method === "test/rpc-result");
+    expect(echo).toBeDefined();
+    // CRITICAL assertion: the RPC succeeded. Pre-fix this would be
+    // `ok: false, code: -32604` because the strict gate rejected the
+    // call. Post-fix the wiring lookup matches and the host returns
+    // the messages envelope. messageCount=2 proves we got the actual
+    // payload back, not an empty pass-through.
+    expect(echo?.params).toMatchObject({
+      conversationId: CONV_ID,
+      ok: true,
+      messageCount: 2,
     });
   }, 10_000);
 });

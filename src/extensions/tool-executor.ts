@@ -28,6 +28,7 @@ import {
 import type { ScheduleDaemon } from "./schedule-daemon";
 import type { SpawnQuota } from "./spawn-quota";
 import { getConversation, getConversationSpawnDepth } from "../db/queries/conversations";
+import { getConversationExtensionIds } from "../db/queries/conversation-extensions";
 import { persistToolCall } from "../db/queries/tool-calls";
 import { resolveExtensionSettings } from "../db/queries/extension-settings";
 import type { PermissionEngine } from "./permission-engine";
@@ -217,6 +218,15 @@ export type ArgsResolver = (
 
 export interface ToolExecutorOptions {
   bus?: EventBus<AgentEvents>;
+  /** Phase 53.7 — when true, runtime-invoke calls from this executor's
+   *  wired subprocesses are treated as event-driven. The conversation-
+   *  scope gate (`checkConversationGate` in `runtime-invoke-handler.ts`)
+   *  falls back to a `conversation_extensions` wiring lookup when the
+   *  strict `currentConversationId` match fails. Used by the boot-spawn
+   *  ToolExecutor in `web/src/lib/server/context.ts`; per-turn executors
+   *  default to false so cross-extension manual calls keep the strict
+   *  gate. */
+  eventDriven?: boolean;
 }
 
 export class ToolExecutor {
@@ -232,6 +242,8 @@ export class ToolExecutor {
   private spawnQuota?: SpawnQuota;
   private scheduleDaemon?: ScheduleDaemon;
   private argsResolver?: ArgsResolver;
+  /** Phase 53.7 — see ToolExecutorOptions.eventDriven. */
+  private readonly eventDriven: boolean;
 
   constructor(
     private registry: ExtensionRegistry,
@@ -244,6 +256,7 @@ export class ToolExecutor {
       );
     }
     this.bus = options?.bus;
+    this.eventDriven = options?.eventDriven === true;
     // Phase 6 (M3): wire the per-turn counter to reset on run:complete.
     // Idempotent — module-level flag ensures a single bus subscription
     // even though many ToolExecutor instances are constructed per-turn.
@@ -871,6 +884,23 @@ export class ToolExecutor {
         currentConversationId: this.currentConversationId ?? null,
         granted,
         ...(manifest?.settings ? { settingsSchema: manifest.settings } : {}),
+        // Phase 53.7 — boot-spawn / event-driven path. The strict
+        // conversation gate fails on this executor (no per-turn
+        // currentConversationId), so the gate falls back to a
+        // `conversation_extensions` wiring lookup keyed on the calling
+        // extension's id — the same trust source the
+        // EventSubscriptionDispatcher uses to decide WHO got the event.
+        // Wiring lookup is a closure over the DB query so the handler
+        // stays unit-testable without PGlite.
+        ...(this.eventDriven
+          ? {
+              eventDriven: true as const,
+              wiringLookup: async (conversationId: string, extensionId: string) => {
+                const ids = await getConversationExtensionIds(conversationId);
+                return ids.includes(extensionId);
+              },
+            }
+          : {}),
       };
       return handleRuntimeInvoke(tool, args, ctx, req);
     }

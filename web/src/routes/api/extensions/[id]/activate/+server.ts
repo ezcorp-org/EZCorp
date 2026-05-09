@@ -103,6 +103,13 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 	// any credential-shaped env names AND reconcile cron schedules on
 	// activate. Both are fire-and-forget — failures are non-fatal and
 	// must not block enable.
+	//
+	// v1.4: the *_API_KEY install gate (installer.ts:runEnvKeyLeakInstallGate)
+	// now refuses NEW installs that declare credential-shaped env
+	// names — this soft warning at activate time is the no-op safety
+	// net for GRANDFATHERED legacy installs (rows that landed before
+	// the install gate shipped). New user installs throw at install
+	// time and never reach this code path with a leaky env list.
 	try {
 		await emitEnvKeyLeakWarnings(params.id, ext.manifest?.permissions?.env);
 	} catch { /* swallow — audit governance is non-fatal */ }

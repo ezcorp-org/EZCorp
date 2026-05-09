@@ -13,17 +13,25 @@
  *   - The bundled-extension WITHOUT escape-hatch flag MUST fail
  *     closed (this is the "do not silently restore the bypass" lock).
  *
- * Stays a unit test of the gate function — the installer-integration
- * surface is exercised end-to-end by the Phase 1 tests in
- * `src/__tests__/scratchpad-bundled-install.test.ts` (existing
- * bundled-install path) and the existing
- * `env-key-leak-install-path.test.ts` warning-row test.
+ * Plus the v1.4-fix integration suite (the bottom describe block):
+ *   - `installFromLocal` end-to-end with a synthetic manifest so the
+ *     gate's wiring is asserted at the actual integration boundary
+ *     (the unit tests above call the gate function in isolation,
+ *     which let a real wiring gap ship — the unit tests passed empty
+ *     env names from `grantedPermissions` while the production gate
+ *     should source from `manifest.permissions.env`). Asserts the
+ *     `EnvKeyLeakInstallError` propagates AND that no row was
+ *     persisted to the `extensions` table.
  */
 import { test, expect, describe, beforeAll, beforeEach, afterAll, mock } from "bun:test";
 import { restoreModuleMocks } from "../../__tests__/helpers/mock-cleanup";
 import {
   setupTestDb, closeTestDb, mockDbConnection, getTestDb,
 } from "../../__tests__/helpers/test-pglite";
+import { writeConfig } from "../../__tests__/helpers/write-config";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 mock.module("../../db/queries/settings", () => ({
   async getAllSettings() { return {}; },
@@ -39,7 +47,8 @@ import {
   checkEnvKeyLeakInstallGate,
   EnvKeyLeakInstallError,
 } from "../clamp-permissions";
-import { auditLog } from "../../db/schema";
+import { installFromLocal } from "../installer";
+import { auditLog, extensions } from "../../db/schema";
 import { eq } from "drizzle-orm";
 
 beforeAll(async () => {
@@ -48,6 +57,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await getTestDb().delete(auditLog);
+  // The integration suite at the bottom installs into the real
+  // extensions table; clear between every test so name-collision
+  // checks in `installFromLocal` don't bleed across tests.
+  await getTestDb().delete(extensions);
 });
 
 afterAll(async () => {
@@ -84,6 +97,14 @@ describe("checkEnvKeyLeakInstallGate — user-installed extension (isBundled=fal
     expect((blocked[0]!.metadata as { newValue?: string }).newValue).toBe(
       "FAKE_API_KEY",
     );
+    // Audit-row provenance: the install gate writes `actor: "system"`
+    // because the gate is server-driven (the audit row exists even
+    // when the install is admin-initiated — the actor of interest
+    // here is the gate, not the operator). Pinned per coverage-
+    // auditor recommendation so a future refactor that changes
+    // `actor` (e.g. to the calling admin's id) has to update this
+    // test in lockstep.
+    expect((blocked[0]!.metadata as { actor?: string }).actor).toBe("system");
     // No escape-hatch row written — the user-install path never reaches
     // that branch.
     expect((await escapeHatchRows()).length).toBe(0);
@@ -253,5 +274,122 @@ describe("EnvKeyLeakInstallError — error shape", () => {
     expect(() => {
       (err.leakedNames as unknown as string[]).push("X");
     }).toThrow();
+  });
+});
+
+// ── Integration: installFromLocal end-to-end ──────────────────────
+//
+// REGRESSION GUARD for the v1.4 install-gate wiring gap. The unit
+// tests above pass `envNames` to `checkEnvKeyLeakInstallGate`
+// directly, which let the production gap ship: the installer was
+// reading `grantedPermissions.env` (empty for user installs) instead
+// of `manifest.permissions.env` (what the extension actually
+// declares). These tests drive `installFromLocal` end-to-end with a
+// synthetic manifest so any future refactor that re-introduces the
+// "wrong source" pattern goes red HERE, not in production.
+
+async function writeFakeExtension(
+  dir: string,
+  manifestOverride: Record<string, unknown>,
+): Promise<void> {
+  // Minimal v2 manifest — entrypoint must exist on disk so
+  // computeChecksum doesn't fail. The installer doesn't execute the
+  // entrypoint; it just hashes the file.
+  await Bun.write(join(dir, "index.ts"), "export default {};\n");
+  await writeConfig(dir, {
+    schemaVersion: 2,
+    name: "integration-test-ext",
+    version: "0.0.1",
+    description: "Integration-test fixture for the env-key-leak install gate.",
+    author: { name: "test" },
+    entrypoint: "index.ts",
+    tools: [
+      { name: "noop", description: "noop", inputSchema: { type: "object" } },
+    ],
+    ...manifestOverride,
+  });
+}
+
+describe("installFromLocal — env-key-leak install-gate integration", () => {
+  test("user install (isBundled=false) with manifest.permissions.env: ['FAKE_API_KEY'] → throws + no extensions row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "envleak-user-"));
+    await writeFakeExtension(dir, {
+      name: "user-install-leaky",
+      permissions: { env: ["FAKE_API_KEY"] },
+    });
+
+    // grantedPermissions.env is EMPTY — mirrors the actual web install
+    // route which always passes `{ grantedAt: {} }`. Pre-fix this
+    // means the gate read no leaks and the install proceeded.
+    await expect(
+      installFromLocal(dir, { grantedAt: {} } as never, false),
+    ).rejects.toBeInstanceOf(EnvKeyLeakInstallError);
+
+    // No DB row — the gate runs BEFORE createExtension.
+    const rows = await getTestDb()
+      .select()
+      .from(extensions)
+      .where(eq(extensions.name, "user-install-leaky"));
+    expect(rows.length).toBe(0);
+
+    // The audit-row trail still lands (one per leaked name).
+    const blocked = await blockedRows();
+    expect(blocked.length).toBe(1);
+    expect(blocked[0]!.target).toBe("user-install-leaky");
+  });
+
+  test("bundled install (isBundled=true) WITHOUT envEscapeHatch + leaky manifest → throws + no extensions row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "envleak-bundled-strict-"));
+    await writeFakeExtension(dir, {
+      name: "bundled-no-hatch",
+      permissions: { env: ["LEAKY_API_KEY"] },
+    });
+
+    await expect(
+      installFromLocal(dir, { grantedAt: {} } as never, true, {
+        isBundled: true,
+        envEscapeHatch: false,
+      }),
+    ).rejects.toBeInstanceOf(EnvKeyLeakInstallError);
+
+    const rows = await getTestDb()
+      .select()
+      .from(extensions)
+      .where(eq(extensions.name, "bundled-no-hatch"));
+    expect(rows.length).toBe(0);
+
+    const blocked = await blockedRows();
+    expect(blocked.length).toBe(1);
+    // No escape-hatch row — the unflagged path is the user-equivalent.
+    expect((await escapeHatchRows()).length).toBe(0);
+  });
+
+  test("bundled install (isBundled=true) WITH envEscapeHatch + leaky manifest → succeeds + extensions row + escape-hatch audit row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "envleak-bundled-hatch-"));
+    await writeFakeExtension(dir, {
+      name: "bundled-with-hatch",
+      permissions: { env: ["TAVILY_API_KEY"] },
+    });
+
+    const installed = await installFromLocal(
+      dir,
+      { grantedAt: {} } as never,
+      true,
+      { isBundled: true, envEscapeHatch: true },
+    );
+    expect(installed.name).toBe("bundled-with-hatch");
+
+    const rows = await getTestDb()
+      .select()
+      .from(extensions)
+      .where(eq(extensions.name, "bundled-with-hatch"));
+    expect(rows.length).toBe(1);
+
+    // No blocked row — the gate let it through.
+    expect((await blockedRows()).length).toBe(0);
+    // One escape-hatch row keyed on manifest name.
+    const escapeAudits = await escapeHatchRows();
+    expect(escapeAudits.length).toBe(1);
+    expect(escapeAudits[0]!.target).toBe("bundled-with-hatch");
   });
 });

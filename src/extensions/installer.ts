@@ -43,6 +43,35 @@ export interface InstallFromLocalOpts {
   envEscapeHatch?: boolean;
 }
 
+/**
+ * v1.4 — run the credential-shaped env-name install gate against a
+ * parsed manifest. Source-of-truth is `manifest.permissions.env` (the
+ * extension's REQUEST), not the caller's `grantedPermissions.env`
+ * (which is empty at user-install time — grants happen later, at
+ * activate time). Reading the manifest matches the actual threat
+ * model: refuse to persist an extension that DECLARES a credential-
+ * shaped env name regardless of whether grants are populated yet.
+ *
+ * Throws `EnvKeyLeakInstallError` when the gate denies; returns
+ * silently when the install may proceed. Audit rows are written
+ * inside `checkEnvKeyLeakInstallGate` (one per leaked name).
+ */
+async function runEnvKeyLeakInstallGate(
+  manifest: ExtensionManifestV2,
+  opts: InstallFromLocalOpts,
+): Promise<void> {
+  const { checkEnvKeyLeakInstallGate } = await import("./clamp-permissions");
+  const gateError = await checkEnvKeyLeakInstallGate(
+    manifest.name,
+    manifest.permissions?.env,
+    {
+      isBundled: opts.isBundled === true,
+      envEscapeHatch: opts.envEscapeHatch === true,
+    },
+  );
+  if (gateError) throw gateError;
+}
+
 export async function installFromLocal(
   localPath: string,
   grantedPermissions: ExtensionPermissions,
@@ -68,16 +97,11 @@ export async function installFromLocal(
   // Bundled extensions with `envEscapeHatch: true` are allowed and
   // emit `ENV_KEY_LEAK_BUNDLED_ESCAPE_HATCH_USED`; everything else
   // throws `EnvKeyLeakInstallError` and the caller surfaces it.
-  const { checkEnvKeyLeakInstallGate } = await import("./clamp-permissions");
-  const gateError = await checkEnvKeyLeakInstallGate(
-    manifest.name,
-    grantedPermissions.env,
-    {
-      isBundled: opts.isBundled === true,
-      envEscapeHatch: opts.envEscapeHatch === true,
-    },
-  );
-  if (gateError) throw gateError;
+  // Reads the MANIFEST'S declared env, not `grantedPermissions.env`
+  // (which is empty for user installs — grants populate at activate
+  // time). The threat model is "refuse to persist this extension at
+  // all" once it declares a credential-shaped env name.
+  await runEnvKeyLeakInstallGate(manifest, opts);
 
   // Create DB record
   const ext = await createExtension({
@@ -159,6 +183,14 @@ export async function installFromGitHub(
 
     const manifestDir = join(configPath, "..");
     const manifest = await loadManifest(manifestDir);
+
+    // v1.4 — hard install-time gate for credential-shaped env grants.
+    // GitHub installs are user installs by definition (no bundled
+    // path passes through here), so `isBundled: false`. Run BEFORE
+    // any persistence (no DB row, no install-dir copy) so a refused
+    // install leaves zero residue beyond the audit row written
+    // inside `checkEnvKeyLeakInstallGate`.
+    await runEnvKeyLeakInstallGate(manifest, { isBundled: false });
 
     // Verify checksum if provided
     if (!manifest.entrypoint) {
@@ -247,6 +279,13 @@ export async function installFromGit(
 
     // Read and validate manifest
     const manifest = await loadManifest(cloneDest);
+
+    // v1.4 — hard install-time gate for credential-shaped env grants.
+    // Git installs are user installs by definition (no bundled path
+    // passes through here), so `isBundled: false`. Run BEFORE the
+    // permission-prompt callback so a refused install never bothers
+    // the user with a permission UI it would never honor anyway.
+    await runEnvKeyLeakInstallGate(manifest, { isBundled: false });
 
     // Prompt for permissions if callback provided (before install)
     let effectivePermissions = grantedPermissions;

@@ -112,6 +112,18 @@ describe("resolveBundledEzAction — non-bundled rejection", () => {
     expect(resolveBundledEzAction("definitely-not-bundled:tool")).toBeNull();
   });
 
+  test("non-ASCII (unicode) extension name → null (bundled-trust gate)", () => {
+    // Bundled extension names are ASCII by construction (see
+    // BUNDLED_EXTENSIONS in src/extensions/bundled.ts). A
+    // non-ASCII left-side fails the bundled-trust check just like
+    // any other non-bundled name. Pinned per spec — the prior
+    // implicit behavior (fall through to the in-memory Set
+    // membership check) is now load-bearing.
+    expect(resolveBundledEzAction("日本:tool")).toBeNull();
+    // Mixed ASCII + unicode also rejected.
+    expect(resolveBundledEzAction("scratchpad日本:tool")).toBeNull();
+  });
+
   test("'distill' alias does NOT bypass bundled-trust if lessons-distiller is uninstalled (still resolves on shape)", () => {
     // The alias resolves on its literal name — the bundled-trust
     // check is implicit in the alias map (the entry only exists for

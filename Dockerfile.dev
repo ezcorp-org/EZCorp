@@ -18,11 +18,18 @@ COPY package.json bun.lock ./
 # gets bind-mounted/COPY'd later.
 COPY packages/@ezcorp/sdk/package.json packages/@ezcorp/sdk/
 COPY packages/@ezcorp/ai-kit/package.json packages/@ezcorp/ai-kit/
-RUN bun install --frozen-lockfile
+# `--ignore-scripts`: the @ezcorp/sdk package's `prepare` script (and the
+# root `postinstall`) compile the SDK to dist/ via tsc, but only the
+# package.json files have been COPY'd at this stage (the SDK source +
+# tsconfig.build.json land later via `COPY . .`). Skipping lifecycle
+# scripts lets the cache-friendly install layer succeed; the dev image
+# relies on Bun's "bun" exports condition (raw .ts at runtime), so dist/
+# is unnecessary here. Same rationale for the web install below.
+RUN bun install --frozen-lockfile --ignore-scripts
 
 # Install web dependencies (all, including dev)
 COPY web/package.json web/bun.lock web/
-RUN cd web && bun install --frozen-lockfile
+RUN cd web && bun install --frozen-lockfile --ignore-scripts
 
 # Copy everything for initial setup (source is bind-mounted over this at runtime)
 COPY . .

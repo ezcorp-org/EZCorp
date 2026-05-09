@@ -13,11 +13,15 @@ COPY package.json bun.lock ./
 # Workspace package.json required to resolve `workspace:*` specifiers.
 COPY packages/@ezcorp/sdk/package.json packages/@ezcorp/sdk/
 COPY packages/@ezcorp/ai-kit/package.json packages/@ezcorp/ai-kit/
-RUN bun install --frozen-lockfile
+# `--ignore-scripts`: SDK source + tsconfig haven't been COPY'd yet (only
+# the package.json), so the `prepare` script's tsc build can't succeed.
+# Skip lifecycle here; the SDK is rebuilt as needed once `COPY . .` lands.
+# Bun's "bun" exports condition resolves the SDK's raw .ts at runtime.
+RUN bun install --frozen-lockfile --ignore-scripts
 
 # Install web dependencies
 COPY web/package.json web/bun.lock web/
-RUN cd web && bun install --frozen-lockfile
+RUN cd web && bun install --frozen-lockfile --ignore-scripts
 
 # Install Playwright chromium + system deps
 RUN cd web && bunx playwright install --with-deps chromium

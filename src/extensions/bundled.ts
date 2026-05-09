@@ -351,7 +351,7 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
           google: ["gemini-2.0-flash-lite"],
           openai: ["gpt-4o-mini"],
           anthropic: ["claude-haiku-4-5-20250514"],
-          ollama: ["gemma2:2b", "qwen2.5"],
+          ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
         },
       },
       lessons: {
@@ -404,7 +404,7 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
           google: ["gemini-2.0-flash-lite"],
           openai: ["gpt-4o-mini"],
           anthropic: ["claude-haiku-4-5-20250514"],
-          ollama: ["gemma2:2b", "qwen2.5"],
+          ollama: ["gemma4:e2b", "gemma4:latest", "qwen3.6:35b"],
         },
       },
       memory: {

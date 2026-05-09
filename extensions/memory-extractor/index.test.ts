@@ -201,11 +201,11 @@ describe("extract — happy path", () => {
     expect(llmCall?.args).toMatchObject({ provider: "google", model: "gemini-2.0-flash-lite" });
   });
 
-  test("[N2] ollama provider resolves to gemma2:2b default (Phase 53.7 model swap)", async () => {
-    // Mirror of the lessons-distiller N2 guard. The Phase 53.7 model
-    // rename swapped fictional `gemma4:e2b` for the real `gemma2:2b`
-    // identifier. PROVIDER_DEFAULT_MODEL must resolve `provider:
-    // "ollama"` (no explicit model) to `gemma2:2b`.
+  test("[N2] ollama provider resolves to gemma4:e2b default", async () => {
+    // Mirror of the lessons-distiller N2 guard. PROVIDER_DEFAULT_MODEL
+    // must resolve `provider: "ollama"` (no explicit model) to
+    // `gemma4:e2b` — the locally-installed default shipped by EZCorp's
+    // Ollama support.
     const fake = makeFakeRuntime();
     _setRuntimeApiForTests(fake.api);
 
@@ -215,7 +215,7 @@ describe("extract — happy path", () => {
       projectId: "proj-1",
     });
     const llmCall = fake.calls.find((c) => c.api === "llmComplete");
-    expect(llmCall?.args).toMatchObject({ provider: "ollama", model: "gemma2:2b" });
+    expect(llmCall?.args).toMatchObject({ provider: "ollama", model: "gemma4:e2b" });
   });
 });
 

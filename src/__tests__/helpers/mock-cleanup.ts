@@ -83,7 +83,6 @@ const MODULE_PATHS = [
   "../../memory/injection",
   "../../memory/retrieval",
   "../../memory/embeddings",
-  "../../memory/extraction",
   "../../memory/lifecycle",
   "../../runtime/lessons/distiller",
   "../../runtime/lessons/triggers",

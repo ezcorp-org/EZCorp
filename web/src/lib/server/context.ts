@@ -23,7 +23,6 @@ import {
 } from "$server/extensions/lifecycle-dispatcher";
 import { EventSubscriptionDispatcher } from "$server/extensions/event-subscription-dispatcher";
 import { getConversationExtensionIds } from "$server/db/queries/conversation-extensions";
-import { registerExtractionListener } from "$server/memory/extraction";
 import {
   createCommandRegistry,
   type CommandRegistry,
@@ -47,7 +46,6 @@ let lifecycleDispatcher: LifecycleHookDispatcher | null = null;
 let eventSubscriptionDispatcher: EventSubscriptionDispatcher | null = null;
 let commandRegistry: CommandRegistry | null = null;
 let pipelines: PipelineDefinition[] = [];
-let extractionUnsub: (() => void) | null = null;
 let initialized = false;
 
 export async function ensureInitialized(): Promise<void> {
@@ -160,15 +158,17 @@ export async function ensureInitialized(): Promise<void> {
     );
   }
 
-  // Register memory extraction listener (fire-and-forget on run:complete)
-  extractionUnsub = registerExtractionListener(bus);
-
-  // Lessons distillation runs as a bundled extension as of Phase 53 Stage 2 —
-  // see `extensions/lessons-distiller/index.ts`'s
-  // `registerEventHandler("run:complete", …)`. Conversation→extension
+  // Memory extraction runs as a bundled extension as of Phase 53 Stage 2
+  // (this commit) — see `extensions/memory-extractor/index.ts`'s
+  // `registerEventHandler("run:complete", …)`. The boot-spawn block
+  // above ensures the subprocess is alive so the
+  // EventSubscriptionDispatcher can hand off `run:complete`. Lessons
+  // distillation works the same way (Phase 53.3,
+  // `extensions/lessons-distiller/index.ts`). Conversation→extension
   // wiring is auto-populated by `autoWireBundledExtensions` (new convs)
-  // and the one-time `migrateLessonsDistillerConversationWiring`
-  // backfill (existing convs).
+  // and one-time backfills (existing convs:
+  // `migrateLessonsDistillerConversationWiring` for distiller +
+  // `migrateMemoryExtractorConversationWiring` for memory-extractor).
 
   // Command registry: bridges filesystem roots + userCommands DB rows.
   // Home-dir scanning is gated via env flag so multi-tenant deploys can
@@ -239,8 +239,6 @@ export async function reloadPipelines(): Promise<void> {
 }
 
 function reset(): void {
-  if (extractionUnsub) extractionUnsub();
-  extractionUnsub = null;
   // Tear down executor-owned timers + in-flight runs before dropping
   // the reference; otherwise the orphan-cleanup interval keeps the
   // singleton (and its closures) alive for the lifetime of the process.

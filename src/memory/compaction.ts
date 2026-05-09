@@ -15,6 +15,23 @@ async function generateEmbedding(text: string): Promise<number[]> {
 const COMPACTION_SIMILARITY_THRESHOLD = 0.90;
 const LOCK_KEY = "compaction:lastRun";
 
+// Cheapest-model lookup per provider family for the compaction merge
+// LLM call. Inlined here in Phase 53 Stage 2 — previously imported as
+// `getExtractionModel` from the now-deleted `src/memory/extraction.ts`.
+// The bundled `memory-extractor` extension owns its own copy of this
+// map; the compaction merge is host-internal so it carries its own.
+const COMPACTION_MODELS: Record<string, string> = {
+  anthropic: "claude-haiku-4-5-20250514",
+  openai: "gpt-4o-mini",
+  google: "gemini-2.0-flash-lite",
+};
+
+function pickCompactionModel(activeProvider: string): { provider: string; model: string } {
+  const model = COMPACTION_MODELS[activeProvider];
+  if (model) return { provider: activeProvider, model };
+  return { provider: "google", model: "gemini-2.0-flash-lite" };
+}
+
 /**
  * Merge two memory contents via LLM into a single consolidated statement.
  * Falls back to concatenation if no LLM is available.
@@ -24,11 +41,10 @@ export async function mergeContents(contentA: string, contentB: string): Promise
     const { complete } = await import("@mariozechner/pi-ai");
     const { resolveModel } = await import("../providers/router");
     const { getCredential } = await import("../providers/credentials");
-    const { getExtractionModel } = await import("./extraction");
 
     // Determine which provider/model to use (cheapest available)
     const settingsProvider = (await getSetting("global:provider") as string) ?? "google";
-    const { provider, model } = getExtractionModel(settingsProvider);
+    const { provider, model } = pickCompactionModel(settingsProvider);
 
     const resolved = await resolveModel(provider, model);
     const cred = await getCredential(resolved.provider);

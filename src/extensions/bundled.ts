@@ -370,14 +370,17 @@ const BUNDLED_EXTENSIONS: BundledExtension[] = [
     },
   },
   {
-    // Phase 53 Stage 1 — bundled port of the legacy memory pipeline
-    // (src/memory/extraction.ts + src/memory/compaction.ts). Mirrors
-    // the lessons-distiller layout: `extensions/<name>/` with
-    // ezcorp.config.ts manifest, package.json, and an event-handler
-    // entrypoint. Stage 2 (a separate atomic commit gated on UAT
-    // signoff) deletes the legacy extraction.ts; compaction.ts stays
-    // host-side because it's the implementation behind the
-    // `runtime.memory.compact` invoke handler.
+    // Phase 53 Stage 2 — bundled port of the legacy memory pipeline.
+    // The legacy `src/memory/extraction.ts` was deleted alongside this
+    // extension's promotion to sole `run:complete` consumer; this
+    // bundled extension now owns the entire extraction path.
+    // `src/memory/compaction.ts` survives host-side because it's the
+    // implementation behind the `runtime.memory.compact` invoke
+    // handler. `src/memory/dedup.ts` also survives — cross-extension
+    // dedup must mediate every memory write, regardless of which
+    // extension authored it. Mirrors the lessons-distiller layout:
+    // `extensions/<name>/` with ezcorp.config.ts manifest, package.json,
+    // and an event-handler entrypoint.
     //
     // `permissions.memory.selfOnly = false` is intentional: see the
     // file-leading comment in `extensions/memory-extractor/ezcorp.config.ts`

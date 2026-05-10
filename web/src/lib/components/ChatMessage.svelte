@@ -27,6 +27,7 @@
 	} from "$lib/chat/extension-toolbar-action.js";
 	import { userFetch } from "$lib/utils/fetch-policy.js";
 	import { addToast } from "$lib/toast.svelte.js";
+	import { longPress } from "$lib/actions/longPress.js";
 
 	interface ProviderUnavailableError {
 		type: "provider_unavailable";
@@ -211,10 +212,38 @@
 		messageId: string,
 	) {
 		if (!isSelectable && !e.shiftKey) return;
-		if (e.target instanceof Element && e.target.closest('a, button, [role="button"], input, textarea, [contenteditable="true"]')) {
-			return;
-		}
+		if (isInteractiveDescendant(e.target)) return;
 		callback?.(messageId, e);
+	}
+
+	// Shared descendant guard: a long-press or click that lands on a link,
+	// button, input, or contenteditable inside the row should keep its
+	// native behavior (navigate / submit / focus) rather than toggle
+	// selection. Identical predicate as handleRowClick's `closest()` check.
+	function isInteractiveDescendant(target: EventTarget | null): boolean {
+		return (
+			target instanceof Element &&
+			target.closest('a, button, [role="button"], input, textarea, [contenteditable="true"]') !== null
+		);
+	}
+
+	// Long-press → fire onselectionchange with a synthetic shiftKey:true
+	// event so the existing toggleSelectedMessage handler treats it like
+	// shift+click: auto-enters select mode outside it, range-extends from
+	// the anchor inside it. Mobile-equivalent of desktop shift+click.
+	function handleLongPress(
+		e: PointerEvent,
+		callback: ((id: string, ev?: MouseEvent | KeyboardEvent) => void) | undefined,
+		messageId: string,
+	) {
+		const synthetic = new MouseEvent("click", {
+			bubbles: false,
+			cancelable: true,
+			shiftKey: true,
+			clientX: e.clientX,
+			clientY: e.clientY,
+		});
+		callback?.(messageId, synthetic);
 	}
 
 	// ── Extension `messageToolbar[]` slot ─────────────────────────
@@ -410,6 +439,10 @@
 		data-excluded={message.excluded ? 'true' : undefined}
 		onclick={(e) => handleRowClick(e, selectable, onselectionchange, message.id)}
 		onkeydown={selectable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselectionchange?.(message.id, e); } } : undefined}
+		use:longPress={{
+			onLongPress: (e) => handleLongPress(e, onselectionchange, message.id),
+			shouldFire: (t) => !isInteractiveDescendant(t),
+		}}
 		role={selectable ? 'checkbox' : undefined}
 		aria-checked={selectable ? selected : undefined}
 		tabindex={selectable ? 0 : undefined}
@@ -460,6 +493,10 @@
 		data-excluded={message.excluded ? 'true' : undefined}
 		onclick={(e) => handleRowClick(e, selectable, onselectionchange, message.id)}
 		onkeydown={selectable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselectionchange?.(message.id, e); } } : undefined}
+		use:longPress={{
+			onLongPress: (e) => handleLongPress(e, onselectionchange, message.id),
+			shouldFire: (t) => !isInteractiveDescendant(t),
+		}}
 		role={selectable ? 'checkbox' : undefined}
 		aria-checked={selectable ? selected : undefined}
 		tabindex={selectable ? 0 : undefined}

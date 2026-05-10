@@ -115,6 +115,22 @@ COPY --from=builder /app/packages/@ezcorp/ai-kit/skills ./packages/@ezcorp/ai-ki
 # Copy bundled extension definitions (needed by src/extensions/bundled.ts at runtime)
 COPY --from=builder /app/docs ./docs
 
+# Phase 53 bundled extensions (lessons-distiller, memory-extractor) live at
+# extensions/<name>/ rather than docs/extensions/examples/<name>/. Without
+# this COPY, src/extensions/bundled.ts:393,428 resolves the path to
+# /app/extensions/<name>/ezcorp.config.ts which doesn't exist, install fails,
+# and the boot-spawn helper silently skips both — distillation and memory
+# extraction never run for any user.
+COPY --from=builder /app/extensions ./extensions
+
+# Bundled-extension tamper lockfile. src/extensions/bundled-lock.ts opens
+# /app/manifest.lock.json on every boot and fails-closed when missing —
+# logged as `Manifest tamper detected for bundled extension <name>`. The
+# tamper branch in bundled.ts:626-651 short-circuits the manifest refresh,
+# which in turn blocks the eventSubscriptions auto-heal from updating the
+# DB grant. Symptom: POSTs to `/api/extensions/<name>/events/<event>` 404.
+COPY --from=builder /app/manifest.lock.json ./manifest.lock.json
+
 # Copy compiled SvelteKit app
 COPY --from=builder /app/web/build ./web/build
 

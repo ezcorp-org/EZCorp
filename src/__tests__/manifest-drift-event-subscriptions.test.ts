@@ -411,4 +411,110 @@ describe("detectAndLogManifestDrift — eventSubscriptions decision matrix", () 
     expect(auditCounts.get(EXT_AUDIT_ACTIONS.BUNDLED_EVENT_SUBSCRIPTIONS_BACKFILLED) ?? 0)
       .toBe(1);
   });
+
+  test("appendMessages: disk declares config, grant column is empty → grant is backfilled", async () => {
+    // Same shape as the eventSubscriptions intra-row drift but for the
+    // appendMessages config field. The route at
+    // `web/src/routes/api/extensions/[name]/events/[event]/+server.ts:295`
+    // checks `granted?.appendMessages` and returns 403 when undefined,
+    // so a bundled extension whose grant is missing this field can't
+    // round-trip messageToolbar events even though its on-disk
+    // manifest declares it. Auto-heal must populate the grant from
+    // disk for bundled rows.
+    mockDiskManifest = {
+      schemaVersion: 2,
+      name: "claude-design",
+      version: "0.1.0",
+      description: "stub",
+      author: { name: "stub" },
+      entrypoint: "./index.ts",
+      tools: [],
+      permissions: {
+        eventSubscriptions: ["claude-design:knob-change"],
+        appendMessages: { excludedDefault: true },
+      },
+    };
+    seedAll({
+      name: "claude-design",
+      row: {
+        id: "ext-1",
+        name: "claude-design",
+        installPath: "docs/extensions/examples/claude-design",
+        enabled: true,
+        isBundled: true,
+        manifest: {
+          schemaVersion: 2,
+          name: "claude-design",
+          version: "0.1.0",
+          permissions: {
+            eventSubscriptions: ["claude-design:knob-change"],
+          },
+        },
+        grantedPermissions: {
+          eventSubscriptions: ["claude-design:knob-change"],
+          grantedAt: { eventSubscriptions: 1 },
+        },
+      },
+    });
+    await ensureBundledExtensions();
+    const row = store.get("claude-design")!;
+    expect(
+      (row.grantedPermissions as { appendMessages?: unknown }).appendMessages,
+    ).toEqual({ excludedDefault: true });
+    expect(
+      ((row.manifest.permissions as { appendMessages?: unknown })?.appendMessages),
+    ).toEqual({ excludedDefault: true });
+  });
+
+  test("intra-row drift: manifest column has the events but grant column is empty → grant is backfilled", async () => {
+    // Production bug: `kokoro-tts` shipped initially with the
+    // eventSubscriptions field in `bundled.ts`'s manifest blob (which
+    // becomes the `extensions.manifest` JSONB column at install) but
+    // the install path didn't propagate the field into the
+    // `granted_permissions` column. The earlier auto-heal computed
+    // additions over the UNION of both columns and bailed when the
+    // manifest column already covered disk — silently leaving the
+    // grant column empty. Dispatcher reads from the grant column at
+    // `web/src/lib/server/context.ts:114`, so `kokoro-tts:speak`
+    // never registered with the SSE filter and POSTs returned 404.
+    //
+    // Pin the per-column gap detection so this case backfills the
+    // grant even when the manifest column already matches disk.
+    mockDiskManifest = {
+      schemaVersion: 2,
+      name: "claude-design",
+      version: "0.1.0",
+      description: "stub",
+      author: { name: "stub" },
+      entrypoint: "./index.ts",
+      tools: [],
+      permissions: { eventSubscriptions: ["claude-design:knob-change"] },
+    };
+    seedAll({
+      name: "claude-design",
+      row: {
+        id: "ext-1",
+        name: "claude-design",
+        installPath: "docs/extensions/examples/claude-design",
+        enabled: true,
+        isBundled: true,
+        manifest: {
+          schemaVersion: 2,
+          name: "claude-design",
+          version: "0.1.0",
+          // Manifest column ALREADY has the event...
+          permissions: { eventSubscriptions: ["claude-design:knob-change"] },
+        },
+        // ...but the grant column does not.
+        grantedPermissions: { grantedAt: { install: 1 } },
+      },
+    });
+    await ensureBundledExtensions();
+    const row = store.get("claude-design")!;
+    expect(row.grantedPermissions.eventSubscriptions).toEqual([
+      "claude-design:knob-change",
+    ]);
+    expect(auditCounts.get(EXT_AUDIT_ACTIONS.BUNDLED_EVENT_SUBSCRIPTIONS_BACKFILLED) ?? 0)
+      .toBe(1);
+  });
 });

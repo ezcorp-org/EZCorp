@@ -963,18 +963,42 @@ async function detectAndLogManifestDrift(
     ? (dbGranted!.eventSubscriptions as string[])
     : [];
 
-  // Union of "what's already on the row". Merging via Set so duplicates
-  // don't accumulate when the disk and grant both declare the same entry.
-  const existing = new Set<string>([...dbManifestEvents, ...dbGrantedEvents]);
-  const additions = diskEvents.filter((e) => !existing.has(e));
+  // Compute the per-column gap independently. Earlier versions used the
+  // UNION of (manifest events ∪ grant events) and bailed when the disk
+  // declarations were already covered there — but that masked an
+  // intra-row drift case: a row whose `manifest.permissions.eventSubscriptions`
+  // already lists the events while `granted_permissions.eventSubscriptions`
+  // is empty (kokoro-tts under the original install path was the canonical
+  // example). The dispatcher reads from the GRANT column at
+  // `web/src/lib/server/context.ts:114`, so a manifest-only declaration
+  // never reaches the SSE filter — and `/api/extensions/<n>/events/<e>`
+  // returns 404 because `isRegisteredExtensionEvent` is false.
+  //
+  // Treating the columns independently fixes this. We still UNION-merge
+  // when writing back so duplicates don't accumulate.
+  const grantGap = diskEvents.filter((e) => !dbGrantedEvents.includes(e));
+  const manifestGap = diskEvents.filter((e) => !dbManifestEvents.includes(e));
 
-  if (additions.length === 0) return;
+  // The eventSubscriptions branch may bail early when both columns
+  // already cover disk; in that case fall through to the
+  // appendMessages branch, which has its own per-field gap detection.
+  if (grantGap.length === 0 && manifestGap.length === 0) {
+    await healBundledAppendMessages(
+      entry,
+      extensionId,
+      dbManifest,
+      dbGranted,
+      diskPerms as Record<string, unknown>,
+      dbPerms as Record<string, unknown>,
+    );
+    return;
+  }
 
-  // Compose the new grant + manifest so the union holds across both
-  // columns. Idempotent — same on-disk additions on the next boot
-  // produce no further diffs.
-  const newGrantedEvents = Array.from(new Set<string>([...dbGrantedEvents, ...additions]));
-  const newManifestEvents = Array.from(new Set<string>([...dbManifestEvents, ...additions]));
+  // Compose the new grant + manifest. Idempotent — once both columns
+  // contain `diskEvents`, both gaps are empty and the function returns
+  // early on the next boot.
+  const newGrantedEvents = Array.from(new Set<string>([...dbGrantedEvents, ...grantGap]));
+  const newManifestEvents = Array.from(new Set<string>([...dbManifestEvents, ...manifestGap]));
 
   try {
     const updates: Partial<{
@@ -1027,7 +1051,8 @@ async function detectAndLogManifestDrift(
   log.info("Backfilled bundled extension eventSubscriptions from disk manifest", {
     name: entry.name,
     extensionId,
-    additions,
+    grantGap,
+    manifestGap,
   });
 
   try {
@@ -1040,6 +1065,129 @@ async function detectAndLogManifestDrift(
         "bundled-event-subscriptions-backfilled: on-disk manifest declared additions not " +
         "present in the DB grant. Auto-heal — eventSubscriptions are infrastructure plumbing, " +
         "not a privacy/safety boundary.",
+    };
+    await insertAuditEntry(
+      null,
+      EXT_AUDIT_ACTIONS.BUNDLED_EVENT_SUBSCRIPTIONS_BACKFILLED,
+      extensionId,
+      meta,
+    );
+  } catch { /* non-fatal — the info log is the primary signal */ }
+
+  // ── appendMessages auto-heal branch ──────────────────────────────
+  //
+  // Same intra-row drift shape as eventSubscriptions: kokoro-tts (and
+  // any future bundled extension that grows an `appendMessages` config
+  // post-install) ships the field in `bundled.ts`'s manifest blob, but
+  // rows installed before that change have `granted_permissions.appendMessages`
+  // unset. The route at
+  // `web/src/routes/api/extensions/[name]/events/[event]/+server.ts:295`
+  // checks `granted?.appendMessages` and returns 403 when undefined,
+  // even though the on-disk manifest declares the config.
+  //
+  // appendMessages is bundled-trust infrastructure plumbing — same
+  // rationale as eventSubscriptions. The on-disk manifest is the
+  // source of truth for bundled extensions (code review is the
+  // approval gate, S6 model). Auto-heal copies the disk value into
+  // BOTH the grant and the DB manifest column when either is
+  // missing. Idempotent.
+  await healBundledAppendMessages(
+    entry,
+    extensionId,
+    dbManifest,
+    dbGranted,
+    diskPerms as Record<string, unknown>,
+    dbPerms as Record<string, unknown>,
+  );
+}
+
+async function healBundledAppendMessages(
+  entry: BundledExtension,
+  extensionId: string,
+  dbManifest: ExtensionManifestV2,
+  dbGranted: ExtensionPermissions | undefined,
+  diskPerms: Record<string, unknown>,
+  dbPerms: Record<string, unknown>,
+): Promise<void> {
+  const diskValue = diskPerms.appendMessages as
+    | { excludedDefault: boolean }
+    | undefined;
+  if (diskValue === undefined) return;
+
+  const dbManifestValue = dbPerms.appendMessages as
+    | { excludedDefault: boolean }
+    | undefined;
+  const dbGrantedValue = dbGranted?.appendMessages;
+
+  const grantNeedsHeal = JSON.stringify(dbGrantedValue) !== JSON.stringify(diskValue);
+  const manifestNeedsHeal = JSON.stringify(dbManifestValue) !== JSON.stringify(diskValue);
+
+  if (!grantNeedsHeal && !manifestNeedsHeal) return;
+
+  try {
+    const updates: Partial<{
+      grantedPermissions: ExtensionPermissions;
+      manifest: ExtensionManifestV2;
+    }> = {};
+    if (dbGranted && grantNeedsHeal) {
+      updates.grantedPermissions = {
+        ...dbGranted,
+        appendMessages: diskValue,
+        grantedAt: {
+          ...(dbGranted.grantedAt ?? {}),
+          appendMessages: Date.now(),
+        },
+      };
+    }
+    if (manifestNeedsHeal) {
+      const newManifest: ExtensionManifestV2 = {
+        ...dbManifest,
+        permissions: {
+          ...(dbManifest.permissions ?? {}),
+          appendMessages: diskValue,
+        },
+      };
+      updates.manifest = newManifest;
+      // Mirror the eventSubscriptions branch: keep the in-memory snapshot
+      // in sync so the downstream manifest-refresh path doesn't undo
+      // this write on the same boot.
+      if (dbManifest.permissions == null) {
+        (dbManifest as { permissions: Record<string, unknown> }).permissions = {
+          appendMessages: diskValue,
+        };
+      } else {
+        (dbManifest.permissions as { appendMessages?: { excludedDefault: boolean } })
+          .appendMessages = diskValue;
+      }
+    }
+    if (Object.keys(updates).length === 0) return;
+    await updateExtension(extensionId, updates);
+  } catch (writeErr) {
+    log.warn("appendMessages backfill write failed", {
+      name: entry.name,
+      extensionId,
+      error: String(writeErr),
+    });
+    return;
+  }
+
+  log.info("Backfilled bundled extension appendMessages from disk manifest", {
+    name: entry.name,
+    extensionId,
+    grantNeedsHeal,
+    manifestNeedsHeal,
+  });
+
+  try {
+    const meta: ExtensionAuditMetadata = {
+      permission: "appendMessages",
+      oldValue: dbGrantedValue ?? null,
+      newValue: diskValue,
+      actor: "system",
+      reason:
+        "bundled-append-messages-backfilled: on-disk manifest declared appendMessages config " +
+        "not present in the DB grant. Auto-heal — appendMessages is infrastructure plumbing " +
+        "for the ezcorp/append-message reverse-RPC, not a privacy/safety boundary.",
     };
     await insertAuditEntry(
       null,

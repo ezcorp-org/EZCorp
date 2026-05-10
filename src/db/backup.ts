@@ -25,6 +25,7 @@ const INTERVAL_PREFIXES = ["ezcorp-db-", "pi-db-"] as const;
 const INTERVAL_PREFIX = INTERVAL_PREFIXES[0];
 const PRE_BOOT_PREFIX = "pre-boot-";
 const MARKER_FILENAME = ".migration-failed";
+const RECOVERY_MARKER_FILENAME = ".ezcorp-recovery-needed.json";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -49,6 +50,14 @@ function markerPath(): string {
     ? `${process.env.HOME}/ez-corp/.data`
     : dirname(dbPath);
   return join(base, MARKER_FILENAME);
+}
+
+function recoveryMarkerPath(): string {
+  const dbPath = getDbPath();
+  const base = dbPath === "external" || dbPath === ":memory:"
+    ? `${process.env.HOME}/ez-corp/.data`
+    : dirname(dbPath);
+  return join(base, RECOVERY_MARKER_FILENAME);
 }
 
 function performBackup(): void {
@@ -176,6 +185,67 @@ export function clearMarker(): void {
       rmSync(path, { force: true });
     } catch (err) {
       log.warn("Could not clear migration marker", { error: String(err) });
+    }
+  }
+}
+
+/**
+ * Recovery-needed marker. Written by `initPglite()` when `openPglite()` throws
+ * and `EZCORP_AUTO_DESTROY_ON_OPEN_FAILURE` is NOT set. Distinct from the
+ * migration-failed marker (`.migration-failed`) — that one is a circuit
+ * breaker for migrate() failures with a pre-boot snapshot; this one signals
+ * "the DB dir itself couldn't be opened; operator must intervene."
+ *
+ * The default policy on open failure is "do nothing destructive": leave the
+ * data dir intact, drop this marker so /api/ready can surface it, throw so
+ * the boot path stays unhealthy. Two production incidents on 2026-05-10
+ * destroyed user data when the old catch branch auto-renamed the dir.
+ */
+export interface RecoveryNeededMarker {
+  /** ISO timestamp when the marker was written. */
+  ts: string;
+  /** EZCORP_IMAGE_SHA, or "dev" for unbuilt local runs. */
+  imageSha: string;
+  /** String form of the open error (truncated to 2000 chars). */
+  error: string;
+  /** The DB path that failed to open — operators may need it for recovery. */
+  dbPath: string;
+}
+
+export function readRecoveryMarker(): RecoveryNeededMarker | null {
+  const path = recoveryMarkerPath();
+  if (!existsSync(path)) return null;
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw);
+    if (
+      typeof parsed?.ts === "string" &&
+      typeof parsed?.imageSha === "string" &&
+      typeof parsed?.error === "string" &&
+      typeof parsed?.dbPath === "string"
+    ) {
+      return parsed as RecoveryNeededMarker;
+    }
+    return null;
+  } catch (err) {
+    log.warn("Could not parse recovery-needed marker", { error: String(err) });
+    return null;
+  }
+}
+
+export function writeRecoveryMarker(marker: RecoveryNeededMarker): void {
+  const path = recoveryMarkerPath();
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(marker, null, 2), { mode: 0o600 });
+}
+
+export function clearRecoveryMarker(): void {
+  const path = recoveryMarkerPath();
+  if (existsSync(path)) {
+    try {
+      rmSync(path, { force: true });
+    } catch (err) {
+      log.warn("Could not clear recovery-needed marker", { error: String(err) });
     }
   }
 }

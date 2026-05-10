@@ -10,6 +10,8 @@ import {
   readMarker,
   writeMarker,
   clearMarker,
+  writeRecoveryMarker,
+  clearRecoveryMarker,
 } from "./backup";
 const log = logger.child("db");
 
@@ -119,15 +121,79 @@ async function initPglite(): Promise<void> {
     _pglite = await openPglite(dbArg);
   } catch (e) {
     if (IS_MEMORY || !existsSync(DB_PATH)) throw e;
-    // Data directory is corrupted -- back it up and start fresh
-    const backup = `${DB_PATH}.corrupted.${Date.now()}`;
-    log.error("PGlite failed to open — backing up corrupted data", { backup });
-    renameSync(DB_PATH, backup);
-    mkdirSync(DB_PATH, { recursive: true });
-    _pglite = await openPglite(dbArg);
+
+    // Two production incidents on 2026-05-10 lost user data because the
+    // old catch branch interpreted ANY openPglite() failure as corruption
+    // and renamed the data dir aside (`${DB_PATH}.corrupted.${Date.now()}`).
+    // The stale-`postmaster.pid` pre-flight in this same function (above)
+    // removed the most common false positive, but partial WAL writes,
+    // transient FS issues, kernel page-cache pressure, or a future PGlite
+    // regression could still throw — and "destroy the data" is the wrong
+    // default for any of those.
+    //
+    // New default: fail loud. Write a recovery-needed marker so operators
+    // see the state via /api/ready, log the error with recovery hints, and
+    // re-throw so initDb() propagates and the boot path stays unhealthy.
+    // Docker's restart loop + the healthcheck failing surfaces the issue
+    // without us touching the data.
+    //
+    // Legacy opt-in: EZCORP_AUTO_DESTROY_ON_OPEN_FAILURE=1 (or "true")
+    // restores the rename-and-restart-fresh path for fresh installs / CI /
+    // self-hosters who explicitly want auto-recovery.
+    const autoDestroyFlag = process.env.EZCORP_AUTO_DESTROY_ON_OPEN_FAILURE;
+    const autoDestroy = autoDestroyFlag === "1" || autoDestroyFlag === "true";
+
+    if (autoDestroy) {
+      const backup = `${DB_PATH}.corrupted.${Date.now()}`;
+      log.error("PGlite failed to open — EZCORP_AUTO_DESTROY_ON_OPEN_FAILURE=1; backing up data and starting fresh", { backup });
+      renameSync(DB_PATH, backup);
+      mkdirSync(DB_PATH, { recursive: true });
+      _pglite = await openPglite(dbArg);
+    } else {
+      const imageSha = process.env.EZCORP_IMAGE_SHA ?? "dev";
+      const errorStr = (e instanceof Error ? (e.stack ?? e.message) : String(e)).slice(0, 2000);
+      const recovery = [
+        `Inspect snapshots under ${join(DB_PATH, "..", "backups")} (pre-boot-* and ezcorp-db-*) for a clean copy.`,
+        `Stop the container, replace ${DB_PATH} with a snapshot, then restart.`,
+        `See docs/production-guide.md "Recovering from data-recovery-needed state" for the full recipe.`,
+        `Only set EZCORP_AUTO_DESTROY_ON_OPEN_FAILURE=1 if you understand the data loss tradeoff.`,
+      ];
+      try {
+        writeRecoveryMarker({
+          ts: new Date().toISOString(),
+          imageSha,
+          error: errorStr,
+          dbPath: DB_PATH,
+        });
+      } catch (markerErr) {
+        // Marker write is best-effort — if the volume is read-only we still
+        // want the error/log/readiness to surface.
+        log.warn("Could not write recovery-needed marker", { error: String(markerErr) });
+      }
+      log.error(
+        "PGlite failed to open — data preserved (auto-destroy disabled)",
+        { error: errorStr, dbPath: DB_PATH, recovery },
+      );
+      setReadiness({
+        state: "degraded",
+        reason: "data-recovery-needed",
+        detail: {
+          message: "PGlite open() failed and auto-destroy is disabled. Data dir left intact; operator intervention required.",
+          imageSha,
+          dbPath: DB_PATH,
+          error: errorStr.slice(0, 500),
+          recovery,
+        },
+      });
+      throw e;
+    }
   }
 
   _db = drizzle(_pglite, { schema });
+  // Successful open: clear any stale recovery-needed marker from a prior
+  // failed boot. Mirrors clearMarker() for the migration-failed circuit
+  // breaker further down.
+  clearRecoveryMarker();
   log.info("Database mode: embedded PGlite", { path: DB_PATH });
 
   try {

@@ -1,6 +1,7 @@
 import * as schema from "./schema";
 import { migrate } from "./migrate";
-import { mkdirSync, renameSync, existsSync, cpSync } from "node:fs";
+import { mkdirSync, renameSync, existsSync, cpSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { logger } from "../logger";
 import { setReadiness } from "../readiness";
 import {
@@ -84,6 +85,35 @@ async function initPglite(): Promise<void> {
   // Snapshot before open+migrate so we have a rollback target. Always-on:
   // the DB is small, `cpSync` is cheap, and rotation (3) bounds disk use.
   if (!IS_MEMORY) snapshotPreBoot();
+
+  // Pre-flight: clear stale lock files left by an unclean shutdown.
+  // PGlite is single-process — the only writer is the previous instance
+  // of THIS container, which is dead by the time initDb() runs. A
+  // `postmaster.pid`/`postmaster.opts` left behind from a SIGKILL
+  // (e.g. `docker compose up -d --force-recreate` killing the old
+  // container before pglite.close() flushed) causes openPglite to abort
+  // with a WASM-level "Aborted()" — which the old catch branch below
+  // misinterpreted as data corruption and renamed the dir aside,
+  // destroying user data on every recreate. Removing the stale locks
+  // here fixes the false positive without weakening the corrupted-data
+  // fallback for genuinely unreadable directories. See
+  // `tasks/incident-2026-05-10-stale-pid.md` for the full timeline.
+  if (!IS_MEMORY && existsSync(DB_PATH)) {
+    for (const lockfile of ["postmaster.pid", "postmaster.opts"]) {
+      const path = join(DB_PATH, lockfile);
+      if (existsSync(path)) {
+        try {
+          unlinkSync(path);
+          log.info("Removed stale PGlite lock file", { path });
+        } catch (rmErr) {
+          log.warn("Failed to remove stale PGlite lock file", {
+            path,
+            error: String(rmErr),
+          });
+        }
+      }
+    }
+  }
 
   try {
     _pglite = await openPglite(dbArg);

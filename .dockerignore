@@ -3,6 +3,48 @@ web/node_modules
 web/.svelte-kit
 .git
 .planning
-agent/sessions
-*.test.ts
-src/__tests__
+
+# Secrets — NEVER part of the build context. The prod Dockerfile does a
+# broad `COPY . .` into the builder stage, so without these excludes a
+# host .env.prod / .pi-secret / agent auth token gets baked into the
+# builder image layer. None of these are build inputs: runtime config is
+# injected via compose env (env_file/environment), not COPY.
+.env
+.env.*
+**/.pi-secret
+**/.pi-salt
+agent
+web/e2e
+
+# Runtime data, NOT a build input: extensions, extension-data, DB
+# snapshot backups, daemon pid files. Gitignored, 100s of MB, and
+# partly mode-0700/uid-1000 (prod `bun` writes backups) so the
+# host-uid build-context sender gets EACCES on it — which silently
+# breaks `docker compose up --build`. Provided at runtime via the
+# volume + scoped bind mounts in docker-compose.yml / compose.prod.yml.
+# `**/` so it also catches web/.ezcorp (dev cwd=/app/web stray pid dir).
+**/.ezcorp
+/data/
+/web/data/
+*.db
+ez-corp-db
+
+# Local-only trees, never build inputs. worktrees/ alone is multi-GB
+# (each holds its own node_modules); sending it stalls or EACCES-breaks
+# `docker compose up --build`.
+worktrees
+projects
+tasks
+coverage
+test-results
+.playwright-mcp
+TESTENV
+
+# Tests aren't shipped in the prod runtime image. Must be `**/`-prefixed:
+# the runtime stage does `COPY --from=builder /app/src ./src`, so a
+# non-recursive `*.test.ts` (root-only match) silently leaves co-located
+# src/**/*.test.ts in the final image. `**/__tests__` likewise covers
+# src/__tests__, packages/*/src/__tests__, and web nested suites.
+**/*.test.ts
+**/*.spec.ts
+**/__tests__

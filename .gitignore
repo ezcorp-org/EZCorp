@@ -52,7 +52,12 @@ agent/auth.json
 *.db
 ez-corp-db/
 
-# runtime extension installs (installFromGitHub / installFromGit copy here)
+# Runtime data dir (root + web/ when dev cwd=web). Holds installFromGitHub
+# / installFromGit extension scratch copies and any local EZCORP_DB_PATH
+# override pointed inside the tree. Root-anchored so it never shadows the
+# tracked example data under docs/.../data/ or web/src/lib/data/.
+/data/
+/web/data/
 **/data/extensions/
 
 # wrangler

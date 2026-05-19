@@ -102,10 +102,22 @@ services:
       # axe is redundant and harmful.
       IDLE_TIMEOUT: "0"
     volumes:
-      # Single named volume covers both the PGlite data dir (/app/data/ezcorp)
-      # and snapshot backups (/app/data/backups). Surviving `docker compose
-      # down` is automatic; only `docker compose down -v` destroys it.
+      # Named volume covers the LIVE PGlite data dir (/app/data/ezcorp).
+      # Surviving `docker compose down` is automatic; only `docker compose
+      # down -v` destroys it. The live DB dir is INTENTIONALLY left on the
+      # volume — never bind-mount a running PGlite/Postgres data dir
+      # (locking/fsync/uid hazards, zero hand-edit benefit).
       - ezcorp-data:/app/data
+      # Snapshot backups, scoped-bound to the host so they're reachable
+      # for offsite copy WITHOUT exposing the live DB dir. Layered on top
+      # of the ezcorp-data volume above; /app/data/ezcorp stays
+      # volume-backed. Backups are write-once-read-many (safe to bind).
+      # `.ezcorp/` is gitignored, so the snapshots never enter git.
+      # OWNERSHIP: prod runs as uid 1000 (`bun`); the host dir is
+      # chown'd 1000:1000 / 0700 so the snapshot job can write. The host
+      # login user (uid 1001 here) therefore needs sudo to read them,
+      # and the dev stack (root) must not also bind this path.
+      - ./.ezcorp/backups:/app/data/backups
       # Persist extension-generated files (openai-image-gen-2 writes PNG/WEBP
       # here; rehydrator reads them back on subsequent turns so the model
       # can describe/edit prior images). WORKDIR=/app in Dockerfile, so
@@ -113,6 +125,20 @@ services:
       # mount, every container restart or image upgrade wipes the files
       # and tool-card URLs 404 silently.
       - ext-data:/app/.ezcorp
+      # Scoped host bind mounts layered ON TOP of ext-data: prod-authored
+      # extensions + their extension-data land in the host tree at
+      # ./.ezcorp/ (gitignored). Daemon `.pid` files stay volume-backed
+      # (not bound) to avoid cross-PID-namespace false "already running".
+      #
+      # CAVEAT — ownership: this prod image runs as the unprivileged
+      # `bun` user, while the dev stack (docker-compose.yml) runs as
+      # root and binds the SAME host dirs. Files one stack creates are
+      # owned by that stack's uid; the other stack may hit EACCES writing
+      # into them. If you run BOTH stacks against this checkout, either
+      # (a) run prod as root, or (b) `chown -R` the host ./.ezcorp/
+      # subtrees to the `bun` uid, or (c) give prod its own host dir.
+      - ./.ezcorp/extensions:/app/.ezcorp/extensions
+      - ./.ezcorp/extension-data:/app/.ezcorp/extension-data
     healthcheck:
       # Liveness probe. Readiness is served separately at /api/ready — hook
       # that into your orchestrator if you have one.

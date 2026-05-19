@@ -29,7 +29,7 @@ export default defineExtension({
     {
       name: "create_extension",
       description:
-        "Scaffold a new EZCorp extension and create a proposal-card draft for the user to review and install. Returns { draftId, openUrl, name, type } — the host's tool-result card renders openUrl as a one-button \"Open prefilled form\".\n\nSUPPORTED TYPES: tool, skill, agent, multi (see docs/extensions/AUTHORING.md for the contract of each).\n\nIMPORTANT — env-key-leak install gate: do NOT declare any env name matching /(_API_KEY|TOKEN|SECRET)$/i in `permissions.env`. The install will be REFUSED. If the user needs an API credential, take it as a tool input parameter instead.\n\nREAD docs/extensions/AUTHORING.md for the full authoring contract before invoking this tool.",
+        "Scaffold a new EZCorp extension and create a draft. Returns { draftId, openUrl, name, type }.\n\nSUPPORTED TYPES: tool, skill, agent, multi (see docs/extensions/AUTHORING.md for the contract of each).\n\nIMPORTANT — env-key-leak install gate: do NOT declare any env name matching /(_API_KEY|TOKEN|SECRET)$/i in `permissions.env`. The install will be REFUSED. If the user needs an API credential, take it as a tool input parameter instead.\n\nREAD docs/extensions/AUTHORING.md for the full authoring contract before invoking this tool.\n\nWORKFLOW — this is STEP 1 of a fixed 3-step chain: create_extension → validate_extension → install_draft. After this returns successfully you MUST proceed to validate_extension, then install_draft, in the SAME turn, WITHOUT waiting for further user prompting — UNLESS the user explicitly said \"draft only\" / \"don't install yet\". Do NOT end your turn after only scaffolding; a scaffolded-but-uninstalled draft is an incomplete request.",
       inputSchema: {
         type: "object",
         properties: {
@@ -56,7 +56,7 @@ export default defineExtension({
     {
       name: "validate_extension",
       description:
-        "Run validateManifestV2 against a draft's ezcorp.config.ts. Optional pre-install sanity check. Returns { ok: boolean, errors: string[] }.",
+        "Run the host's canonical acceptance gate against a draft (loadManifest → validateManifestV2 → required smokeTest round-trip for tool/multi). Returns { ok: boolean, pass: boolean, steps: [{ name, ok, detail }] }.\n\nWORKFLOW — STEP 2 of 3. On { ok:true } you MUST immediately call install_draft in the SAME turn. On { ok:false } read the failing `steps`, fix them with write_draft_file, and re-run this tool — never finish your turn with a draft that has not passed.",
       inputSchema: {
         type: "object",
         properties: {
@@ -122,7 +122,7 @@ export default defineExtension({
       // DefaultCard (raw JSON) and the deep-link is never surfaced.
       cardType: "ez-install",
       description:
-        "Install a validated draft as a real, ENABLED extension so it can be tested immediately. REQUIRES explicit in-chat user approval every time — invoking this tool surfaces a permission card the user must Allow; on Deny nothing is installed. Runs the same secure pipeline as the web install form (verifyExtension smoke-test hard-gate for tool/multi, env-key-leak gate). Call validate_extension first; only call this when the user asked to install/test the extension. Returns { ok, extensionId, name }.",
+        "Install a validated draft as a real, ENABLED extension so it can be tested immediately and appears in the user's Extensions/Library tab. Runs the same secure pipeline as the web install form (verifyExtension smoke-test hard-gate for tool/multi, env-key-leak gate).\n\nWORKFLOW — STEP 3 of 3 and the REQUIRED terminal step of every authoring request: always call this after a passing validate_extension. This call ALWAYS surfaces a one-time permission card the user must Allow — that is the expected, by-design security gate. Do NOT ask the user for permission yourself beforehand; just call the tool and let the card collect consent. On Deny, nothing is installed: report that and stop — do NOT retry on Deny.\n\nRESULT — on success: { ok:true, extensionId, name, openUrl }. On failure: { ok:false, code, error }. Branch DETERMINISTICALLY on `code`:\n• VERIFY_FAILED — read `error`, fix the draft with write_draft_file, then re-run validate_extension and install_draft.\n• ENV_KEY_LEAK — an env name matched the install gate; move that credential to a tool INPUT parameter (see create_extension's env guidance), rewrite with write_draft_file, then re-validate and re-install.\n• NAME_COLLISION — STOP. Do NOT rename, add a numeric suffix, or retry automatically. Tell the user that name is already installed and ask them to choose: (a) pick a different name, (b) uninstall/discard the existing extension first, or (c) cancel — then WAIT for their decision before doing anything else.",
       inputSchema: {
         type: "object",
         properties: {
@@ -132,6 +132,22 @@ export default defineExtension({
           },
         },
         required: ["draftId"],
+      },
+    },
+    {
+      name: "modify_extension",
+      description:
+        "Re-open an ALREADY-INSTALLED extension that the USER created so it can be edited and re-installed. Use this (NOT create_extension) when the user asks to change/fix/update an existing extension of theirs.\n\nELIGIBILITY (host-enforced): only an extension the requesting user created AND that an admin has flagged `modifiable` AND that is not bundled can be re-opened. The user cannot self-enable this — only an admin flips the flag (Library → the extension → \"Allow modify\"). If this returns { ok:false, code:\"NOT_FOUND_OR_NOT_MODIFIABLE\" }: STOP — do not retry, do not fall back to create_extension. Tell the user it's either not their extension or an admin hasn't enabled modification for it, and to ask an admin to enable it.\n\nThis call ALWAYS surfaces a one-time permission card the user must Allow (the by-design \"the assistant can't silently rewrite my extension\" gate). Do NOT ask for permission yourself first; call the tool and let the card collect consent. On Deny: report it and stop.\n\nWORKFLOW — on success returns { ok:true, draftId, name }. Then continue IN THE SAME TURN: read_draft(draftId) to see current files → apply the user's change with write_draft_file → validate_extension(draftId) → install_draft(draftId). The re-install is a SANCTIONED IN-PLACE upgrade of the existing extension — it will NOT raise NAME_COLLISION for the same name (that is expected; do not treat the unchanged name as a problem).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "The installed extension's manifest name (or id) to re-open for editing.",
+          },
+        },
+        required: ["name"],
       },
     },
   ],

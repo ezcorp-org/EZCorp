@@ -758,7 +758,7 @@ describe("ezcorp/drafts \u2014 install", () => {
     expect("openUrl" in (resp.result as Record<string, unknown>)).toBe(false);
   });
 
-  test("AuthorInstallError \u2192 -32603 with code-prefixed message", async () => {
+  test("AuthorInstallError \u2192 -32603, code-prefixed message + structured data.code", async () => {
     installAuthoredDraftImpl = async () => {
       throw new MockAuthorInstallError("VERIFY_FAILED", "smoke-test failed");
     };
@@ -768,8 +768,49 @@ describe("ezcorp/drafts \u2014 install", () => {
       makeCtx({ userId: USER }),
     );
     expect(resp.error?.code).toBe(-32603);
-    expect(resp.error?.message).toContain("VERIFY_FAILED");
-    expect(resp.error?.message).toContain("smoke-test failed");
+    // Legacy message contract is byte-identical (`${code}: ${message}`)
+    // so any existing string-only consumer is unaffected.
+    expect(resp.error?.message).toBe("VERIFY_FAILED: smoke-test failed");
+    // Structured `data` lets the bundled install_draft tool / LLM
+    // branch on the code deterministically without regex-parsing prose.
+    expect(resp.error?.data).toEqual({ code: "VERIFY_FAILED" });
+  });
+
+  test("NAME_COLLISION \u2192 structured data.code so the agent stops & asks the user", async () => {
+    installAuthoredDraftImpl = async () => {
+      throw new MockAuthorInstallError(
+        "NAME_COLLISION",
+        'Extension "weather" is already installed',
+      );
+    };
+    const resp = await handleDraftsRpc(
+      ALLOWED_NAME,
+      rpc({ action: "install", draftId: "d-dup" }, "i-dup"),
+      makeCtx({ userId: USER }),
+    );
+    expect(resp.error?.code).toBe(-32603);
+    expect(resp.error?.message).toBe(
+      'NAME_COLLISION: Extension "weather" is already installed',
+    );
+    expect((resp.error?.data as { code?: string }).code).toBe("NAME_COLLISION");
+  });
+
+  test("AuthorInstallError.details is passed through under data.details", async () => {
+    installAuthoredDraftImpl = async () => {
+      throw new MockAuthorInstallError("ENV_KEY_LEAK", "leaked env names", {
+        leakedNames: ["OPENAI_API_KEY"],
+      });
+    };
+    const resp = await handleDraftsRpc(
+      ALLOWED_NAME,
+      rpc({ action: "install", draftId: "d-leak" }, "i-leak"),
+      makeCtx({ userId: USER }),
+    );
+    expect(resp.error?.code).toBe(-32603);
+    expect(resp.error?.data).toEqual({
+      code: "ENV_KEY_LEAK",
+      details: { leakedNames: ["OPENAI_API_KEY"] },
+    });
   });
 
   test("unexpected (non-AuthorInstallError) throw \u2192 -32603 generic", async () => {

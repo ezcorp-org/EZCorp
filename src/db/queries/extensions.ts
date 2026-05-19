@@ -1,4 +1,4 @@
-import { and, eq, sql, inArray } from "drizzle-orm";
+import { and, eq, or, sql, inArray } from "drizzle-orm";
 import { getDb } from "../connection";
 import { extensions, type Extension, type NewExtension } from "../schema";
 import type { McpServerDefinition, ExtensionManifestV2, ToolDefinition } from "../../extensions/types";
@@ -64,6 +64,49 @@ export async function getExtensionsByNames(names: string[]): Promise<Map<string,
     .where(inArray(extensions.name, unique));
   for (const row of rows) out.set(row.name, row);
   return out;
+}
+
+/**
+ * Owner-scoped lookup for the "modify my extension" flow. Mirrors the
+ * `ez_drafts` `getDraft(id,userId)` opacity contract: returns the row
+ * ONLY when it is owned by `userId`, an admin has flipped `modifiable`
+ * true, AND it is not a bundled extension. A miss/not-owned/flag-off/
+ * bundled row are all indistinguishable (null) so the caller can never
+ * probe ownership of another user's extension. `nameOrId` accepts
+ * either the id (web route) or the manifest name (in-chat RPC).
+ */
+export async function getUserModifiableExtension(
+  nameOrId: string,
+  userId: string,
+): Promise<Extension | null> {
+  const rows = await getDb()
+    .select()
+    .from(extensions)
+    .where(
+      and(
+        or(eq(extensions.id, nameOrId), eq(extensions.name, nameOrId)),
+        eq(extensions.creatorUserId, userId),
+        eq(extensions.modifiable, true),
+        eq(extensions.isBundled, false),
+      ),
+    );
+  return rows[0] ?? null;
+}
+
+/**
+ * Admin-only mutation: flip the `modifiable` gate. The route layer
+ * enforces `requireRole(locals,"admin")`; this is the bare write.
+ */
+export async function setExtensionModifiable(
+  id: string,
+  modifiable: boolean,
+): Promise<Extension | null> {
+  const rows = await getDb()
+    .update(extensions)
+    .set({ modifiable, updatedAt: sql`NOW()` })
+    .where(eq(extensions.id, id))
+    .returning();
+  return rows[0] ?? null;
 }
 
 export async function listExtensions(

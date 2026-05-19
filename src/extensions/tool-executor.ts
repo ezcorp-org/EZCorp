@@ -747,6 +747,24 @@ export class ToolExecutor {
       needed.push({ kind: "ezcorp:extension:install" });
     }
 
+    // Mandatory in-chat approval for agent-driven extension MODIFY.
+    // The bundled `extension-author.modify_extension` tool re-opens an
+    // installed extension for editing — the entry point to rewriting
+    // model-authored code. Same trust class and injection rationale as
+    // `install_draft` above: sensitive, carved out of the bundled
+    // auto-allow, never persisted → ALWAYS prompts. The host
+    // `ezcorp/drafts.reopen` action independently enforces owner +
+    // admin-`modifiable` + not-bundled authorization (defense in
+    // depth). Scoped to the bundled extension-author so a user-
+    // installed look-alike can't reach this path.
+    if (
+      originalName === "modify_extension" &&
+      manifest?.name === "extension-author" &&
+      this.registry.isBundled?.(extensionId) === true
+    ) {
+      needed.push({ kind: "ezcorp:extension:modify" });
+    }
+
     // Phase 1 PDP gate. Fail-closed if the engine isn't wired —
     // constructor already enforces that, but the typecheck here is
     // additional belt-and-braces.

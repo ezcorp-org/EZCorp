@@ -68,6 +68,15 @@ interface FakeDraftStore {
   nextId: number;
 }
 
+// Per-test override for the `install` reverse-RPC. The real host runs
+// `installAuthoredDraft` and maps an `AuthorInstallError` to
+// `rpcError(id,-32603,"${code}: ${msg}", { code, details? })`. Tests
+// set this to drive the bundled `install_draft` tool's success vs.
+// structured-failure branches end-to-end through a real subprocess.
+let installStub:
+  | ((draftId: string) => JsonRpcResponse["error"] | { result: unknown })
+  | null = null;
+
 async function handleFsRpc(req: JsonRpcRequest): Promise<JsonRpcResponse> {
   const params = (req.params ?? {}) as Record<string, unknown>;
   const path = params.path as string;
@@ -252,6 +261,16 @@ function makeProc(
         store.drafts.delete(id);
         return { jsonrpc: "2.0", id: req.id, result: { ok: true } };
       }
+      if (params.action === "install") {
+        const id = params.draftId as string;
+        const out = installStub
+          ? installStub(id)
+          : ({ code: -32602, message: "stub: install not configured" } as const);
+        if (out && "result" in out) {
+          return { jsonrpc: "2.0", id: req.id, result: out.result };
+        }
+        return { jsonrpc: "2.0", id: req.id, error: out as JsonRpcResponse["error"] };
+      }
       return { jsonrpc: "2.0", id: req.id, error: { code: -32602, message: "stub: unknown drafts action" } };
     }
     return { jsonrpc: "2.0", id: req.id, error: { code: -32601, message: "Method not found in stub" } };
@@ -278,6 +297,7 @@ describe("extension-author e2e — server pipeline round-trip", () => {
       try { p.kill(); } catch { /* swallow */ }
     }
     try { process.chdir(originalCwd); } catch { /* swallow */ }
+    installStub = null;
   });
 
   test("create_extension scaffolds files + creates draft + returns openUrl", async () => {
@@ -457,6 +477,72 @@ describe("extension-author e2e — server pipeline round-trip", () => {
     const payload = JSON.parse(validate.content[0]!.text);
     expect(payload.ok).toBe(false);
     expect(payload.errors.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  test("install_draft success → parseable {ok:true,extensionId,name,openUrl}", async () => {
+    installStub = (draftId) => ({
+      result: {
+        ok: true,
+        extensionId: `ext-${draftId}`,
+        name: "weather",
+        openUrl: "/extensions/weather",
+      },
+    });
+    const proc = makeProc(store, cwd);
+    procs.push(proc);
+    const create = JSON.parse(
+      (await proc.callTool("create_extension", { name: "weather", type: "tool", description: "x" }))
+        .content[0]!.text,
+    );
+
+    const res = await proc.callTool("install_draft", { draftId: create.draftId });
+    expect(res.isError).toBe(false);
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      ok: true,
+      extensionId: `ext-${create.draftId}`,
+      name: "weather",
+      openUrl: "/extensions/weather",
+    });
+  }, 30_000);
+
+  test("install_draft NAME_COLLISION → toolError with parseable {ok:false,code} so the agent stops & asks", async () => {
+    installStub = () => ({
+      code: -32603,
+      message: 'NAME_COLLISION: Extension "weather" is already installed',
+      data: { code: "NAME_COLLISION" },
+    });
+    const proc = makeProc(store, cwd);
+    procs.push(proc);
+    const create = JSON.parse(
+      (await proc.callTool("create_extension", { name: "weather", type: "tool", description: "x" }))
+        .content[0]!.text,
+    );
+
+    const res = await proc.callTool("install_draft", { draftId: create.draftId });
+    // Stays an errored tool call (card UX), but the body is structured
+    // so the LLM branches on `code` instead of regex-parsing prose.
+    expect(res.isError).toBe(true);
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("NAME_COLLISION");
+    expect(body.error).toContain("NAME_COLLISION");
+  }, 30_000);
+
+  test("install_draft failure without structured data → still parseable {ok:false} (code omitted)", async () => {
+    installStub = () => ({ code: -32603, message: "Install failed: kaboom" });
+    const proc = makeProc(store, cwd);
+    procs.push(proc);
+    const create = JSON.parse(
+      (await proc.callTool("create_extension", { name: "weather", type: "tool", description: "x" }))
+        .content[0]!.text,
+    );
+
+    const res = await proc.callTool("install_draft", { draftId: create.draftId });
+    expect(res.isError).toBe(true);
+    const body = JSON.parse(res.content[0]!.text);
+    expect(body.ok).toBe(false);
+    expect("code" in body).toBe(false);
+    expect(body.error).toContain("kaboom");
   }, 30_000);
 
   test("list_drafts surfaces known directories", async () => {

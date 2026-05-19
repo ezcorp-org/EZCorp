@@ -19,6 +19,7 @@
 	let rateLimits = $state<Record<string, number>>({});
 	let dailyTokens = $state(100_000);
 	let quotas = $state<Record<string, number>>({});
+	let authorAutoModifiable = $state(false);
 	let saving = $state(false);
 	let loading = $state(true);
 
@@ -36,6 +37,7 @@
 			for (const q of STORAGE_QUOTAS) {
 				quotas[q.key] = (settings[`limits:${q.key}`] as number) ?? q.default;
 			}
+			authorAutoModifiable = (settings["extensions:authorAutoModifiable"] as boolean) === true;
 		} catch { /* silent */ }
 		loading = false;
 	}
@@ -48,6 +50,7 @@
 			for (const q of STORAGE_QUOTAS) {
 				await upsertSetting(`limits:${q.key}`, quotas[q.key]);
 			}
+			await upsertSetting("extensions:authorAutoModifiable", authorAutoModifiable);
 		} catch { /* silent */ }
 		saving = false;
 	}
@@ -110,6 +113,29 @@
 					</div>
 				{/each}
 			</div>
+		</div>
+
+		<!-- Extension Authoring -->
+		<div>
+			<h4 class="mb-2 text-sm font-medium text-[var(--color-text-primary)]">Extension Authoring</h4>
+			<label class="flex items-start gap-2">
+				<input
+					id="security-author-auto-modifiable"
+					type="checkbox"
+					bind:checked={authorAutoModifiable}
+					class="mt-0.5 h-4 w-4 rounded border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-accent)] focus:outline-none"
+				/>
+				<span class="text-xs text-[var(--color-text-secondary)]">
+					Auto-allow re-opening user-authored extensions
+					<span class="mt-1 block text-[var(--color-text-muted)]">
+						When on, an extension a user scaffolds via the in-chat assistant is created
+						already flagged modifiable, so they can ask the assistant to edit it without a
+						per-extension admin approval. The assistant still requires explicit per-call
+						user consent and can never modify silently. Off by default; affects newly
+						authored extensions only (no change to existing ones).
+					</span>
+				</span>
+			</label>
 		</div>
 
 		<button

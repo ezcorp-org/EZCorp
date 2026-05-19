@@ -90,6 +90,21 @@ function safeJoin(rootDir: string, relPath: string): string {
   return join(rootDir, relPath);
 }
 
+/**
+ * The host's reverse-RPC layer rejects with a JsonRpcError that carries
+ * the structured `AuthorInstallError` code in `.data.code` (see
+ * `src/extensions/drafts-handler.ts` handleInstall + `json-rpc.ts`
+ * `rpcError`'s 4th arg). Duck-type it so the LLM gets a discrete,
+ * machine-readable `code` (`NAME_COLLISION` / `VERIFY_FAILED` /
+ * `ENV_KEY_LEAK`) to branch on per the workflow contract in
+ * ezcorp.config.ts, instead of regex-parsing message prose.
+ */
+function rpcErrorCode(err: unknown): string | undefined {
+  const data = (err as { data?: unknown } | null)?.data;
+  const code = (data as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
 // ── Tool handlers ────────────────────────────────────────────────
 
 const create_extension: ToolHandler = async (args) => {
@@ -190,7 +205,17 @@ const validate_extension: ToolHandler = async (args) => {
       steps: Array<{ name: string; ok: boolean; detail: string }>;
     }>("ezcorp/drafts", { action: "verify", draftId: a.draftId });
   } catch (err) {
-    return toolError(`ezcorp/drafts.verify failed: ${(err as Error).message}`);
+    // Symmetry with install_draft: structured shape so a transport /
+    // ownership failure is parseable. Verify "fails" (failing steps)
+    // are NOT errors — they return via toolResult below with pass:false.
+    const code = rpcErrorCode(err);
+    return toolError(
+      JSON.stringify({
+        ok: false,
+        ...(code ? { code } : {}),
+        error: `ezcorp/drafts.verify failed: ${(err as Error).message}`,
+      }),
+    );
   }
 
   // Surface the full VerifyResult so the LLM sees exactly which step
@@ -352,7 +377,61 @@ const install_draft: ToolHandler = async (args) => {
       }),
     );
   } catch (err) {
-    return toolError(`ezcorp/drafts.install failed: ${(err as Error).message}`);
+    // Surface the structured code as a discrete field so the LLM
+    // branches deterministically (NAME_COLLISION → stop & ask the
+    // user; VERIFY_FAILED / ENV_KEY_LEAK → self-fix + re-validate +
+    // re-install) per the install_draft description contract. Stays a
+    // `toolError` so the call is still marked errored in the card UI.
+    const code = rpcErrorCode(err);
+    return toolError(
+      JSON.stringify({
+        ok: false,
+        ...(code ? { code } : {}),
+        error: `ezcorp/drafts.install failed: ${(err as Error).message}`,
+      }),
+    );
+  }
+};
+
+const modify_extension: ToolHandler = async (args) => {
+  const a = args as { name?: unknown };
+  if (typeof a.name !== "string" || a.name.length === 0) {
+    return toolError("`name` must be a non-empty string");
+  }
+
+  // Single round-trip. The HOST enforces a mandatory user-approval
+  // gate on this tool call BEFORE this body runs (the sensitive
+  // `ezcorp:extension:modify` cap — see tool-executor.ts /
+  // permission-engine.ts) AND independently authorizes owner +
+  // admin-`modifiable` + not-bundled inside `ezcorp/drafts.reopen`.
+  // On success the returned draftId flows into the normal
+  // read_draft → write_draft_file → validate_extension →
+  // install_draft chain; that re-install is the sanctioned in-place
+  // upgrade (no NAME_COLLISION for the unchanged name).
+  try {
+    const resp = await getChannel().request<{
+      draftId?: string;
+      name?: string;
+    }>("ezcorp/drafts", { action: "reopen", name: a.name });
+    return toolResult(
+      JSON.stringify({
+        ok: true,
+        draftId: resp.draftId ?? "",
+        name: resp.name ?? a.name,
+      }),
+    );
+  } catch (err) {
+    // Structured code so the LLM branches deterministically:
+    // NOT_FOUND_OR_NOT_MODIFIABLE → stop, do NOT fall back to
+    // create_extension; tell the user an admin must enable modify.
+    const code = rpcErrorCode(err);
+    return toolError(
+      JSON.stringify({
+        ok: false,
+        ...(code ? { code } : {}),
+        error: `ezcorp/drafts.reopen failed: ${(err as Error).message}`,
+      }),
+    );
   }
 };
 
@@ -364,6 +443,7 @@ export const tools: Record<string, ToolHandler> = {
   write_draft_file,
   discard_draft,
   install_draft,
+  modify_extension,
 };
 
 if (import.meta.main) {

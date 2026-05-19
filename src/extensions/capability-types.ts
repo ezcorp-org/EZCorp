@@ -45,7 +45,13 @@ export type CapabilityKind =
   // an always-allow grant — see the carve-outs in
   // `permission-engine.ts`. Granted only via the existing
   // `custom.drafts.kinds:["extension"]` permission (bundled-only).
-  | "ezcorp:extension:install";
+  | "ezcorp:extension:install"
+  // Re-open a user-owned, admin-`modifiable` installed extension as an
+  // editable draft. Sensitive + ALWAYS prompts + NEVER persisted, same
+  // as install — the "LLM can't silently rewrite my extension" consent
+  // gate. The host `reopen` action separately enforces owner + flag +
+  // not-bundled authorization (defense in depth).
+  | "ezcorp:extension:modify";
 
 export interface Capability {
   kind: CapabilityKind;
@@ -67,6 +73,10 @@ export const SENSITIVE_KINDS: ReadonlySet<CapabilityKind> = new Set<CapabilityKi
   // permissions is the strongest trust boundary in the system — gate
   // it like the other sensitive caps so the engine returns `prompt`.
   "ezcorp:extension:install",
+  // Same trust class as install: re-opening an installed extension for
+  // edit is the entry point to rewriting model-authored code, so it
+  // prompts every time and is never an always-allow grant.
+  "ezcorp:extension:modify",
 ]);
 
 /** Lowercase, trimmed key for set-keyed comparison. */
@@ -590,15 +600,23 @@ export function grantsToCapabilitySet(
     caps.push({ kind: "ezcorp:chat:append" });
   }
 
-  // Derive the install cap from the existing drafts grant — an
-  // extension granted `custom.drafts.kinds:["extension"]` (bundled-only:
-  // `extension-author`) may REQUEST an install, but the actual install
-  // ALWAYS goes through a mandatory user-approval prompt that is never
-  // persisted (see `permission-engine.ts`). Adding it here only lets
-  // the needed↔granted subset check pass so the request reaches that
-  // prompt instead of being denied as an ungranted capability.
+  // Derive the install + modify caps from the existing drafts grant —
+  // an extension granted `custom.drafts.kinds:["extension"]`
+  // (bundled-only: `extension-author`) may REQUEST an install or a
+  // re-open-for-edit, but both ALWAYS go through a mandatory
+  // user-approval prompt that is never persisted (see
+  // `permission-engine.ts`), and `modify` is additionally gated
+  // host-side by the `ezcorp/drafts.reopen` owner + admin-`modifiable`
+  // + not-bundled check. Adding them here only lets the needed↔granted
+  // subset check pass so the request reaches that prompt instead of
+  // being denied as an ungranted capability. `install` and `modify`
+  // share the SAME derivation gate — the WIP that introduced `modify`
+  // wired the needed side (`tool-executor.ts`) + `SENSITIVE_KINDS` but
+  // omitted this mirror, so `modify_extension` failed the PDP subset
+  // check ("Missing capability ezcorp:extension:modify").
   if (grants.custom?.drafts?.kinds?.includes("extension")) {
     caps.push({ kind: "ezcorp:extension:install" });
+    caps.push({ kind: "ezcorp:extension:modify" });
   }
 
   return caps;

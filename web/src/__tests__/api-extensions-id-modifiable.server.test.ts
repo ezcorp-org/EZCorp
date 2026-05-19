@@ -1,0 +1,135 @@
+/**
+ * Server-handler tests for POST /api/extensions/[id]/modifiable.
+ *
+ * Admin-only gate (the user can't self-enable; the in-chat LLM can
+ * never reach this route), 404 unknown, 400 bundled / bad body,
+ * idempotent no-op, happy path flips + writes the audit row.
+ */
+
+import { test, expect, describe, vi, beforeEach } from "vitest";
+
+vi.mock("$server/db/queries/extensions", () => ({
+  getExtension: vi.fn(),
+  setExtensionModifiable: vi.fn(),
+}));
+vi.mock("$server/db/queries/audit-log", () => ({
+  insertAuditEntry: vi.fn(async () => "audit-1"),
+}));
+
+const { getExtension, setExtensionModifiable } = await import(
+  "$server/db/queries/extensions"
+);
+const { insertAuditEntry } = await import("$server/db/queries/audit-log");
+const { POST } = await import(
+  "../routes/api/extensions/[id]/modifiable/+server.ts"
+);
+
+function makeEvent(opts: {
+  id?: string;
+  locals?: Record<string, unknown>;
+  body?: unknown;
+}) {
+  const id = opts.id ?? "ext-1";
+  return {
+    url: new URL(`http://localhost/api/extensions/${id}/modifiable`),
+    locals: opts.locals ?? {},
+    params: { id },
+    request: new Request(`http://localhost/api/extensions/${id}/modifiable`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(opts.body ?? {}),
+    }),
+  } as any;
+}
+
+const admin = { id: "admin-1", email: "a@x", name: "a", role: "admin" };
+const member = { id: "u-2", email: "u@x", name: "u", role: "member" };
+
+describe("POST /api/extensions/[id]/modifiable", () => {
+  beforeEach(() => {
+    vi.mocked(getExtension).mockReset();
+    vi.mocked(setExtensionModifiable).mockReset();
+    vi.mocked(insertAuditEntry).mockClear();
+  });
+
+  test("unauthenticated → 401", async () => {
+    const res = await POST(makeEvent({ locals: {}, body: { modifiable: true } }));
+    expect(res.status).toBe(401);
+  });
+
+  test("non-admin → 403", async () => {
+    const res = await POST(
+      makeEvent({ locals: { user: member }, body: { modifiable: true } }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("malformed body → 400", async () => {
+    const res = await POST(
+      makeEvent({ locals: { user: admin }, body: { modifiable: "yes" } }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("unknown extension → 404", async () => {
+    vi.mocked(getExtension).mockResolvedValue(null as any);
+    const res = await POST(
+      makeEvent({ locals: { user: admin }, body: { modifiable: true } }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("bundled extension → 400 (never user-modifiable)", async () => {
+    vi.mocked(getExtension).mockResolvedValue({
+      id: "ext-1",
+      isBundled: true,
+      modifiable: false,
+    } as any);
+    const res = await POST(
+      makeEvent({ locals: { user: admin }, body: { modifiable: true } }),
+    );
+    expect(res.status).toBe(400);
+    expect(vi.mocked(setExtensionModifiable)).not.toHaveBeenCalled();
+  });
+
+  test("idempotent no-op → 200, no write, no audit", async () => {
+    vi.mocked(getExtension).mockResolvedValue({
+      id: "ext-1",
+      isBundled: false,
+      modifiable: true,
+    } as any);
+    const res = await POST(
+      makeEvent({ locals: { user: admin }, body: { modifiable: true } }),
+    );
+    expect(res.status).toBe(200);
+    expect(vi.mocked(setExtensionModifiable)).not.toHaveBeenCalled();
+    expect(vi.mocked(insertAuditEntry)).not.toHaveBeenCalled();
+  });
+
+  test("happy path: flips flag + writes audit with admin actor", async () => {
+    vi.mocked(getExtension).mockResolvedValue({
+      id: "ext-1",
+      isBundled: false,
+      modifiable: false,
+    } as any);
+    vi.mocked(setExtensionModifiable).mockResolvedValue({
+      id: "ext-1",
+      modifiable: true,
+    } as any);
+    const res = await POST(
+      makeEvent({ locals: { user: admin }, body: { modifiable: true } }),
+    );
+    expect(res.status).toBe(200);
+    expect(vi.mocked(setExtensionModifiable)).toHaveBeenCalledWith("ext-1", true);
+    expect(vi.mocked(insertAuditEntry)).toHaveBeenCalledWith(
+      admin.id,
+      "ext:modifiable-toggled",
+      "ext-1",
+      expect.objectContaining({
+        oldValue: false,
+        newValue: true,
+        actor: admin.id,
+      }),
+    );
+  });
+});

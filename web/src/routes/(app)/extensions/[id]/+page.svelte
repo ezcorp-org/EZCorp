@@ -31,6 +31,12 @@
 		installPath: string;
 		checksumVerified: boolean;
 		consecutiveFailures: number;
+		// Creator-modify gate. `creatorUserId` is set only for
+		// user-authored installs; `modifiable` is the admin-only flag
+		// that authorizes the creator to re-open/edit it.
+		creatorUserId?: string | null;
+		modifiable?: boolean;
+		isBundled?: boolean;
 		manifest: {
 			author?: string;
 			entrypoint: string;
@@ -112,7 +118,10 @@
 	}
 	let violations = $state<Violation[]>([]);
 	let isAdmin = $state(false);
+	let currentUserId = $state<string | null>(null);
 	let clearingViolations = $state(false);
+	let modifyBusy = $state(false);
+	let modifiableBusy = $state(false);
 
 	const extId = $derived($page.params.id);
 	const hasViolations = $derived(violations.length > 0);
@@ -174,10 +183,62 @@
 			const res = await fetch("/api/auth/me");
 			if (res.ok) {
 				const data = await res.json();
+				currentUserId = data.user?.id ?? null;
 				if (data.user?.role === "admin") isAdmin = true;
 			}
 		} catch {
 			// not admin
+		}
+	}
+
+	// Owner action: re-open this extension as an editable draft, then
+	// jump to the existing editable preview. Server is the authority
+	// (creator + modifiable + not-bundled); this gate is UX only.
+	async function reopenForEdit() {
+		if (!ext || modifyBusy) return;
+		modifyBusy = true;
+		errorMsg = "";
+		try {
+			const res = await fetch(`/api/extensions/${extId}/reopen`, {
+				method: "POST",
+			});
+			if (!res.ok) {
+				errorMsg =
+					res.status === 404
+						? "This extension can no longer be modified (an admin may have turned it off)."
+						: "Failed to re-open this extension for editing.";
+				return;
+			}
+			const { draftId } = await res.json();
+			window.location.href = `/extensions/author?prefill=${encodeURIComponent(draftId)}`;
+		} catch {
+			errorMsg = "Failed to re-open this extension for editing.";
+		} finally {
+			modifyBusy = false;
+		}
+	}
+
+	// Admin-only: flip the `modifiable` gate. Server enforces the admin
+	// role + audits; this is the affordance.
+	async function toggleModifiable() {
+		if (!ext || modifiableBusy) return;
+		modifiableBusy = true;
+		errorMsg = "";
+		try {
+			const res = await fetch(`/api/extensions/${extId}/modifiable`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ modifiable: !ext.modifiable }),
+			});
+			if (!res.ok) {
+				errorMsg = "Failed to update the modifiable setting.";
+				return;
+			}
+			await loadExtension();
+		} catch {
+			errorMsg = "Failed to update the modifiable setting.";
+		} finally {
+			modifiableBusy = false;
 		}
 	}
 
@@ -466,6 +527,45 @@
 				</span>
 			</div>
 		</div>
+
+		{#if ext && (isAdmin && !ext.isBundled || (ext.creatorUserId && ext.creatorUserId === currentUserId))}
+			<div
+				class="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] px-4 py-3"
+				data-testid="modify-extension-section"
+			>
+				{#if ext.creatorUserId && ext.creatorUserId === currentUserId && ext.modifiable}
+					<button
+						onclick={reopenForEdit}
+						disabled={modifyBusy}
+						data-testid="modify-extension-button"
+						class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+					>
+						{modifyBusy ? "Opening…" : "Modify this extension"}
+					</button>
+					<span class="text-xs text-[var(--color-text-secondary)]">
+						Re-opens your extension as an editable draft.
+					</span>
+				{:else if ext.creatorUserId && ext.creatorUserId === currentUserId}
+					<span class="text-xs text-[var(--color-text-secondary)]">
+						You created this extension. An admin must enable
+						modification before you can edit it.
+					</span>
+				{/if}
+
+				{#if isAdmin && !ext.isBundled}
+					<label class="ml-auto flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+						<input
+							type="checkbox"
+							checked={ext.modifiable ?? false}
+							disabled={modifiableBusy}
+							onchange={toggleModifiable}
+							data-testid="modifiable-toggle"
+						/>
+						Allow the creator to modify this extension
+					</label>
+				{/if}
+			</div>
+		{/if}
 
 		{#if successMsg}
 			<div class="rounded-lg bg-green-900/40 px-4 py-2 text-sm text-green-300">{successMsg}</div>

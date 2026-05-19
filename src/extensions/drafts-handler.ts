@@ -140,6 +140,12 @@ interface DraftsInstallParams {
   draftId?: string;
 }
 
+interface DraftsReopenParams {
+  /** Manifest name OR extension id of an installed extension the
+   *  caller owns and an admin has flagged `modifiable`. */
+  name?: string;
+}
+
 /**
  * Look up the calling extension's allowed kinds. Returns the array
  * verbatim from `granted.custom.drafts.kinds`, or `null` when:
@@ -205,6 +211,8 @@ export async function handleDraftsRpc(
       return handleVerify(req, params as DraftsVerifyParams, ctx);
     case "install":
       return handleInstall(req, params as DraftsInstallParams, ctx);
+    case "reopen":
+      return handleReopen(req, params as DraftsReopenParams, ctx);
     default:
       return rpcError(req.id, -32602, `Unknown action: ${action}`);
   }
@@ -538,7 +546,15 @@ async function handleInstall(
         code: err.code,
         error: err.message,
       });
-      return rpcError(req.id, -32603, `${err.code}: ${err.message}`);
+      // Structured `data` so the bundled `install_draft` tool can let
+      // the LLM branch deterministically on the code (NAME_COLLISION →
+      // ask the user; VERIFY_FAILED/ENV_KEY_LEAK → self-fix + retry)
+      // instead of regex-parsing the message. The message string is
+      // kept byte-identical for any existing string-only consumers.
+      return rpcError(req.id, -32603, `${err.code}: ${err.message}`, {
+        code: err.code,
+        ...(err.details ? { details: err.details } : {}),
+      });
     }
     log.error("ezcorp/drafts.install failed", {
       draftId,
@@ -546,6 +562,57 @@ async function handleInstall(
       error: String(err),
     });
     return rpcError(req.id, -32603, `Install failed: ${String(err)}`);
+  }
+}
+
+/**
+ * Re-open a user-owned, admin-`modifiable`, non-bundled installed
+ * extension as a fresh author draft (the inverse of install). Owner-
+ * scoped via `ctx.userId` (token-backed provenance, never RPC-supplied)
+ * and OPAQUE — a miss / not-owned / flag-off / bundled all return the
+ * same `NOT_FOUND_OR_NOT_MODIFIABLE` so the in-chat LLM can never probe
+ * another user's extensions. The returned `draftId` flows straight into
+ * the existing `read_draft`/`validate`/`install_draft` tools; the
+ * re-install is the sanctioned in-place upgrade (re-authorized in
+ * `installAuthoredDraft`). Lazy-imported like `handleInstall` so the
+ * sandbox-preload graph never pulls the host-only modules.
+ */
+async function handleReopen(
+  req: JsonRpcRequest,
+  params: DraftsReopenParams,
+  ctx: DraftsContext,
+): Promise<JsonRpcResponse> {
+  const name = params.name;
+  if (!name || typeof name !== "string") {
+    return rpcError(req.id, -32602, "Missing or invalid 'name'");
+  }
+  const { reopenInstalledAsDraft, ReopenError } = await import(
+    "./reopen-extension"
+  );
+  try {
+    const { draftId, name: extName } = await reopenInstalledAsDraft(
+      name,
+      ctx.userId,
+    );
+    return rpcResult(req.id, { draftId, name: extName });
+  } catch (err) {
+    if (err instanceof ReopenError) {
+      log.warn("ezcorp/drafts.reopen rejected", {
+        userId: ctx.userId,
+        code: err.code,
+        error: err.message,
+      });
+      // Structured `data.code` so the bundled tool can let the LLM
+      // branch deterministically (mirrors the install error contract).
+      return rpcError(req.id, -32603, `${err.code}: ${err.message}`, {
+        code: err.code,
+      });
+    }
+    log.error("ezcorp/drafts.reopen failed", {
+      userId: ctx.userId,
+      error: String(err),
+    });
+    return rpcError(req.id, -32603, `Reopen failed: ${String(err)}`);
   }
 }
 

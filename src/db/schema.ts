@@ -273,6 +273,17 @@ export const extensions = pgTable("extensions", {
   // finding #2 vulnerability (an attacker could install an extension
   // manifested as name:"ai-kit" and inherit bundled trust).
   isBundled: boolean("is_bundled").notNull().default(false),
+  // Creator attribution for user-authored extensions. Set ONLY by the
+  // authored-install path (installAuthoredDraft → installFromLocal);
+  // bundled/github/mcp installs leave it NULL. Nullable + ON DELETE SET
+  // NULL so deleting a user doesn't cascade-drop their extensions.
+  // Recorded going-forward only — pre-existing rows are NULL and are
+  // therefore never user-modifiable (admins can still act).
+  creatorUserId: text("creator_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Admin-only gate: an extension may be re-opened/modified by its
+  // creator ONLY when an admin has flipped this true. Defaults false so
+  // the in-chat LLM can never silently rewrite an extension.
+  modifiable: boolean("modifiable").notNull().default(false),
   consecutiveFailures: integer("consecutive_failures").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

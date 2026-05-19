@@ -21,6 +21,7 @@ import {
   updateExtension as dbUpdateExtension,
   deleteExtension,
 } from "../db/queries/extensions";
+import { getSetting } from "../db/queries/settings";
 import { join } from "node:path";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -101,6 +102,16 @@ export interface InstallFromLocalOpts {
    * user. Phase 3 wiring; the field is forwarded into `runEntitySeed`.
    */
   userId?: string | null;
+  /**
+   * Creator attribution for the persisted `extensions` row. Set ONLY by
+   * the authored-install path (`installAuthoredDraft` passes the draft
+   * owner). Deliberately SEPARATE from `userId` (the entity-seed acting
+   * user) so a bundled/CLI install that happens to carry a `userId` for
+   * seeding can never be mis-attributed as user-created — creator-
+   * attribution gates the admin-only modify flow, so it must be
+   * unambiguous. Omitted → column stays NULL (not user-modifiable).
+   */
+  creatorUserId?: string | null;
   /**
    * Legacy-namespace mappings to migrate at install time. The
    * substack-pilot port (Phase 7) supplies the `post-type:*` → managed
@@ -270,6 +281,24 @@ export async function installFromLocal(
     );
   }
 
+  // Auto-`modifiable` for user-authored extensions, gated by an
+  // opt-in deployment setting. `creatorUserId != null` ⟺ this is the
+  // authored-install path (bundled/github/mcp/CLI leave it NULL), so a
+  // non-authored install can NEVER become auto-modifiable regardless of
+  // the setting. Strict `=== true` so an unset/non-boolean setting
+  // fail-safes to the historical secure default (`false`) — an upgrade
+  // never silently removes the admin sign-off layer on a shared
+  // deployment. Going-forward only: same-name reinstall / in-place
+  // modify preserves the existing `modifiable` (author-install.ts) and
+  // the "already installed — refreshed" branch above never touches it,
+  // so this default applies solely on a FIRST authored install. The
+  // residual "LLM can't silently rewrite" guarantee is unaffected —
+  // it's held by reopen owner-scoping + the never-persisted
+  // always-prompt on `ezcorp:extension:modify`, not by this flag.
+  const authorAutoModifiable =
+    opts.creatorUserId != null &&
+    (await getSetting("extensions:authorAutoModifiable")) === true;
+
   // Create DB record
   const ext = await createExtension({
     name: manifest.name,
@@ -282,6 +311,10 @@ export async function installFromLocal(
     grantedPermissions,
     checksumVerified: true,
     consecutiveFailures: 0,
+    // NULL unless the authored-install path supplied it (bundled/
+    // github/mcp/CLI leave it NULL → never user-modifiable).
+    creatorUserId: opts.creatorUserId ?? null,
+    modifiable: authorAutoModifiable,
   });
 
   // Phase 3: entity install hooks (migrate legacy namespace + seed

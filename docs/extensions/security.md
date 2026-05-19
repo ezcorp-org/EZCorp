@@ -113,3 +113,45 @@ extends it to ALSO fire on tool-list signature drift, regardless of
 version or permission changes — a tool-list change is always a
 re-approval event. The legacy "pure version bump → no re-approval"
 path is preserved for unchanged tool lists.
+
+## Re-opening user-authored extensions for LLM edit
+
+The bundled `extension-author.modify_extension` tool re-opens an
+already-installed extension as an editable draft (`ezcorp/drafts.reopen`).
+Three independent gates protect this — defence in depth:
+
+1. **Owner-scoping.** `reopen` only resolves extensions whose
+   `creator_user_id` matches the requesting user's token-backed `userId`
+   (never RPC-supplied). A miss / not-owned / bundled all return the same
+   opaque `NOT_FOUND_OR_NOT_MODIFIABLE` so the in-chat LLM cannot probe
+   other users' extensions.
+2. **Mandatory always-prompt.** `ezcorp:extension:modify` is in
+   `SENSITIVE_KINDS`, carved out of the bundled auto-allow, and is
+   **never persisted** — the user must Allow a permission card on *every*
+   `modify_extension` call. This is the load-bearing "the assistant can
+   never silently rewrite my extension" guarantee.
+3. **The `modifiable` admin gate** (`extensions.modifiable`, default
+   `false`). A per-extension flag an admin flips (Library → the
+   extension → "Allow modify"). Distinct from gate 2: it is a
+   multi-tenant *policy* lever — "even the owner needs admin sign-off to
+   use the LLM-modify flow on this extension."
+
+### Setting: `extensions:authorAutoModifiable`
+
+Boolean deployment setting, **default `false`**, toggled by an admin in
+Security settings. When `false` (default — unchanged behaviour for every
+existing/upgraded deployment), gate 3 requires a manual admin flip per
+authored extension. When `true`, an extension created via the in-chat
+authoring flow (`creator_user_id != null`) is persisted with
+`modifiable = true` so its creator can ask the assistant to edit it
+without the per-extension admin step.
+
+Safety: this relaxes **only gate 3**. Gates 1 and 2 are untouched, so
+the assistant still cannot silently modify anything and cannot reach
+another user's extensions. The setting is read strictly (`=== true`) at
+`installer.ts` install time, so an unset/non-boolean value fail-safes to
+the historical secure default. It is **going-forward only** — it never
+backfills existing rows, and same-name reinstall / in-place modify
+preserves the existing `modifiable`. Non-authored installs
+(bundled/github/mcp/CLI, `creator_user_id == null`) are never affected
+regardless of the setting.

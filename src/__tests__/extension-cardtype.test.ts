@@ -163,6 +163,57 @@ describe("ToolExecutor includes cardType in events", () => {
 		expect(startEvent!.data.cardType).toBe("task-list");
 	});
 
+	test("tool:start and tool:complete events include cardLayout from registered tool", async () => {
+		const events: Array<{ name: string; data: any }> = [];
+		const bus = {
+			emit: (name: string, data: any) => events.push({ name, data }),
+			on: () => () => {},
+		};
+
+		const { ToolExecutor } = await import("../extensions/tool-executor");
+		const executor = new ToolExecutor(registry, createStubPermissionEngine(), { bus: bus as any });
+
+		registry.registerToolForTest("time-teller.tell-time", makeRegisteredTool({
+			name: "time-teller.tell-time",
+			extensionId: "ext-time",
+			extensionName: "time-teller",
+			originalName: "tell-time",
+			cardType: "time-clock",
+			cardLayout: "dock",
+		}));
+		registry.setManifestForTest("ext-time", {
+			schemaVersion: 2,
+			name: "time-teller",
+			version: "1.0.0",
+			description: "test",
+			author: { name: "test" },
+			entrypoint: "./index.ts",
+			permissions: {},
+		});
+		registry.setInstallPathForTest("ext-time", "/tmp/fake");
+		registry.setGrantedPermsForTest("ext-time", { grantedAt: {} });
+
+		const originalGetProcess = registry.getProcess.bind(registry);
+		registry.getProcess = async () => ({
+			isRunning: true,
+			setRequestHandler() {},
+			callTool: async () => ({ content: [{ type: "text", text: "Current time: 12:00 PM" }], isError: false }),
+		} as any);
+
+		try {
+			await executor.executeToolCall("time-teller.tell-time", {}, "conv-1", "msg-1");
+		} finally {
+			registry.getProcess = originalGetProcess;
+		}
+
+		const startEvent = events.find(e => e.name === "tool:start");
+		const completeEvent = events.find(e => e.name === "tool:complete");
+		expect(startEvent!.data.cardType).toBe("time-clock");
+		expect(startEvent!.data.cardLayout).toBe("dock");
+		expect(completeEvent!.data.cardType).toBe("time-clock");
+		expect(completeEvent!.data.cardLayout).toBe("dock");
+	});
+
 	test("tool:start event omits cardType when not set on tool", async () => {
 		const events: Array<{ name: string; data: any }> = [];
 		const bus = {

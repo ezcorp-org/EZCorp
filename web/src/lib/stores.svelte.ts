@@ -957,10 +957,11 @@ export function initStores() {
 				if (completeInvId) {
 					const extracted = extractToolOutput(output);
 					const outputText = typeof extracted === 'string' ? extracted : JSON.stringify(extracted);
+					const existingStreaming = inlineToolStore.getById(completeInvId);
 					inlineToolStore.upsertStreaming({
 						id: completeInvId,
 						conversationId,
-						extensionName: 'builtin',
+						extensionName: existingStreaming?.extensionName ?? 'builtin',
 						toolName,
 						status: completeSuccess === false ? 'error' : 'complete',
 						output: outputText,
@@ -980,9 +981,9 @@ export function initStores() {
 						const extractedOutput = extractToolOutput(output);
 						if (completeSuccess === false) {
 							const errText = typeof extractedOutput === 'string' ? extractedOutput : JSON.stringify(extractedOutput);
-							updated[idx] = { ...updated[idx]!, status: 'error', error: errText, output: extractedOutput, duration, permissionPending: false, ...(safeCompleteLayout ? { cardLayout: safeCompleteLayout } : {}) };
+							updated[idx] = { ...updated[idx]!, status: 'error', error: errText, output: extractedOutput, duration, permissionPending: false, ...(completeCardType ? { cardType: completeCardType } : {}), ...(safeCompleteLayout ? { cardLayout: safeCompleteLayout } : {}) };
 						} else {
-							updated[idx] = { ...updated[idx]!, status: 'complete', output: extractedOutput, duration, permissionPending: false, ...(safeCompleteLayout ? { cardLayout: safeCompleteLayout } : {}) };
+							updated[idx] = { ...updated[idx]!, status: 'complete', output: extractedOutput, duration, permissionPending: false, ...(completeCardType ? { cardType: completeCardType } : {}), ...(safeCompleteLayout ? { cardLayout: safeCompleteLayout } : {}) };
 						}
 						store.streamingToolCalls = { ...store.streamingToolCalls, [runId]: updated };
 					}
@@ -991,24 +992,28 @@ export function initStores() {
 			}
 
 			case "tool:error": {
-				const { conversationId, toolName, error: toolError, duration, source: errorSource, invocationId: errorInvId } = event.data as {
-					conversationId: string; toolName: string; error: string; duration: number; source?: string; invocationId?: string;
+				const { conversationId, toolName, error: toolError, duration, source: errorSource, invocationId: errorInvId, cardType: errorCardType, cardLayout: errorCardLayout } = event.data as {
+					conversationId: string; toolName: string; error: string; duration: number; source?: string; invocationId?: string; cardType?: string; cardLayout?: string;
 				};
+				const safeErrorLayout = errorCardLayout === 'dock' ? 'dock' as const : errorCardLayout === 'inline' ? 'inline' as const : undefined;
 				if (errorSource === 'inline' && errorInvId) {
-					inlineToolStore.updateFromEvent(errorInvId, 'tool:error', { error: toolError, duration });
+					inlineToolStore.updateFromEvent(errorInvId, 'tool:error', { error: toolError, duration, ...(errorCardType ? { cardType: errorCardType } : {}), ...(safeErrorLayout ? { cardLayout: safeErrorLayout } : {}) });
 					break;
 				}
 				// Live Diff Summary panel: mark the streaming entry as errored.
 				// `input` omitted on purpose (see tool:complete above).
 				if (errorInvId) {
+					const existingStreaming = inlineToolStore.getById(errorInvId);
 					inlineToolStore.upsertStreaming({
 						id: errorInvId,
 						conversationId,
-						extensionName: 'builtin',
+						extensionName: existingStreaming?.extensionName ?? 'builtin',
 						toolName,
 						status: 'error',
 						error: toolError,
 						duration,
+						...(errorCardType ? { cardType: errorCardType } : {}),
+						...(safeErrorLayout ? { cardLayout: safeErrorLayout } : {}),
 					});
 				}
 				const runId = Object.entries(store.streamingRunToConversation)

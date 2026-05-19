@@ -678,6 +678,7 @@ export class ToolExecutor {
         input,
         timestamp,
         ...(registered.cardType && { cardType: registered.cardType }),
+        ...(registered.cardLayout && { cardLayout: registered.cardLayout }),
         ...(meta?.source && { source: meta.source }),
         ...(meta?.invocationId && { invocationId: meta.invocationId }),
       });
@@ -858,6 +859,7 @@ export class ToolExecutor {
           errorResult,
           promptStartedAt,
           registered.cardType,
+          registered.cardLayout,
         );
         this.bus?.emit("tool:error", {
           conversationId,
@@ -866,6 +868,7 @@ export class ToolExecutor {
           error: message,
           duration: Date.now() - promptStartedAt,
           ...(registered.cardType && { cardType: registered.cardType }),
+          ...(registered.cardLayout && { cardLayout: registered.cardLayout }),
           ...(meta?.source && { source: meta.source }),
           ...(meta?.invocationId && { invocationId: meta.invocationId }),
         });
@@ -1081,6 +1084,7 @@ export class ToolExecutor {
           entityResult,
           startTime,
           registered.cardType,
+          registered.cardLayout,
         );
         const duration = Date.now() - startTime;
         this.bus?.emit("tool:complete", {
@@ -1091,6 +1095,7 @@ export class ToolExecutor {
           duration,
           success: !entityResult.isError,
           ...(registered.cardType && { cardType: registered.cardType }),
+          ...(registered.cardLayout && { cardLayout: registered.cardLayout }),
           ...(meta?.source && { source: meta.source }),
           ...(meta?.invocationId && { invocationId: meta.invocationId }),
         });
@@ -1192,7 +1197,17 @@ export class ToolExecutor {
       }
 
       // Record to tool_calls table
-      await this.recordToolCall(conversationId, messageId, extensionId, toolName, input, result, startTime, registered.cardType);
+      await this.recordToolCall(
+        conversationId,
+        messageId,
+        extensionId,
+        toolName,
+        input,
+        result,
+        startTime,
+        registered.cardType,
+        registered.cardLayout,
+      );
 
       const duration = Date.now() - startTime;
       this.bus?.emit("tool:complete", {
@@ -1203,6 +1218,7 @@ export class ToolExecutor {
         duration,
         success: !result.isError,
         ...(registered.cardType && { cardType: registered.cardType }),
+        ...(registered.cardLayout && { cardLayout: registered.cardLayout }),
         ...(meta?.source && { source: meta.source }),
         ...(meta?.invocationId && { invocationId: meta.invocationId }),
       });
@@ -1216,7 +1232,17 @@ export class ToolExecutor {
       };
 
       // Record error to tool_calls table
-      await this.recordToolCall(conversationId, messageId, extensionId, toolName, input, errorResult, startTime, registered.cardType);
+      await this.recordToolCall(
+        conversationId,
+        messageId,
+        extensionId,
+        toolName,
+        input,
+        errorResult,
+        startTime,
+        registered.cardType,
+        registered.cardLayout,
+      );
 
       const duration = Date.now() - startTime;
       this.bus?.emit("tool:error", {
@@ -1226,6 +1252,7 @@ export class ToolExecutor {
         error: errorMsg,
         duration,
         ...(registered.cardType && { cardType: registered.cardType }),
+        ...(registered.cardLayout && { cardLayout: registered.cardLayout }),
         ...(meta?.source && { source: meta.source }),
         ...(meta?.invocationId && { invocationId: meta.invocationId }),
       });
@@ -2437,6 +2464,7 @@ export class ToolExecutor {
     result: ToolCallResult,
     startTime: number,
     cardType?: string,
+    cardLayout?: string,
   ): Promise<void> {
     // Route through the shared persist helper — single insert site for
     // tool_calls across the extension-tool path here and the built-in
@@ -2452,6 +2480,7 @@ export class ToolExecutor {
       success: !result.isError,
       durationMs: Date.now() - startTime,
       cardType: cardType ?? null,
+      cardLayout: cardLayout === "dock" || cardLayout === "inline" ? cardLayout : null,
       userId: this.currentUserId ?? null,
       agentConfigId: this.currentAgentConfigId ?? null,
       model: this.currentModel ?? null,

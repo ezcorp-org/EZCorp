@@ -4,10 +4,16 @@ import { resolveOAuthModel } from "../../providers/registry";
 import { getCredential } from "../../providers/credentials";
 import type { StreamChatContext } from "./context";
 import type { SetupToolsResult } from "./setup-tools";
+import { makeCompactionTransform, type CompactionConfig } from "./context-compaction";
 
 /** Subset of streamChat's options the pi-agent construction reads. */
 export interface BuildPiAgentOptions {
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /**
+   * Per-model history-compaction overrides (resolved from settings by
+   * the streamChat entry). Omitted keys fall back to module DEFAULTS.
+   */
+  compaction?: Partial<CompactionConfig>;
 }
 
 /**
@@ -60,6 +66,11 @@ export function buildPiAgent(
       messages: history,
       thinkingLevel: options.thinkingLevel ?? (model.reasoning ? "medium" : "off"),
     },
+    // Per-model context-window compaction. Runs before every LLM call
+    // (initial turn + each agentic tool-loop iteration + retries), so a
+    // long thread no longer dead-ends on `context_length_exceeded`.
+    // Input-only — the model is never mutated.
+    transformContext: makeCompactionTransform(model, options.compaction),
     convertToLlm: (messages) => {
       return messages.filter((m) =>
         "role" in m && (m.role === "user" || m.role === "assistant" || m.role === "toolResult"),

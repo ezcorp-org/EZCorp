@@ -97,6 +97,8 @@ Full env var reference: [production-guide.md §1](production-guide.md#1-quick-st
 
 After logging in, go to **Settings > Provider Keys** to add API keys. Providers supported out of the box include OpenAI, Anthropic, Google Gemini, and 20+ others via `@mariozechner/pi-ai`. At least one provider key is required for chat to work.
 
+Long conversations are automatically compacted to each model's context window, so chats don't dead-end on `context_length_exceeded`. This is on by default and needs no configuration; to tune or disable it, see [context compaction](context-compaction.md).
+
 ## Using slash commands
 
 Type `/review` (or any command name) in any chat. Commands come from:

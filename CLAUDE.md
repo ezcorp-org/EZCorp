@@ -59,6 +59,24 @@ are silent no-ops, mirroring `@[file:…]` for missing files. See
 [docs/plans/2026-05-01-feature-index-design.md](docs/plans/2026-05-01-feature-index-design.md)
 for the full spec.
 
+## Context compaction
+
+Conversation history is trimmed per-model before every LLM call via
+pi-agent-core's `transformContext` hook, wired in
+`src/runtime/stream-chat/build-pi-agent.ts` and configured from
+`src/runtime/stream-chat/context-compaction.ts`. It is a swappable
+strategy (`trim` default, `none` to disable) selected by the
+`compaction:strategy` setting.
+
+**Invariant — input-only:** never mutate `model.maxTokens` (or clone
+the model) to "save context". For the Codex API that field is metadata
+only (no `max_output_tokens` is sent); for other providers pi-ai
+already derives the output cap from it, so shrinking it truncates
+output. Trim **input** only; `responseReserve` sizes the budget and is
+never written back. See
+[docs/context-compaction.md](docs/context-compaction.md) for the full
+spec, settings keys, and how to add a custom strategy.
+
 ## APIs
 
 - `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.

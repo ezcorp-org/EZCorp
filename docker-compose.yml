@@ -84,6 +84,18 @@ services:
       # mount, every container restart wipes the images and the tool-card
       # URLs 404 silently.
       - ext-data:/app/web/.ezcorp
+      # Scoped host bind mounts layered ON TOP of the ext-data volume
+      # above: authored/installed extensions and their persistent
+      # extension-data land in the host tree at ./.ezcorp/ so they're
+      # editable/inspectable from the host (the volume only ever exposed
+      # them at /var/lib/docker/volumes/ez-corp-ai_ext-data/_data). The
+      # daemon `.pid` files stay volume-backed (NOT bound) on purpose —
+      # sharing them across the host/container PID namespace would cause
+      # false "daemon already running" detection. `.ezcorp/` is
+      # gitignored. Container runs as root, so host-side files it creates
+      # here are root-owned (sudo to manage from the host).
+      - ./.ezcorp/extensions:/app/web/.ezcorp/extensions
+      - ./.ezcorp/extension-data:/app/web/.ezcorp/extension-data
       # NOTE: a `./.env.seed:/app/.env.seed:ro` bind mount used to live
       # here so re-seeds could restore OAuth tokens. It's gitignored,
       # so on fresh clones Docker created an empty directory at the

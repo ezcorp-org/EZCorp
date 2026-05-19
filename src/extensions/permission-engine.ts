@@ -303,7 +303,8 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
       // never suppress the prompt — defence-in-depth alongside the
       // non-persist carve-out in `resolvePrompt`.
       const allowed =
-        sensitive.kind === "ezcorp:extension:install"
+        sensitive.kind === "ezcorp:extension:install" ||
+        sensitive.kind === "ezcorp:extension:modify"
           ? false
           : await isAlwaysAllowed(allowCache, ctx, sensitive);
       if (!allowed) {
@@ -319,14 +320,16 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
         // reason so a security review can see WHY it wasn't prompted.
         // Fail-closed: a registry without `isBundled` (older/mock) →
         // `undefined === true` → false → fall through to the prompt.
-        // Carve-out: `ezcorp:extension:install` MUST always prompt,
-        // even though extension-author is bundled. The bundled
-        // auto-allow exists so first-party code doesn't hit an
-        // unanswerable fs/shell gate — but installing model-authored
-        // code is precisely the decision a human must make every
-        // time, so this kind is excluded from the bypass.
+        // Carve-out: `ezcorp:extension:install` and
+        // `ezcorp:extension:modify` MUST always prompt, even though
+        // extension-author is bundled. The bundled auto-allow exists so
+        // first-party code doesn't hit an unanswerable fs/shell gate —
+        // but installing OR re-opening-for-edit model-authored code is
+        // precisely the decision a human must make every time, so both
+        // kinds are excluded from the bypass.
         if (
           sensitive.kind !== "ezcorp:extension:install" &&
+          sensitive.kind !== "ezcorp:extension:modify" &&
           deps.registry.isBundled?.(ctx.extensionId) === true
         ) {
           await writeAuditRow(
@@ -386,13 +389,16 @@ export function createPermissionEngine(deps: PermissionEngineDeps): PermissionEn
       return;
     }
 
-    // `ezcorp:extension:install` is intentionally one-shot: an
-    // approval authorizes THIS install only. Returning before the
-    // upsert means no always-allow row (and no cache entry) is ever
-    // written, so every subsequent install re-prompts regardless of
-    // the scope the UI sent. Paired with the read-side force-false in
-    // `authorize` above.
-    if (pending.capability.kind === "ezcorp:extension:install") {
+    // `ezcorp:extension:install` and `ezcorp:extension:modify` are
+    // intentionally one-shot: an approval authorizes THIS install /
+    // THIS reopen-for-edit only. Returning before the upsert means no
+    // always-allow row (and no cache entry) is ever written, so every
+    // subsequent call re-prompts regardless of the scope the UI sent.
+    // Paired with the read-side force-false in `authorize` above.
+    if (
+      pending.capability.kind === "ezcorp:extension:install" ||
+      pending.capability.kind === "ezcorp:extension:modify"
+    ) {
       return;
     }
 

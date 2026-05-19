@@ -21,7 +21,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, rename } from "node:fs/promises";
+import { cp, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   consumeDraft,
@@ -37,6 +37,35 @@ import type { ExtensionPermissions } from "./types";
 import { logger } from "../logger";
 
 const log = logger.child("author-install");
+
+/**
+ * Move a directory, tolerating cross-filesystem boundaries.
+ *
+ * The install pipeline relocates a verified draft from
+ * `.ezcorp/extension-data/extension-author/drafts/…` to
+ * `.ezcorp/extensions/<name>`. Those two subtrees are SIBLINGS under
+ * `.ezcorp/`, but deployments may bind-mount them independently (the
+ * scoped host bind mounts in `docker-compose.yml` / `compose.prod.yml`
+ * expose each on a separate mount so authored extensions land in the
+ * host tree). `rename(2)` refuses to cross a mount point even when both
+ * sides are the same physical filesystem — it throws `EXDEV`. A bare
+ * `rename` therefore silently couples this security-relevant pipeline
+ * to a single-volume layout. Fall back to a recursive copy + delete so
+ * the move is correct under ANY mount topology. The non-atomicity of
+ * the fallback is safe here: the source is already fully verified
+ * (`loadManifest` + `verifyExtension` ran on it upstream), the
+ * destination's non-existence was just asserted by the caller, and the
+ * pipeline already rolls back on any post-move failure.
+ */
+async function moveDir(src: string, dest: string): Promise<void> {
+  try {
+    await rename(src, dest);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+    await cp(src, dest, { recursive: true });
+    await rm(src, { recursive: true, force: true });
+  }
+}
 
 /**
  * Strict manifest-name shape. Intentionally INLINED here (a verbatim
@@ -197,9 +226,36 @@ export async function installAuthoredDraft(args: {
     }
   }
 
+  // Pre-modify backup dir, set only on a sanctioned in-place modify
+  // that displaces existing installed files. Function-scoped so the
+  // rollback catch can restore it and the success tail can delete it.
+  let modifyBackupDir: string | null = null;
+
   // 3) Name-collision check + move dir → installed location.
+  //
+  // Sanctioned in-place MODIFY: a draft minted by the "reopen my
+  // installed extension" flow carries `payload.modifyOf =
+  // <sourceExtensionId>` (it is otherwise a normal author draft, so the
+  // entire read/validate/install pipeline is unchanged). When the
+  // still-installed target genuinely belongs to this user, an admin has
+  // flagged it `modifiable`, and it is not bundled, a same-name install
+  // is the INTENDED upgrade — not a collision. Re-authorize HERE
+  // against the DB (an admin may have toggled `modifiable` off, or
+  // ownership changed, between reopen and install) so the gate is the
+  // install-time state, never the stale reopen-time decision. Anything
+  // that fails the re-check falls through to the normal NAME_COLLISION
+  // — the generic create flow still "asks the user".
+  const modifyOf =
+    typeof draftPayload.modifyOf === "string" ? draftPayload.modifyOf : null;
   const existing = await getExtensionByName(name);
-  if (existing) {
+  const sanctionedModify =
+    modifyOf !== null &&
+    existing !== null &&
+    existing.id === modifyOf &&
+    existing.creatorUserId === userId &&
+    existing.modifiable === true &&
+    existing.isBundled === false;
+  if (existing && !sanctionedModify) {
     throw new AuthorInstallError(
       "NAME_COLLISION",
       `Extension "${name}" is already installed`,
@@ -212,13 +268,24 @@ export async function installAuthoredDraft(args: {
   );
   const installedPath = join(root, ".ezcorp/extensions", name);
   if (existsSync(installedPath)) {
-    throw new AuthorInstallError(
-      "NAME_COLLISION",
-      `Install path "${installedPath}" already exists`,
-    );
+    if (!sanctionedModify) {
+      throw new AuthorInstallError(
+        "NAME_COLLISION",
+        `Install path "${installedPath}" already exists`,
+      );
+    }
+    // Sanctioned replace: move the old files ASIDE (not delete) so a
+    // post-move install failure can restore them — no data loss on a
+    // failed modify. The DB row is intentionally LEFT INTACT: the
+    // `installFromLocal(installedPath, …)` below matches the existing
+    // row's `local:<installedPath>` source and refreshes it in place,
+    // preserving id/enabled/grants/creatorUserId AND the modifiable
+    // flag. The backup is deleted on success, restored on rollback.
+    modifyBackupDir = `${installedPath}.modify-bak-${Date.now()}`;
+    await rename(installedPath, modifyBackupDir);
   }
   await mkdir(dirname(installedPath), { recursive: true });
-  await rename(draftDir, installedPath);
+  await moveDir(draftDir, installedPath);
 
   // 4) installFromLocal — env-key-leak gate runs HERE with
   //    `isBundled:false`. On any failure, roll the dir back so the
@@ -273,12 +340,25 @@ export async function installAuthoredDraft(args: {
       installedPath,
       grantedPermissions,
       false,
-      { isBundled: false, envEscapeHatch: false, preloadedManifest: manifest },
+      {
+        isBundled: false,
+        envEscapeHatch: false,
+        preloadedManifest: manifest,
+        // Attribute the row to the draft owner — this is the ONLY path
+        // that records a creator, gating the admin-only modify flow.
+        creatorUserId: userId,
+      },
     );
   } catch (err) {
     try {
       await mkdir(dirname(draftDir), { recursive: true });
-      await rename(installedPath, draftDir);
+      await moveDir(installedPath, draftDir);
+      // Sanctioned-modify rollback: restore the original installed
+      // files so a failed modify never loses the user's extension.
+      if (modifyBackupDir) {
+        await moveDir(modifyBackupDir, installedPath);
+        modifyBackupDir = null;
+      }
     } catch (rollbackErr) {
       throw new AuthorInstallError(
         "ROLLBACK_FAILED",
@@ -327,6 +407,21 @@ export async function installAuthoredDraft(args: {
     await ExtensionRegistry.getInstance().reload();
   } catch {
     /* next reload picks it up */
+  }
+
+  // Sanctioned-modify succeeded — drop the pre-modify backup. Best-
+  // effort: a leftover `*.modify-bak-*` dir is inert (not a valid
+  // extension dir, never in the registry — `.ezcorp/extensions` is
+  // enumerated by DB row, not by directory scan).
+  if (modifyBackupDir) {
+    try {
+      await rm(modifyBackupDir, { recursive: true, force: true });
+    } catch (e) {
+      log.warn("installAuthoredDraft: modify backup cleanup failed", {
+        extensionId: installed.id,
+        error: String(e),
+      });
+    }
   }
 
   // D2 defence in depth: re-assert the strict name shape HERE, right

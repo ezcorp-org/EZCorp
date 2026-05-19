@@ -297,6 +297,17 @@ export async function migrate(db: any): Promise<void> {
     )
   `);
 
+  // User-modifiable extensions. `creator_user_id` attributes a row to
+  // the user who authored it (set only by the authored-install path;
+  // bundled/github/mcp stay NULL). `modifiable` is an admin-only gate
+  // (default FALSE) authorizing the creator to re-open/edit it. Placed
+  // AFTER the `users` CREATE so the FK target exists (the `extensions`
+  // table is created/altered earlier — see the is_bundled ALTER). Both
+  // idempotent — re-run is a no-op. ON DELETE SET NULL so deleting a
+  // user does not drop their extensions.
+  await db.execute(sql`ALTER TABLE extensions ADD COLUMN IF NOT EXISTS creator_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await db.execute(sql`ALTER TABLE extensions ADD COLUMN IF NOT EXISTS modifiable BOOLEAN NOT NULL DEFAULT FALSE`);
+
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS invites (
       id TEXT PRIMARY KEY,

@@ -9,7 +9,14 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -245,6 +252,154 @@ describe("installAuthoredDraft — typed-error branches", () => {
     expect(
       await code(installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false })),
     ).toBe("INSTALL_FAILED");
+  });
+});
+
+describe("installAuthoredDraft — sanctioned in-place modify", () => {
+  const installedDir = () => join(TMP, ".ezcorp/extensions", "weather");
+  const baks = () =>
+    readdirSync(join(TMP, ".ezcorp/extensions")).filter((n) =>
+      n.includes(".modify-bak-"),
+    );
+
+  function asModifyDraft(modifyOf = "ext-target"): void {
+    (draftRow!.payload as Record<string, unknown>).modifyOf = modifyOf;
+  }
+  function ownerModifiableRow(): void {
+    getByNameImpl = async () =>
+      ({
+        id: "ext-target",
+        creatorUserId: "user-a",
+        modifiable: true,
+        isBundled: false,
+      }) as unknown as { id: string };
+  }
+
+  test("authorized modify → no collision, replaces files, cleans backup", async () => {
+    seed({});
+    asModifyDraft();
+    ownerModifiableRow();
+    mkdirSync(installedDir(), { recursive: true });
+    writeFileSync(join(installedDir(), "ezcorp.config.ts"), "OLD\n");
+    writeFileSync(join(DRAFT_DIR, "ezcorp.config.ts"), "NEW\n");
+
+    const r = await installAuthoredDraft({
+      draftId: "draft-1",
+      userId: "user-a",
+      enable: false,
+    });
+    expect(r.extensionId).toBe("ext-1");
+    expect(readFileSync(join(installedDir(), "ezcorp.config.ts"), "utf8")).toBe(
+      "NEW\n",
+    );
+    expect(existsSync(DRAFT_DIR)).toBe(false); // moved into place
+    expect(baks()).toEqual([]); // backup cleaned on success
+  });
+
+  test("backup restored when install fails (no data loss on a bad modify)", async () => {
+    seed({});
+    asModifyDraft();
+    ownerModifiableRow();
+    mkdirSync(installedDir(), { recursive: true });
+    writeFileSync(join(installedDir(), "ezcorp.config.ts"), "ORIGINAL\n");
+    installImpl = async () => {
+      throw new Error("boom");
+    };
+
+    expect(
+      await code(
+        installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false }),
+      ),
+    ).toBe("INSTALL_FAILED");
+    expect(readFileSync(join(installedDir(), "ezcorp.config.ts"), "utf8")).toBe(
+      "ORIGINAL\n",
+    );
+    expect(baks()).toEqual([]);
+  });
+
+  test("modifyOf but not owner → NAME_COLLISION (re-authorized at install)", async () => {
+    seed({});
+    asModifyDraft();
+    getByNameImpl = async () =>
+      ({
+        id: "ext-target",
+        creatorUserId: "someone-else",
+        modifiable: true,
+        isBundled: false,
+      }) as unknown as { id: string };
+    mkdirSync(installedDir(), { recursive: true });
+    expect(
+      await code(
+        installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false }),
+      ),
+    ).toBe("NAME_COLLISION");
+  });
+
+  test("modifyOf but modifiable:false → NAME_COLLISION", async () => {
+    seed({});
+    asModifyDraft();
+    getByNameImpl = async () =>
+      ({
+        id: "ext-target",
+        creatorUserId: "user-a",
+        modifiable: false,
+        isBundled: false,
+      }) as unknown as { id: string };
+    expect(
+      await code(
+        installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false }),
+      ),
+    ).toBe("NAME_COLLISION");
+  });
+
+  test("modifyOf but bundled → NAME_COLLISION", async () => {
+    seed({});
+    asModifyDraft();
+    getByNameImpl = async () =>
+      ({
+        id: "ext-target",
+        creatorUserId: "user-a",
+        modifiable: true,
+        isBundled: true,
+      }) as unknown as { id: string };
+    expect(
+      await code(
+        installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false }),
+      ),
+    ).toBe("NAME_COLLISION");
+  });
+
+  test("modifyOf id mismatch (same name, different ext) → NAME_COLLISION", async () => {
+    seed({});
+    asModifyDraft("ext-target");
+    getByNameImpl = async () =>
+      ({
+        id: "DIFFERENT",
+        creatorUserId: "user-a",
+        modifiable: true,
+        isBundled: false,
+      }) as unknown as { id: string };
+    expect(
+      await code(
+        installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false }),
+      ),
+    ).toBe("NAME_COLLISION");
+  });
+
+  test("no modifyOf marker + existing → NAME_COLLISION (generic create unchanged)", async () => {
+    seed({});
+    getByNameImpl = async () =>
+      ({
+        id: "x",
+        creatorUserId: "user-a",
+        modifiable: true,
+        isBundled: false,
+      }) as unknown as { id: string };
+    expect(
+      await code(
+        installAuthoredDraft({ draftId: "draft-1", userId: "user-a", enable: false }),
+      ),
+    ).toBe("NAME_COLLISION");
   });
 });
 

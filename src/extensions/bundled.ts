@@ -902,6 +902,20 @@ export async function ensureBundledExtensions(): Promise<void> {
                   "CRITICAL bundled extension version-bumped with permission changes — auto-reapproved (within ceiling), staying enabled",
                   { name: entry.name },
                 );
+                // Grant self-heal on the critical auto-reapprove exit.
+                // This `continue` skips the normal reconcile site below,
+                // so a `critical` row whose tool list changes EVERY boot
+                // (extension-author is the canonical case — its tools
+                // churn as the feature is built) would otherwise NEVER
+                // have a stale grant healed: it returns
+                // "custom.drafts.kinds not granted" on every scaffold
+                // forever. Safe here because the row STAYS ENABLED and
+                // is trusted-bundled; the reconcile is ceiling-clamped
+                // (hard bound) so it can only backfill toward the
+                // declared-within-ceiling set, never widen. Distinct
+                // from the fail-closed disable exits (non-critical S9 /
+                // tamper), which intentionally do NOT reconcile.
+                await reconcileBundledGrant(entry, existing);
                 continue;
               }
             }
@@ -988,6 +1002,37 @@ export async function ensureBundledExtensions(): Promise<void> {
             error: String(refreshErr),
           });
         }
+
+        // Grant self-heal (S6 companion). The S6 drift check and the
+        // manifest-refresh block above DELIBERATELY never touch the
+        // `grantedPermissions` DB column — they treat it as the runtime
+        // security boundary. But a row seeded BEFORE a within-ceiling
+        // declared grant existed (or one previously clamped/stripped)
+        // is otherwise NEVER reconciled: it stays broken across every
+        // restart with no escalation path (e.g. extension-author rows
+        // missing `custom.drafts.kinds` → "custom.drafts.kinds not
+        // granted" on every scaffold). Backfill the stored grant toward
+        // the bundled entry's DECLARED-WITHIN-CEILING permission set.
+        //
+        // Security invariants (do not relax):
+        //   - The reconciled grant is `clampToBundledCeiling(name, …)`
+        //     of (stored-grant ⊕ declared) — the final ceiling clamp is
+        //     the hard bound, so the result is provably ⊆ ceiling even
+        //     if the stored row somehow carried perms beyond it. This is
+        //     a backfill toward the declared-within-ceiling grant, NOT a
+        //     widening and NOT an unbounded union.
+        //   - This is the NORMAL (no-gate) exit. The fail-closed
+        //     disable exits (non-critical S9 version-bump, manifest
+        //     tamper) `continue` BEFORE this and are intentionally NOT
+        //     reconciled — a row pending re-approval must not have its
+        //     grant silently healed. The ONE other reconcile site is the
+        //     critical-S9 auto-reapprove branch above, which `continue`s
+        //     before this point but keeps the row ENABLED, so its stale
+        //     grant must still be healed there (extension-author's tool
+        //     list churns every boot → it always takes that path).
+        //   - Idempotent: a structural compare gates the DB write +
+        //     audit, so a satisfied grant produces no boot-time spam.
+        await reconcileBundledGrant(entry, existing);
 
         // If a bundled extension was disabled by a prior runtime check
         // (e.g. the now-removed integrity gate) or by an operator toggling
@@ -1706,6 +1751,193 @@ async function writeBundledRegrantAudit(
       };
       await insertAuditEntry(null, EXT_AUDIT_ACTIONS.BUNDLED_REGRANTED, extensionId, meta);
     }
+  } catch { /* audit write failure is non-fatal */ }
+}
+
+/**
+ * Stable, order-independent canonical string for an `ExtensionPermissions`
+ * shape — mirrors `bundled-ceiling.ts`'s `canonicalizePerms` intent
+ * (sort keys, sort string arrays, drop `undefined`/`false`/empty so a
+ * semantic no-op shape difference doesn't trip the idempotency gate).
+ * Recursive so nested bags (`custom.drafts.kinds`, `grantedAt`, …) are
+ * also order-stable. Used ONLY for the reconciliation idempotency
+ * compare; `clampToBundledCeiling` keeps its own private comparator.
+ */
+function canonicalGrant(value: unknown): string {
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) {
+      const mapped = v.map(walk);
+      const allStrings = mapped.every((x) => typeof x === "string");
+      return allStrings ? [...(mapped as string[])].sort() : mapped;
+    }
+    if (v !== null && typeof v === "object") {
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+        const inner = (v as Record<string, unknown>)[k];
+        if (inner === undefined) continue;
+        if (inner === false) continue; // not-granted ≡ omitted
+        if (Array.isArray(inner) && inner.length === 0) continue;
+        if (
+          inner !== null &&
+          typeof inner === "object" &&
+          !Array.isArray(inner) &&
+          Object.keys(inner as Record<string, unknown>).length === 0
+        ) {
+          continue; // empty bag ({} grantedAt) ≡ omitted
+        }
+        out[k] = walk(inner);
+      }
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(walk(value));
+}
+
+/**
+ * Self-heal the stored `grantedPermissions` of an EXISTING bundled row
+ * toward the bundled entry's DECLARED-WITHIN-CEILING grant.
+ *
+ * Why this exists: `ensureBundledExtensions`'s existing-row branch runs
+ * S6 drift + S9 version gate + manifest refresh, but ALL of those
+ * deliberately preserve the stored `permissions` block and NEVER touch
+ * the `grantedPermissions` DB column. A row seeded before a within-
+ * ceiling declared grant existed (or one previously clamped/stripped)
+ * therefore stays broken across every restart — e.g. an enabled
+ * `extension-author` row whose grant lacks `custom.drafts.kinds`
+ * returns "custom.drafts.kinds not granted" on every scaffold.
+ *
+ * Reconciliation contract (security-load-bearing — see the call-site
+ * comment for the invariant list):
+ *   1. target = stored-grant deep-merged with the bundled entry's
+ *      declared `permissions` (declared keys win, so missing declared
+ *      fields are BACKFILLED; existing stored values are preserved).
+ *   2. reconciled = `clampToBundledCeiling(name, target).effective` —
+ *      the ceiling clamp is the hard bound, so `reconciled ⊆ ceiling`
+ *      ALWAYS, even if the stored row carried perms beyond ceiling
+ *      (those are dropped, never preserved).
+ *   3. `grantedAt` is normalized to a present map before clamping so
+ *      `intersectPermissions`/`clampToBundledCeiling` retain timestamps
+ *      for surviving fields — mirrors the critical-S9 path at
+ *      `bundled.ts:851-864` and the fresh-install grant shape.
+ *   4. Idempotent: a structural (order-independent) compare against the
+ *      stored grant gates the DB write + audit, so a satisfied grant
+ *      writes nothing and emits no audit on subsequent boots.
+ *
+ * Generic across ALL bundled entries — there is no extension-author
+ * special-case. Called from the two ENABLED exits of the existing-row
+ * branch: the normal no-gate fall-through, and the critical-S9
+ * auto-reapprove `continue` (which keeps the row enabled but skips the
+ * normal site). NOT called from the fail-closed disable exits
+ * (non-critical S9 / tamper) — a row pending re-approval keeps its
+ * stored grant until a human re-approves.
+ */
+async function reconcileBundledGrant(
+  entry: BundledExtension,
+  existing: { id: string; grantedPermissions?: ExtensionPermissions },
+): Promise<void> {
+  try {
+    const stored: ExtensionPermissions =
+      (existing.grantedPermissions as ExtensionPermissions | undefined) ?? {
+        grantedAt: {},
+      };
+    const declared = entry.permissions ?? ({} as ExtensionPermissions);
+
+    // Deep-merge: declared keys backfill missing fields; stored values
+    // are otherwise preserved. `custom`/`grantedAt` merge one level
+    // deep so a stored `custom.foo` survives alongside a backfilled
+    // `custom.drafts`. The subsequent ceiling clamp is the hard bound,
+    // so this merge can NEVER widen past the ceiling regardless of what
+    // the stored row carried.
+    const mergedCustom =
+      declared.custom || stored.custom
+        ? { ...(stored.custom ?? {}), ...(declared.custom ?? {}) }
+        : undefined;
+    const merged: ExtensionPermissions = {
+      ...stored,
+      ...declared,
+      ...(mergedCustom ? { custom: mergedCustom } : {}),
+      // Normalize grantedAt to a present map BEFORE the clamp (mirrors
+      // bundled.ts:851-864). `grantedAt` SEMANTICS: a field's timestamp
+      // is the moment it was first granted, so the STORED timestamp
+      // wins for any field that already carried one; the declared
+      // timestamp only backfills keys the stored grant lacked (the
+      // genuinely-new fields). Spread declared first, stored last, so
+      // pre-existing grant history is never rewritten — this also keeps
+      // the idempotency compare stable across boots (a satisfied grant
+      // produces an identical `grantedAt`).
+      grantedAt: {
+        ...(declared.grantedAt ?? {}),
+        ...(stored.grantedAt ?? {}),
+      },
+    };
+
+    const { effective: reconciled } = clampToBundledCeiling(
+      entry.name,
+      merged,
+    );
+
+    // Idempotency gate: structural compare. No write, no audit when the
+    // stored grant already satisfies the within-ceiling declared set.
+    const storedNorm: ExtensionPermissions = {
+      ...stored,
+      grantedAt: stored.grantedAt ?? {},
+    };
+    if (canonicalGrant(reconciled) === canonicalGrant(storedNorm)) {
+      return;
+    }
+
+    await updateExtension(existing.id, { grantedPermissions: reconciled });
+    log.info("Reconciled bundled extension grant toward declared ceiling", {
+      name: entry.name,
+      extensionId: existing.id,
+    });
+    // Reuse the existing field-level regrant audit for the standard
+    // primary-permission tiers, then add one row covering the namespaced
+    // `custom` bag (extension-author's `custom.drafts.kinds` lives here
+    // and `writeBundledRegrantAudit` does not enumerate it) so the
+    // backfill is actually auditable for the bug this fixes.
+    await writeBundledRegrantAudit(existing.id, reconciled);
+    await writeBundledGrantReconciledAudit(existing.id, storedNorm, reconciled);
+  } catch (reconcileErr) {
+    // Non-fatal: drift/refresh already ran; next boot retries. NEVER
+    // throw out of the ensureBundledExtensions iteration.
+    log.warn("Bundled grant reconciliation failed", {
+      name: entry.name,
+      error: String(reconcileErr),
+    });
+  }
+}
+
+/**
+ * Audit a grant reconciliation. Captures the FULL before/after grant
+ * under the existing `BUNDLED_REGRANTED` action so an admin sees the
+ * exact backfill (including the namespaced `custom` bag, which the
+ * field-enumerating `writeBundledRegrantAudit` skips). Only emitted
+ * when the grant actually changed (the caller's idempotency gate).
+ */
+async function writeBundledGrantReconciledAudit(
+  extensionId: string,
+  oldGrant: ExtensionPermissions,
+  newGrant: ExtensionPermissions,
+): Promise<void> {
+  try {
+    const meta: ExtensionAuditMetadata = {
+      permission: "grant-reconcile",
+      oldValue: oldGrant,
+      newValue: newGrant,
+      actor: "system",
+      reason:
+        "bundled-grant-reconciled: stored grant backfilled toward the " +
+        "declared-within-ceiling bundled permission set (S6 companion). " +
+        "Result is clamped to the bundled ceiling.",
+    };
+    await insertAuditEntry(
+      null,
+      EXT_AUDIT_ACTIONS.BUNDLED_REGRANTED,
+      extensionId,
+      meta,
+    );
   } catch { /* audit write failure is non-fatal */ }
 }
 

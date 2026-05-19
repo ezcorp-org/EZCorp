@@ -107,6 +107,12 @@ export const EXT_AUDIT_ACTIONS = {
    *  /api/extensions/[id]/settings/user. Audited with the
    *  pre-delete values for forensic trail. */
   SETTINGS_USER_RESET: "ext:settings.user.reset",
+  /** An admin flipped the `modifiable` gate on an extension via POST
+   *  /api/extensions/[id]/modifiable. Authorizes the extension's
+   *  creator to re-open/edit it (and gates the in-chat
+   *  `modify_extension` tool). Admin-only mutation; audited with
+   *  before/after + `actor:<adminUserId>` for the consent trail. */
+  MODIFIABLE_TOGGLED: "ext:modifiable-toggled",
   // ── Phase 1: Policy Decision Point (PDP) ──
   /** PDP authorized a tool call / privileged op (every needed cap is
    *  covered by the effective grant set). Metadata: `{auditId, toolName,

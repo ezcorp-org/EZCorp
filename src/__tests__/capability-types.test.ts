@@ -17,6 +17,7 @@ import {
   intersect,
   intersectPermissions,
   isSubset,
+  SENSITIVE_KINDS,
   type Capability,
   type CapabilitySet,
 } from "../extensions/capability-types";
@@ -762,5 +763,64 @@ describe("grantsToCapabilitySet — ezcorp:extension:install derivation", () => 
         (c) => c.kind === "ezcorp:extension:install",
       ),
     ).toBe(false);
+  });
+});
+
+describe("grantsToCapabilitySet — ezcorp:extension:modify derivation", () => {
+  const modifyCap = { kind: "ezcorp:extension:modify" as const };
+
+  test("custom.drafts.kinds:['extension'] derives a valueless modify cap", () => {
+    const caps = grantsToCapabilitySet({
+      grantedAt: {},
+      custom: { drafts: { kinds: ["extension"] } },
+    });
+    const found = caps.find((c) => c.kind === "ezcorp:extension:modify");
+    expect(found).toEqual(modifyCap);
+    expect(found!.value).toBeUndefined();
+  });
+
+  test("the derived cap COVERS a valueless needed modify cap (subset passes)", () => {
+    const granted = grantsToCapabilitySet({
+      grantedAt: {},
+      custom: { drafts: { kinds: ["extension"] } },
+    });
+    expect(isSubset([modifyCap], granted)).toBe(true);
+  });
+
+  test("install + modify are derived together from the same gate", () => {
+    const caps = grantsToCapabilitySet({
+      grantedAt: {},
+      custom: { drafts: { kinds: ["extension"] } },
+    });
+    expect(caps.some((c) => c.kind === "ezcorp:extension:install")).toBe(true);
+    expect(caps.some((c) => c.kind === "ezcorp:extension:modify")).toBe(true);
+  });
+
+  test("NOT derived when drafts.kinds lacks 'extension'", () => {
+    const caps = grantsToCapabilitySet({
+      grantedAt: {},
+      custom: { drafts: { kinds: ["project", "agent"] } },
+    });
+    expect(caps.some((c) => c.kind === "ezcorp:extension:modify")).toBe(false);
+  });
+
+  test("NOT derived when custom/drafts absent", () => {
+    expect(
+      grantsToCapabilitySet({ grantedAt: {}, shell: true }).some(
+        (c) => c.kind === "ezcorp:extension:modify",
+      ),
+    ).toBe(false);
+    expect(
+      grantsToCapabilitySet(null).some(
+        (c) => c.kind === "ezcorp:extension:modify",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("SENSITIVE_KINDS", () => {
+  test("includes both extension install and modify (always-prompt class)", () => {
+    expect(SENSITIVE_KINDS.has("ezcorp:extension:install")).toBe(true);
+    expect(SENSITIVE_KINDS.has("ezcorp:extension:modify")).toBe(true);
   });
 });

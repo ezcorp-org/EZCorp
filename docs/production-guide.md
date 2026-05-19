@@ -99,6 +99,18 @@ Flip to `true` **only after** TLS is terminating in front of the app
 browsers refuse to send the session cookie back, and the symptom is an
 infinite login loop rather than a clean error.
 
+### Context-window compaction
+
+Long conversations are automatically trimmed per-model before each LLM
+call so chats never dead-end on `context_length_exceeded`. This is on
+by default and requires no configuration. It is **not** an environment
+variable — it is tuned through the admin settings API
+(`compaction:strategy`, `compaction:responseReserveCap`,
+`compaction:safetyFraction`; `compaction:strategy = "none"` disables
+it). Changes apply on the next turn, no restart. Full reference,
+tuning guidance, and the custom-strategy seam:
+[docs/context-compaction.md](context-compaction.md).
+
 ### Bind mounts and file ownership
 
 The container runs as **uid 1000** (the `bun` user). If you bind-mount a host directory instead of using the named volume, it must be writable by uid 1000:

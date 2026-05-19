@@ -14,7 +14,7 @@ EZCorp is a self-hosted AI platform that brings together multi-model chat, long-
 
 ## Features
 
-- **Multi-model streaming chat** -- Connect OpenAI, Anthropic, Google Gemini, and 20+ providers. Switch models mid-conversation.
+- **Multi-model streaming chat** -- Connect OpenAI, Anthropic, Google Gemini, and 20+ providers. Switch models mid-conversation. Long chats are auto-compacted per-model so they never dead-end on context-window errors. See [docs/context-compaction.md](docs/context-compaction.md).
 - **Persistent memory** -- Conversations are remembered across sessions with semantic search and automatic context injection.
 - **Extensions and marketplace** -- Install community extensions or build your own tools, skills, and agents.
 - **Slash commands** -- Type `/review`, `/commit`, `/deploy` to expand reusable prompt templates. Compatible with Claude Code (`.claude/commands/`), Codex CLI (`.codex/prompts/`), and plain `agents/` folders. See [docs/slash-commands.md](docs/slash-commands.md).

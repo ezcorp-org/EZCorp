@@ -31,7 +31,8 @@ import { getPermissionEngine } from "../extensions/permission-engine";
 import { createShellProvider } from "../providers/shell";
 import { createFileProvider } from "../providers/file";
 import { getProject } from "../db/queries/projects";
-import { getAllSettings } from "../db/queries/settings";
+import { getAllSettings, getSetting } from "../db/queries/settings";
+import type { CompactionConfig } from "./stream-chat/context-compaction";
 import * as dbRuns from "../db/queries/runs";
 import { getConversation } from "../db/queries/conversations";
 import { ExtensionRegistry } from "../extensions/registry";
@@ -51,6 +52,34 @@ export interface ExecutorOptions {
 // ── AgentExecutor ───────────────────────────────────────────────────
 
 const MAX_RUNS = 100;
+
+/**
+ * Resolve per-turn history-compaction overrides from settings. Mirrors
+ * the `getDefaultTier`/`getPreferenceOrder` pattern in providers/router:
+ * each key is optional and falls back to the compaction module DEFAULTS
+ * when unset or malformed. `compaction:strategy = "none"` disables it.
+ */
+async function resolveCompactionConfig(): Promise<Partial<CompactionConfig>> {
+  const out: Partial<CompactionConfig> = {};
+
+  const strategy = await getSetting("compaction:strategy");
+  if (typeof strategy === "string" && strategy.trim().length > 0) {
+    out.strategy = strategy.trim();
+  }
+
+  const numeric: Array<[string, keyof CompactionConfig]> = [
+    ["compaction:responseReserveCap", "responseReserveCap"],
+    ["compaction:responseReserveFloor", "responseReserveFloor"],
+    ["compaction:safetyFraction", "safetyFraction"],
+  ];
+  for (const [key, field] of numeric) {
+    const v = await getSetting(key);
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+      (out as Record<string, number>)[field] = v;
+    }
+  }
+  return out;
+}
 
 export class AgentExecutor {
   private runs = new Map<string, AgentRun>();
@@ -537,7 +566,14 @@ export class AgentExecutor {
       if (ctrl) ctrl.abort();
     });
 
-    const piAgent = buildPiAgent(ctx, history, options, resolvedModel, credentialConversationId);
+    const compaction = await resolveCompactionConfig();
+    const piAgent = buildPiAgent(
+      ctx,
+      history,
+      { ...options, compaction },
+      resolvedModel,
+      credentialConversationId,
+    );
     this.activeAgents.set(run.id, piAgent);
 
     // Streaming state lives entirely on the per-call context. Re-zero

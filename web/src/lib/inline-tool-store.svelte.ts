@@ -78,15 +78,20 @@ class InlineToolStore {
         updated[idx] = { ...call, ...completeUpdate };
         break;
       }
-      case 'tool:error':
-        updated[idx] = {
-          ...call,
+      case 'tool:error': {
+        const errorUpdate: Partial<InlineToolCall> = {
           status: 'error',
           error: stringifyError(data.error),
           duration: data.duration as number,
           retryCount: call.retryCount + 1,
         };
+        if (data.cardType) errorUpdate.cardType = data.cardType as string;
+        if (data.cardLayout === 'dock' || data.cardLayout === 'inline') {
+          errorUpdate.cardLayout = data.cardLayout as 'inline' | 'dock';
+        }
+        updated[idx] = { ...call, ...errorUpdate };
         break;
+      }
     }
 
     this.calls = updated;

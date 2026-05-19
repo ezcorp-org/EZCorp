@@ -1,0 +1,69 @@
+phase: 61-test-debt-followup-feature-rework-specs
+captured_at: 2026-05-13T02:08:04Z
+head_sha: 6d852cfe5871329672d17ba272f32a69ff95a852
+head_sha_short: 6d852cf
+head_subject: "docs(61-01): complete theme-sidebar 5-fixme flip plan"
+git_stash_count_at_capture: 12
+git_stash_top: "stash@{0}: On main: TEMP-56-03-regression-check"
+playwright_run_started_at: 2026-05-13T02:09:04Z
+playwright_run_duration_sec: 626
+playwright_total_results: 2724
+playwright_passing_results: 1726
+playwright_failing_results: 670
+playwright_skipped_results: 162
+playwright_timedout_results: 166
+playwright_unique_files_with_passing_specs: 150
+baseline_passing_lines: 1726
+notes: |
+  Reference baseline for Phase 61 TEST-02 regression gates.
+  Each line in baseline-passing.txt identifies one passing test case as
+  `<file>::<line>:<column>::<title> [<projectName>]`. Downstream Phase 61
+  wave-merge gates (61-01, 61-02, 61-03) MUST use the title-based
+  comm -23 transform per deferred-items.md §150-169 (line-fragility
+  workaround) to avoid false-positive shifted-line regressions.
+
+  Drift from Phase 59-01's 83781b5d baseline (1678 lines, 2026-05-12):
+  - Today's HEAD is ~26 commits newer (Phase 59-02 api-mocks expansion,
+    Phase 59-06 testid hardening, Phase 60-* docs/audit-claim, plus
+    Phase 61-01's theme-sidebar 5-fixme flip via mockAccountEndpoints
+    helper landed at ea3f8a6).
+  - Per 59-02-SUMMARY, post-59-02 passing-result count was 1679-1681.
+  - Today's count: 1726 — upward drift of +48 vs 59-01 baseline,
+    +45/+47 vs 59-02 baseline. Drift sources: 59-06 testid hardening
+    on theme-sidebar.spec.ts (+12 cases passing), 61-01's 5-fixme flip
+    (+5×2 chromium+mobile=+10 cases), 59-05 testid hardening on
+    file-mentions/multi-agent/streaming-race/sub-conversations specs.
+  - timedOut dropped 189 → 166 (-23) reflecting same testid work
+    eliminating waitForResponse 30s timeouts.
+  - failed dropped 695 → 670 (-25) on same basis.
+
+  Canonical jq selector (deviation from 59-01-PLAN.md's literal
+  `.file`-only selector — that yielded 150 unique files and was
+  unusable for per-test regression diff; the working selector emits
+  one row per passing test case as documented in
+  59-test-debt-repair/baseline-meta.txt):
+
+      jq -r '.. | objects | select(has("specs")) | .specs[]? |
+             . as $spec | $spec.tests[]? |
+             select(.results[]?.status == "passed") |
+             "\($spec.file)::\($spec.line):\($spec.column)::\($spec.title) [\(.projectName)]"' \
+          run.json | sort -u
+
+  Title-strip awk transform (used by downstream Layer 2 diff):
+
+      awk -F'::' '{n=split($3, parts, " \\["); print $1 "::" parts[1] " [" parts[2]}' \
+          baseline-passing.txt > baseline-titles.txt
+
+  Web preview server: pre-spawned `PI_SKIP_INIT=1 bun run build &&
+  bun run preview` on :4173 before the Playwright run (Playwright's
+  auto-webServer would time out on cold build per 59-01 Rule-3
+  deviation pattern). Config's `reuseExistingServer: true` honored
+  the pre-spawned process. Logs at /tmp/phase-61-preview.log.
+
+  Concurrent-agent overlap (informational, non-blocking): a parallel
+  agent's `bunx playwright test e2e/shared-ui-components.spec.ts ...
+  --workers=1` (Phase 59-05 wave-N capture) was observed in process
+  table during this run's chromium window. Result counts (passing
+  +48 vs 59-01, timedOut -23 vs 59-01) confirm no observable
+  contention impact — the parallel agent's workers=1 + this run's
+  default workers shared the same preview server cleanly.

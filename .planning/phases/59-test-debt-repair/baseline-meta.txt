@@ -1,0 +1,50 @@
+phase: 59-test-debt-repair
+captured_at: 2026-05-12T22:07:45Z
+head_sha: 83781b5dd7bed7026d843f5c083f990d5bff23a7
+head_sha_short: 83781b5dd7be
+head_subject: "wip: JsonBlock component + image-gen timeout extensions"
+git_stash_count_at_capture: 12
+git_stash_top: "stash@{0}: On main: TEMP-56-03-regression-check"
+playwright_run_started_at: 2026-05-12T21:46:03.503Z
+playwright_run_duration_sec: 664
+playwright_total_results: 2724
+playwright_passing_results: 1678
+playwright_failing_results: 695
+playwright_skipped_results: 162
+playwright_timedout_results: 189
+playwright_unique_files_with_passing_specs: 150
+baseline_passing_lines: 1678
+notes: |
+  Reference baseline for Phase 59 TEST-02 regression gates.
+  Each line in baseline-passing.txt identifies one passing test case as
+  `<file>::<line>:<column>::<title> [<projectName>]`. Used by
+  `comm -23 baseline-passing.txt <(new-run-passing.txt)` after every
+  spec-edit commit to prove zero regression on previously-passing specs.
+
+  Drift from the 868-passing-spec figure cited in
+  tasks/v1.3-playwright-triage.md (commit f16b427, 2026-05-09):
+  - Today's HEAD (83781b5dd7be, 2026-05-12) is 3 days newer; many specs
+    have been added or stabilised in the interim. Today's count is 1678
+    passing test cases (Playwright `expected`), well above the 800-line
+    minimum acceptance gate from 59-01-PLAN.md.
+  - The triage's "868" referred to passing-spec test cases at commit
+    f16b427; today's number across both `chromium` and `mobile-chromium`
+    project matrix is 1678. The drift is upward (more tests pass today),
+    so the regression-diff invariant is conservative.
+
+  jq selector deviation:
+  - 59-01-PLAN.md's literal jq emitted only `.file` (would yield ~150
+    unique files, well below `min_lines: 800` and unusable for per-test
+    regression diffs). The plan's *intent* — diffable per-test-case
+    baseline for `comm -23` regression gates — required emitting one row
+    per passing test case with a stable identifier. Deviation logged in
+    59-01-SUMMARY.md "Deviations from Plan" (Rule 3 — Blocking).
+
+  Web preview server:
+  - The first `bunx playwright test` invocation hit ERR_CONNECTION_REFUSED
+    on http://localhost:4173/ (Playwright's auto-spawned `webServer` block
+    timed out before `bun run build && bun run preview` finished). Started
+    `PI_SKIP_INIT=1 bun run preview` manually as a background process
+    (logs at /tmp/phase-59-preview.log), confirmed health at /, then
+    re-ran with `reuseExistingServer: true` honouring it. Documented as
+    Rule 3 deviation (blocking infra fix to unblock baseline capture).

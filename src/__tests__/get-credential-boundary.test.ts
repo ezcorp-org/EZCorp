@@ -54,6 +54,10 @@ const ALLOWLIST = new Set<string>([
   // Memory subsystem — compaction merge LLM call. Cross-extension,
   // host-internal, exposed via `runtime.memory.compact` invoke handler.
   "src/memory/compaction.ts",
+  // Goal-host runtime controller — host-side evaluator credential
+  // fallback (PRD FR-6 / D5). Loaded only by the runtime when a
+  // conversation has an active goal; never bundled into extensions.
+  "src/runtime/goal-host.ts",
   // SvelteKit route handlers — server-side endpoints, never bundled
   // into extension subprocesses.
   "web/src/routes/api/models/+server.ts",

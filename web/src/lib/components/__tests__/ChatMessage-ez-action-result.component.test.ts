@@ -105,3 +105,140 @@ describe("ChatMessage — ez-action-result rendering", () => {
 		expect(container.textContent).toContain("EZ action result unreadable");
 	});
 });
+
+/**
+ * /goal Phase 2 — goal-row identification tests.
+ *
+ * Phase 1's goal-host writes plain `EzActionResult` rows (no
+ * discriminator field) — see goal-host.ts:697–814's `build*Card`
+ * functions. Phase 2 inspects the row's title via `inferGoalKind`
+ * and stamps `data-goal-row="true"` + `data-goal-kind="…"` on the
+ * wrapping div so Playwright e2e specs can target the row without
+ * needing five visually-duplicate card components.
+ *
+ * Reusing `EzActionCard` is the deliberate choice — see the Phase 2
+ * checkpoint analysis. Phase 1's contract stays sealed; only the
+ * outer wrapper gets the markers.
+ */
+describe("ChatMessage — /goal row identification (data-goal-row / data-goal-kind)", () => {
+	function findRow(container: HTMLElement): HTMLElement | null {
+		return container.querySelector('[data-goal-row="true"]') as HTMLElement | null;
+	}
+
+	test("status row (title 'Goal active') gets data-goal-row + data-goal-kind='status'", () => {
+		const payload = {
+			kind: "success",
+			card: { title: "Goal active", body: "Condition: …", variant: "info" },
+		};
+		const { container, getByTestId } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		// The card itself still renders unchanged via EzActionCard.
+		expect(getByTestId("ez-action-card")).toBeTruthy();
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("status");
+	});
+
+	test("achieved row (title 'Goal achieved') gets data-goal-kind='achieved'", () => {
+		const payload = {
+			kind: "success",
+			card: { title: "Goal achieved", body: "…", variant: "success" },
+		};
+		const { container } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("achieved");
+	});
+
+	test("cleared row (title 'Goal cleared') gets data-goal-kind='cleared'", () => {
+		const payload = {
+			kind: "success",
+			card: { title: "Goal cleared", body: "…", variant: "info" },
+		};
+		const { container } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("cleared");
+	});
+
+	test("turn-cap row (title 'Goal stopped — reached turn cap') also maps to 'cleared' (terminal-clean)", () => {
+		const payload = {
+			kind: "decline",
+			card: { title: "Goal stopped — reached turn cap", body: "…", variant: "warning" },
+		};
+		const { container } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("cleared");
+	});
+
+	test("paused row (title 'Goal paused') gets data-goal-kind='paused'", () => {
+		const payload = {
+			kind: "decline",
+			card: { title: "Goal paused", body: "…", variant: "warning" },
+		};
+		const { container } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("paused");
+	});
+
+	test("rejected row (title 'Goal condition too long') gets data-goal-kind='rejected'", () => {
+		const payload = {
+			kind: "error",
+			card: { title: "Goal condition too long", body: "…", variant: "error" },
+		};
+		const { container } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("rejected");
+	});
+
+	test("disabled row (title '/goal disabled') ALSO maps to 'rejected' (Chunk G feature-flag UX)", () => {
+		// When EZCORP_GOAL_ENABLED=off the messages route and
+		// `buildDisabledCard` both emit this title. UX-wise it is in
+		// the same class as a reject — "this command did not arm a
+		// goal" — so the helper maps both to `rejected`.
+		const payload = {
+			kind: "decline",
+			card: { title: "/goal disabled", body: "feature off", variant: "warning" },
+		};
+		const { container, getByTestId } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		// EzActionCard still renders the disabled card with its title.
+		const card = getByTestId("ez-action-card");
+		expect(card.getAttribute("aria-label")).toBe("/goal disabled");
+		const row = findRow(container);
+		expect(row).toBeTruthy();
+		expect(row!.getAttribute("data-goal-kind")).toBe("rejected");
+	});
+
+	test("non-goal ez-action-result (e.g. lessons-keeper) does NOT get goal markup", () => {
+		// Defense: a lessons-keeper "Lesson captured" row must not be
+		// misclassified as a goal row.
+		const payload = {
+			kind: "success",
+			card: { title: "Lesson captured", body: "always-quote-paths", variant: "success" },
+			ref: { kind: "lesson", slug: "always-quote-paths" },
+		};
+		const { container, queryByTestId } = render(ChatMessage, {
+			message: makeEzMessage(JSON.stringify(payload)),
+		});
+		// EzActionCard still mounts.
+		expect(queryByTestId("ez-action-card")).toBeTruthy();
+		// But no goal markers.
+		expect(container.querySelector("[data-goal-row]")).toBeNull();
+	});
+});

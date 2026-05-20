@@ -11,6 +11,7 @@
 	import AgentChip from "./AgentChip.svelte";
 	import MentionChip from "./MentionChip.svelte";
 	import EzActionCard, { type EzActionCardResult } from "./EzActionCard.svelte";
+	import { inferGoalKind } from "./goal-row-logic.js";
 	import CapabilityEventPill, { parseCapabilityEventContent } from "./CapabilityEventPill.svelte";
 	import ProviderIcon from "./ProviderIcon.svelte";
 	import MessageAttachments from "./MessageAttachments.svelte";
@@ -466,7 +467,24 @@
 {:else if message.role === "ez-action-result"}
 	{@const ezResult = parseEzActionResult(message.content)}
 	{#if ezResult}
-		<div class="px-4 py-2" data-message-id={message.id}>
+		<!--
+		  /goal Phase 2: persisted `ez-action-result` rows produced by
+		  the goal-host (status / achieved / cleared / paused /
+		  rejected) reuse this same render branch — Phase 1 writes
+		  plain `EzActionResult` shapes so `EzActionCard` already
+		  handles the visuals. We attach `data-goal-row` +
+		  `data-goal-kind` only when `inferGoalKind` classifies the
+		  payload as goal-shaped, giving Playwright a stable selector
+		  hook without inventing five visually-duplicate components.
+		  See `goal-row-logic.ts` for the title-prefix → kind table.
+		-->
+		{@const goalKind = inferGoalKind(ezResult)}
+		<div
+			class="px-4 py-2"
+			data-message-id={message.id}
+			data-goal-row={goalKind ? "true" : null}
+			data-goal-kind={goalKind}
+		>
 			<EzActionCard result={ezResult} />
 		</div>
 	{:else}

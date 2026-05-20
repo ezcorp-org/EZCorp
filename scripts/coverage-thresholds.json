@@ -23,5 +23,8 @@
   "src/runtime/executor-watchdog.ts": 95,
   "src/runtime/stream-chat/finalize.ts": 75,
   "src/runtime/executor.ts": 65,
+  "web/src/lib/components/GoalPill.svelte": 100,
+  "web/src/lib/components/goal-row-logic.ts": 100,
+  "web/src/routes/api/conversations/[id]/goal-state/+server.ts": 100,
   "web/src/lib/**": 90
 }

@@ -384,6 +384,27 @@ describe("disabled-mode fallback — getGoalHost() returns null", () => {
     };
     expect(parsed.card.title).toBe("/goal disabled");
   });
+
+  test("disabled-card BODY matches the goal-host builder (unified text, reviewer nit 2)", async () => {
+    // The route's null-host fallback MUST emit the same body text the
+    // goal-host's `buildDisabledCard()` would have produced — one
+    // source of truth, no drift between the two paths.
+    goalHostMock = null;
+    const res = await POST(makeEvent({ locals: { user }, body: { content: "/goal x" } }));
+    const body = (await res.json()) as {
+      ezActionResults: Array<{ content: string }>;
+    };
+    const parsed = JSON.parse(body.ezActionResults[0]!.content) as {
+      kind: string;
+      card: { title: string; body: string; variant: string };
+    };
+    expect(parsed.kind).toBe("decline");
+    expect(parsed.card.variant).toBe("warning");
+    // Pinned to the canonical builder's body text — change one place
+    // and this test fails everywhere the route falls back.
+    expect(parsed.card.body).toContain("EZCORP_GOAL_ENABLED=0");
+    expect(parsed.card.body).toContain("Contact the operator to enable");
+  });
 });
 
 // ── Sanity: NON-/goal POST does NOT invoke handleGoalCommand ───────

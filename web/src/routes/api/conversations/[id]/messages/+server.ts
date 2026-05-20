@@ -20,7 +20,7 @@ import { parseMentions } from "$lib/mention-logic";
 import { stripEzActionTokens } from "$server/runtime/mention-wiring";
 import { getEzAction } from "$server/runtime/ez-actions/registry";
 import type { EzActionResult } from "$server/runtime/ez-actions/types";
-import { isGoalCommand, parseGoalCommand } from "$server/runtime/goal-host";
+import { buildDisabledCard, isGoalCommand, parseGoalCommand } from "$server/runtime/goal-host";
 import { validateAttachment } from "$server/chat/attachments/validator";
 import { writeAttachment, deleteForMessage } from "$server/chat/attachments/storage";
 import type { StagedAttachment } from "$server/chat/attachments/content-builder";
@@ -323,17 +323,11 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
   if (goalIsCmd) {
     const parsed = parseGoalCommand(body.content);
     if (!goalHost) {
-      // EZCORP_GOAL_ENABLED off OR init raced. Surface a disabled card
-      // by hand-rolling the same shape `handleGoalCommand` would have
-      // returned — keep the route forgiving rather than crashing chat.
-      const disabledCard: EzActionResult = {
-        kind: "decline",
-        card: {
-          title: "/goal disabled",
-          body: "The /goal feature is disabled on this server.",
-          variant: "warning",
-        },
-      };
+      // EZCORP_GOAL_ENABLED off OR init raced. Surface the same
+      // disabled-card the goal-host's `handleGoalCommand` would have
+      // returned — keep the route forgiving rather than crashing chat,
+      // and keep ONE source of truth for the disabled message body.
+      const disabledCard: EzActionResult = buildDisabledCard();
       const row = await convQueries.createMessage(conversationId, {
         role: "ez-action-result",
         content: JSON.stringify(disabledCard),

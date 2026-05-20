@@ -789,6 +789,23 @@ export function buildRejectTooLongCard(actualLength: number): EzActionResult {
   };
 }
 
+/**
+ * Parse the `EZCORP_GOAL_ENABLED` env var into the host's `enabled`
+ * flag. Default-ON: an undefined value (operator never set the flag)
+ * yields `true`. Only an explicit `0` / `false` / `off` / `no`
+ * (case-insensitive, trimmed) disables the goal feature; any other
+ * string is treated as on, mirroring the long-standing
+ * `(value ?? "1") !== "0"` pattern used by the rest of the codebase's
+ * env flags (`EZCORP_SCAN_GLOBAL_COMMANDS`, etc).
+ *
+ * Exported so the wiring in `web/src/lib/server/context.ts` and the
+ * unit suite share one definition (R10 — one source of truth).
+ */
+export function parseGoalEnabled(value: string | undefined): boolean {
+  const v = (value ?? "1").trim().toLowerCase();
+  return v !== "0" && v !== "false" && v !== "off" && v !== "no";
+}
+
 export function buildDisabledCard(): EzActionResult {
   return {
     kind: "decline",
@@ -1255,15 +1272,23 @@ export class GoalHost {
     const persisted = await this.readGoalFn(conversationId);
     const record = this.records.get(conversationId);
     if (!isGoalArmed(persisted, record)) return;
-    if (record!.inFlightRunId !== data.run.id) {
+    if (record!.inFlightRunId !== null && record!.inFlightRunId !== data.run.id) {
       // Not the run this loop authored / a separate turn we didn't
       // arm against. Still count: this is a `run:complete` on an
       // armed conversation — the spec says EVERY turn-complete on an
-      // armed conv triggers an evaluator (FR-5).
-      record!.inFlightRunId = null;
-    } else {
-      record!.inFlightRunId = null;
+      // armed conv triggers an evaluator (FR-5). Log so the
+      // stale-runId case is observable post-incident.
+      log.debug("goal-host: run:complete for stale runId; evaluating anyway", {
+        conversationId,
+        expectedRunId: record!.inFlightRunId,
+        actualRunId: data.run.id,
+      });
     }
+    // FR-5: every run:complete on an armed conv triggers an evaluator,
+    // regardless of which run authored the turn. Clear the in-flight
+    // marker uniformly so the re-entry guard below can re-arm a fresh
+    // continuation runId.
+    record!.inFlightRunId = null;
     record!.turnsEvaluated++;
 
     // FR-18 supersede check.

@@ -32,6 +32,7 @@ import {
   type CommandRegistry,
 } from "$server/runtime/commands/registry";
 import { listUserCommands } from "$server/db/queries/user-commands";
+import { initGoalHost, type GoalHost } from "$server/runtime/goal-host";
 import type { AgentEvents, PipelineDefinition } from "$server/types";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +88,7 @@ let stateMediator: ExtensionStateMediator | null = null;
 let lifecycleDispatcher: LifecycleHookDispatcher | null = null;
 let eventSubscriptionDispatcher: EventSubscriptionDispatcher | null = null;
 let commandRegistry: CommandRegistry | null = null;
+let goalHost: GoalHost | null = null;
 let pipelines: PipelineDefinition[] = [];
 let initialized = false;
 
@@ -261,6 +263,32 @@ export async function ensureInitialized(): Promise<void> {
   // `migrateLessonsDistillerConversationWiring` for distiller +
   // `migrateMemoryExtractorConversationWiring` for memory-extractor).
 
+  // `/goal` host-side autopilot controller (PRD §7.2 / D9). Singleton
+  // owned by ensureInitialized — same lifecycle slot as the executor's
+  // built-in `startOrphanCleanup()`. Attaches ONE consolidated
+  // run:complete/run:error/run:cancel subscription (FR-17) and runs the
+  // boot sweep (FR-13a) that rebuilds in-memory `GoalRecord`s for every
+  // conversation with a persisted `metadata.goal`. EZCORP_GOAL_ENABLED
+  // (default ON) gives the operator a kill-switch for the
+  // self-driving loop — when "0" / "false" / "off", start() no-ops and
+  // the slash-prefix interceptor returns a "disabled" card.
+  const goalEnabledEnv = (process.env.EZCORP_GOAL_ENABLED ?? "1").toLowerCase();
+  const goalEnabled =
+    goalEnabledEnv !== "0" &&
+    goalEnabledEnv !== "false" &&
+    goalEnabledEnv !== "off" &&
+    goalEnabledEnv !== "no";
+  goalHost = initGoalHost({ bus, executor, enabled: goalEnabled });
+  // Best-effort start. Failure here MUST NOT prevent boot — the goal
+  // feature is a tier-2 capability and the host (executor / chat /
+  // extensions) must keep working without it.
+  goalHost.start().catch((err) => {
+    console.warn("goal-host start failed; goal feature degraded", err);
+  });
+  registerTeardown("goal-host", () => {
+    goalHost?.stop();
+  });
+
   // Command registry: bridges filesystem roots + userCommands DB rows.
   // Home-dir scanning is gated via env flag so multi-tenant deploys can
   // opt out (scanning ~/.claude/ under a shared server process would leak
@@ -317,6 +345,14 @@ export function getCommandRegistry(): CommandRegistry {
   return commandRegistry;
 }
 
+/** Accessor for the `/goal` host. Returns `null` (not throws) when the
+ *  server hasn't initialized OR when EZCORP_GOAL_ENABLED was off — callers
+ *  in the messages route should handle the null case by surfacing a
+ *  "feature disabled" card, not by crashing the chat path. */
+export function getGoalHost(): GoalHost | null {
+  return goalHost;
+}
+
 function getStateMediator(): ExtensionStateMediator | null {
   return stateMediator;
 }
@@ -336,10 +372,12 @@ function reset(): void {
   // the reference; otherwise the orphan-cleanup interval keeps the
   // singleton (and its closures) alive for the lifetime of the process.
   if (executor) executor.destroy();
+  if (goalHost) goalHost.stop();
   executor = null;
   pipelineExecutor = null;
   bus = null;
   commandRegistry = null;
+  goalHost = null;
   pipelines = [];
   initialized = false;
 }

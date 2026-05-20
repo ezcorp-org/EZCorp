@@ -67,6 +67,13 @@ export const DIRECT_CARRIER_EVENT_TYPES: ReadonlySet<keyof AgentEvents> = new Se
   // a dedicated userId-only branch for it (it carries no
   // conversationId) that fails CLOSED — never broadcast.
   "extensions:installed",
+  // /goal Phase 2 (FR-20, D7): the `◎ /goal active|paused` chip is
+  // driven by this bus event. Payload carries `conversationId` at the
+  // top level so the standard conv-scope branch filters it correctly
+  // — the goal-host emits one event per state transition (arm,
+  // evaluator update, pause, achieve, clear). Direct-carrier handling
+  // guarantees user A's goal state never leaks into user B's chip.
+  "goal:update",
 ]);
 
 // ── Extension-declared event registry ───────────────────────────────

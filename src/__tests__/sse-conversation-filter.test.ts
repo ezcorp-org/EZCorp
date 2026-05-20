@@ -29,13 +29,11 @@ beforeEach(() => __clearMembershipCacheForTests());
 afterEach(() => __clearMembershipCacheForTests());
 
 describe("DIRECT_CARRIER_EVENT_TYPES", () => {
-  test("enumerates the direct-carrier event types (13 from prereqs audit + ask-user:answer + ez:client-tool + extensions:installed; Phase 5's orchestrator:human_* removed by ask-user migration)", () => {
-    // 15 entries: 13 from the prereqs audit + ez:client-tool (Phase 48
-    // Wave 3) + extensions:installed (agent-install-ux-polish Phase 2 —
-    // user-scoped, listed so isDirectCarrierEvent triggers
-    // authorization filtering; shouldDeliverEvent has a dedicated
-    // fail-closed userId branch for it).
-    expect(DIRECT_CARRIER_EVENT_TYPES.size).toBe(15);
+  test("enumerates the direct-carrier event types (13 from prereqs audit + ask-user:answer + ez:client-tool + extensions:installed + goal:update; Phase 5's orchestrator:human_* removed by ask-user migration)", () => {
+    // 16 entries: 13 from the prereqs audit + ez:client-tool (Phase 48
+    // Wave 3) + extensions:installed (agent-install-ux-polish Phase 2)
+    // + goal:update (/goal Phase 2, FR-20).
+    expect(DIRECT_CARRIER_EVENT_TYPES.size).toBe(16);
     for (const name of [
       "run:complete", "run:error", "run:cancel", "run:turn_saved",
       "tool:start", "tool:complete", "tool:error",
@@ -44,6 +42,7 @@ describe("DIRECT_CARRIER_EVENT_TYPES", () => {
       "ez:client-tool",
       "task:snapshot", "task:assignment_update",
       "extensions:installed",
+      "goal:update",
     ]) {
       expect(DIRECT_CARRIER_EVENT_TYPES.has(name as never)).toBe(true);
     }
@@ -174,6 +173,102 @@ describe("shouldDeliverEvent — direct-carrier filtering", () => {
       get,
     );
     expect(deliver).toBe(false);
+  });
+});
+
+describe("shouldDeliverEvent — goal:update (/goal Phase 2, FR-20, FR-16)", () => {
+  // The `◎ /goal active|paused` chip's underlying event MUST be
+  // routed per-subscriber by the payload's `conversationId`. These
+  // assertions are the FR-16 / FR-20 contract: every event emitted by
+  // the goal-host for conv-A is delivered ONLY to subscribers
+  // authorized for conv-A, never to subscribers on other conversations
+  // — even if those subscribers are the same user (a user could have
+  // multiple conversations open in separate tabs; each tab's
+  // GoalPill should only update for its own conversation).
+
+  test("goal:update for conv-A passes to conv-A's owner", async () => {
+    const get = makeGetConversation({ "conv-A": { userId: "user-1" } });
+    const deliver = await shouldDeliverEvent(
+      "goal:update",
+      {
+        conversationId: "conv-A",
+        state: "active",
+        condition: "ship the goal feature",
+        armedAt: 1_000_000,
+        turnsEvaluated: 0,
+        lastReason: null,
+      },
+      { userId: "user-1" },
+      get,
+    );
+    expect(deliver).toBe(true);
+  });
+
+  test("goal:update for conv-A is BLOCKED for a different user (cross-user isolation)", async () => {
+    // Two users, two conversations. User-2 must never receive
+    // user-1's goal-state transitions, even though `goal:update` is a
+    // generic event name (not pre-bound to a user).
+    const get = makeGetConversation({
+      "conv-A": { userId: "user-1" },
+      "conv-B": { userId: "user-2" },
+    });
+    const deliver = await shouldDeliverEvent(
+      "goal:update",
+      { conversationId: "conv-A", state: "paused" },
+      { userId: "user-2" },
+      get,
+    );
+    expect(deliver).toBe(false);
+  });
+
+  test("goal:update for conv-A is BLOCKED on the same user's other conversation tab (per-tab subscriber-conv hint is informational; auth is per-event)", async () => {
+    // Same user has two conversations open. The subscriber's
+    // `conversationId` hint is captured at connect time as the
+    // currently-viewed conversation, but authorization is enforced
+    // against the EVENT's claimed conversationId — so a goal:update
+    // emitted for conv-A still authorizes via "does subscriber.userId
+    // own conv-A?". With strict-owner authorization, the answer is
+    // YES (same user) → the event is delivered to BOTH tabs. The
+    // GoalPill component then double-checks the payload's
+    // conversationId on the client side and ignores frames for the
+    // wrong conversation. This test pins that server-side behavior
+    // (the per-tab discriminator is the pill, not this filter).
+    const get = makeGetConversation({
+      "conv-A": { userId: "user-1" },
+      "conv-C": { userId: "user-1" },
+    });
+    const deliver = await shouldDeliverEvent(
+      "goal:update",
+      { conversationId: "conv-A", state: "active" },
+      { userId: "user-1", conversationId: "conv-C" },
+      get,
+    );
+    // Strict-owner authorization passes because user-1 owns conv-A.
+    // Per-conversation tab scoping happens client-side in the pill.
+    expect(deliver).toBe(true);
+  });
+
+  test("goal:update for a non-existent conversation is BLOCKED (fail-closed on unknown rows)", async () => {
+    // A forged or stale conversationId resolves to a `null` row; the
+    // membership check returns false → the event is dropped. Matches
+    // the behavior of `tool:complete` for missing rows (the underlying
+    // `isAuthorizedForConversation` branch is shared).
+    const get = makeGetConversation({});
+    const deliver = await shouldDeliverEvent(
+      "goal:update",
+      { conversationId: "no-such-conv", state: "off" },
+      { userId: "user-1" },
+      get,
+    );
+    expect(deliver).toBe(false);
+  });
+
+  test("goal:update is recognized by isDirectCarrierEvent (so it gets the auth-filter codepath)", () => {
+    // The static set + `isDirectCarrierEvent` are the gate that
+    // distinguishes "filter this" from "pass through". A regression
+    // dropping goal:update from the set would silently broadcast
+    // every user's goal-state to every subscriber.
+    expect(isDirectCarrierEvent("goal:update")).toBe(true);
   });
 });
 

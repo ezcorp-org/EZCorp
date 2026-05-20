@@ -32,7 +32,7 @@ import {
   type CommandRegistry,
 } from "$server/runtime/commands/registry";
 import { listUserCommands } from "$server/db/queries/user-commands";
-import { initGoalHost, type GoalHost } from "$server/runtime/goal-host";
+import { initGoalHost, parseGoalEnabled, type GoalHost } from "$server/runtime/goal-host";
 import type { AgentEvents, PipelineDefinition } from "$server/types";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -272,12 +272,7 @@ export async function ensureInitialized(): Promise<void> {
   // (default ON) gives the operator a kill-switch for the
   // self-driving loop — when "0" / "false" / "off", start() no-ops and
   // the slash-prefix interceptor returns a "disabled" card.
-  const goalEnabledEnv = (process.env.EZCORP_GOAL_ENABLED ?? "1").toLowerCase();
-  const goalEnabled =
-    goalEnabledEnv !== "0" &&
-    goalEnabledEnv !== "false" &&
-    goalEnabledEnv !== "off" &&
-    goalEnabledEnv !== "no";
+  const goalEnabled = parseGoalEnabled(process.env.EZCORP_GOAL_ENABLED);
   goalHost = initGoalHost({ bus, executor, enabled: goalEnabled });
   // Best-effort start. Failure here MUST NOT prevent boot — the goal
   // feature is a tier-2 capability and the host (executor / chat /

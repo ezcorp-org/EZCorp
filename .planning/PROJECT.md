@@ -16,15 +16,22 @@ v1.4 closed six v1.3 security-review findings (5 LOW CCs + Claim-1), hardened MC
 
 **Shipped earlier:** v1.3 Security & Permissions (2026-05-09). The platform's complete security backbone — unified permission engine, capability expiry sweeps, MCP isolation, audit infrastructure (`audit_log` + `sdk_capability_calls`), PermissionGate / ExpiredGrantsBanner / ExpiredReapproveModal flow. First-party built-ins (lessons distiller, memory extractor) ship as bundled extensions on the public SDK.
 
-## Next Milestone: TBD
+## Current Milestone: v1.5 Hybrid Chat Search
 
-v1.5 scope not yet defined. Run `/gsd:new-milestone` to begin requirements gathering. Known carry-forward seeds (from v1.4 audit):
+**Goal:** Make every past chat findable instantly — add semantic (pgvector) recall alongside the existing lexical (Postgres FTS) precision, surfaced through the sidebar search box and a new Cmd+K palette.
 
-- **MCP-integration test trio** — `af1-mcp-sandbox-regression` (4 cases), `mcp-api-routes` (1), `mcp-e2e` (1). Previously BUN-01 (Bun-segfault deferred); reclassified 2026-05-13 as functional MCP stdio spawn-envelope / refresh / tool-execution failures on the current Bun 1.3.11. Same root surface as the v1.4-closeout cwd-fix but inside the MCP client wrapper. Needs functional MCP-integration debugging.
-- **Playwright auth-fixture infrastructure** — unblocks SEC-06 e2e + UX-01..04 e2e flows currently held at `test.fixme`.
-- **`mock-cleanup.ts MODULE_PATHS` widening** (Phase-59-04 verdict #4) — closes the 3 wrapper false-positives at `scripts/test.sh PARALLEL=6` (`agent-configs-handler`, `agent-input-form`, `security/sb1-storage-rpc-security` all pass in isolation).
-- **Operator/staging verification** of MCP-04 7-day soak + MCP-05 raw-socket bypass on Linux+CAP_NET_ADMIN, iOS home-indicator clearance on real iOS device, marketplace pg_trgm p95 on external Postgres.
-- **`agent-detail.spec.ts:178`** — pre-existing strict-mode collision; documented in `62-02-SUMMARY.md` as out-of-scope.
+**Target features:**
+
+- **Hybrid search backend** — chunked pgvector embeddings over chat messages, combined with existing FTS via Reciprocal Rank Fusion (RRF). Reuses the local Transformers.js embedder (`all-MiniLM-L6-v2`, 384-dim) and pgvector extension already wired for `memories` and `knowledge_base_chunks`.
+- **Sidebar mode toggle** — extend `ConversationList.svelte` search with a Hybrid / Keyword / Semantic toggle (Hybrid default). Preserve current `ts_headline` snippet highlighting for lexical hits; emit plain ±window snippets for semantic-only hits.
+- **Cmd+K command palette** — global search overlay accessible from anywhere; routes to the same hybrid endpoint, jumps to matching message on selection.
+- **Embed-on-write + backfill** — durable embed-on-write (outbox pattern) for new messages; one-shot backfill script for existing conversations; skip system / tool roles.
+
+**Explicitly NOT in v1.5 (deferred to v1.6+):**
+
+- **Filters (date / agent / model / project), saved searches, dedicated `/search` page, in-conversation Ctrl+F bar** — covered by sidebar + Cmd+K for v1; revisit once base ranking is validated.
+- **Chat-as-RAG (use past chats as context in new chat)** — exposes the index as a memory source; separate scope and trust review.
+- **Carry-forward v1.4 debt** (MCP-integration test trio, Playwright auth fixture, `mock-cleanup.ts MODULE_PATHS` widening, operator/device verifications, `agent-detail.spec.ts:178`) — stays carry-forward; v1.5 is pure feature focus.
 
 <details>
 <summary>Previous milestone — v1.4 Trust Hardening & v1.3 Closeout (archived)</summary>
@@ -121,9 +128,12 @@ The following 6 commits landed on main during the v1.3 audit window via a parall
 
 ### Active
 
-<!-- v1.5 milestone goals to be defined via /gsd:new-milestone -->
+<!-- v1.5 Hybrid Chat Search — detailed REQ-IDs land in REQUIREMENTS.md after roadmap creation. -->
 
-(See "Next Milestone" section above for v1.4 audit's carry-forward seeds.)
+- [ ] Hybrid chat search backend (pgvector + FTS + RRF) — v1.5
+- [ ] Sidebar search mode toggle (Hybrid / Keyword / Semantic) — v1.5
+- [ ] Cmd+K command palette overlay — v1.5
+- [ ] Embed-on-write outbox + one-shot backfill — v1.5
 
 ### Out of Scope
 
@@ -198,4 +208,4 @@ Known tech debt carried into v1.5+ (5 categories):
 | Manifest-lock CI gate | `--check` flag prevents manifest drift vs trust-on-first-use | ✓ Good (v1.3) — pinned `manifest.lock.json` is part of the integrity gate the PDP relies on |
 
 ---
-*Last updated: 2026-05-13 after v1.4 milestone shipped*
+*Last updated: 2026-05-20 — v1.5 Hybrid Chat Search milestone opened*

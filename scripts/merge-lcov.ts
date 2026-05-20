@@ -5,8 +5,59 @@
  * Usage: bun scripts/merge-lcov.ts <glob-for-lcov-files> <output-path>
  * Sums DA per (SF,line) and FNDA per (SF,name); re-emits SF/FNF/FNH/LF/LH.
  * Bun 1.3.x emits no BRDA records, so branch data is intentionally not handled.
+ *
+ * SF path canonicalisation: Bun's lcov reporter writes `SF:` paths relative
+ * to whatever `process.cwd()` is at flush time. Tests that call
+ * `process.chdir(...)` (21 callsites at time of writing) cause subsequent
+ * coverage to be emitted with paths like
+ *   SF:../home/dev/work/EZCorp/ez-corp-ai/src/runtime/goal-host.ts
+ * instead of
+ *   SF:src/runtime/goal-host.ts
+ * Both refer to the same source file. We resolve every incoming SF to an
+ * absolute path (interpreting non-absolute strings as relative to the repo
+ * root), then key by repo-root-relative path so the hit counts merge into
+ * one record per source file.
  */
 import { Glob } from "bun";
+import { resolve, relative, isAbsolute } from "node:path";
+
+const REPO_ROOT = resolve(import.meta.dir, "..");
+
+/** Normalise an incoming SF path to a repo-root-relative key. Robust to:
+ *  - Plain absolute paths (`/home/dev/.../src/foo.ts`).
+ *  - Bun's chdir artefacts. When a test calls `process.chdir("/tmp/xyz")`,
+ *    bun emits SF paths as `../home/dev/work/EZCorp/ez-corp-ai/src/foo.ts`
+ *    (relative-to-chdir'd-CWD, with leading `../` segments hopping up to
+ *    `/` and then descending the absolute path with leading slash dropped).
+ *    We detect this by stripping leading `../` segments and checking
+ *    whether the remainder, when prefixed with `/`, is an absolute path
+ *    that lives under the repo root.
+ *  - Already-relative paths (`src/foo.ts`, `web/src/...`).
+ *  - Paths outside the repo (kept as-is so they don't collide with repo
+ *    files of the same suffix).
+ */
+function canonicaliseSF(sf: string): string {
+  // Strip leading `../` segments — these come from chdir'd shards.
+  let stripped = sf;
+  while (stripped.startsWith("../")) stripped = stripped.slice(3);
+
+  // Promote a now-rootless absolute path (e.g. `home/dev/work/...` after
+  // strip) back to absolute IF the original had a `..` prefix AND the
+  // result lives under the repo.
+  if (stripped !== sf) {
+    const promoted = "/" + stripped;
+    if (promoted.startsWith(REPO_ROOT + "/") || promoted === REPO_ROOT) {
+      return relative(REPO_ROOT, promoted);
+    }
+    // Otherwise: still climbing out of the repo — keep promoted as absolute key.
+    return promoted;
+  }
+
+  const abs = isAbsolute(sf) ? sf : resolve(REPO_ROOT, sf);
+  const rel = relative(REPO_ROOT, abs);
+  if (rel.startsWith("..")) return abs;
+  return rel;
+}
 
 type FileRec = {
   fn: Map<string, number>; // fn name -> declared line
@@ -35,7 +86,7 @@ for await (const path of glob.scan({ absolute: true })) {
   let cur: FileRec | null = null;
   for (const line of text.split("\n")) {
     if (line.startsWith("SF:")) {
-      cur = rec(line.slice(3));
+      cur = rec(canonicaliseSF(line.slice(3)));
     } else if (!cur || line === "end_of_record") {
       cur = null;
     } else if (line.startsWith("FN:")) {

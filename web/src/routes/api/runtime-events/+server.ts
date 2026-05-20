@@ -49,6 +49,13 @@ const BUS_EVENTS = [
   // pipe; `shouldDeliverEvent`'s dedicated userId branch (fail-closed)
   // enforces single-user delivery — it is NOT conversation-scoped.
   "extensions:installed",
+  // /goal Phase 2 (FR-20, D7): conversation-scoped autopilot
+  // indicator. The goal-host emits this on every state transition
+  // (arm, evaluator update, pause, achieve, clear); the direct-carrier
+  // filter routes it per subscriber by the payload's top-level
+  // `conversationId`, so user A's chip never updates from user B's
+  // armed conversation.
+  "goal:update",
 ] as const;
 
 export const GET: RequestHandler = async ({ locals, url }) => {

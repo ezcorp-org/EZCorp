@@ -20,6 +20,7 @@
  */
 import { Glob } from "bun";
 import { resolve, relative, isAbsolute } from "node:path";
+import { filterNoiseDA } from "./lcov-noise-filter.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 
@@ -117,13 +118,23 @@ for (const [sf, r] of files) {
   }
   out.push(`FNF:${r.fn.size}`);
   out.push(`FNH:${fnh}`);
+  // Strip zero-hit DA entries that point at non-executable source lines
+  // (comments, blanks, brace-only, TS type-annotation continuations,
+  // string-literal elements, SQL template fragments). Bun's coverage
+  // emitter assigns DA records to these via sourcemap fallback even
+  // though they have no compiled JS — inflating denominator on
+  // TypeScript-heavy files. See lcov-noise-filter.ts for the rationale
+  // and full pattern list. Strip is zero-hit-only, so percentages never
+  // regress.
+  const absSrcPath = isAbsolute(sf) ? sf : resolve(REPO_ROOT, sf);
   const sortedDa = [...r.da.entries()].sort((a, b) => a[0] - b[0]);
+  const filteredDa = await filterNoiseDA(absSrcPath, sortedDa);
   let lh = 0;
-  for (const [lineNo, hits] of sortedDa) {
+  for (const [lineNo, hits] of filteredDa) {
     out.push(`DA:${lineNo},${hits}`);
     if (hits > 0) lh++;
   }
-  out.push(`LF:${r.da.size}`);
+  out.push(`LF:${filteredDa.length}`);
   out.push(`LH:${lh}`);
   out.push("end_of_record");
 }

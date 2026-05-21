@@ -31,22 +31,37 @@ const EXCLUDES = [
   // import-wizard e2e exercise the spawned path. Same spirit as the
   // scaffold-templates exclusion above.
   "src/runtime/import/skill-runner.template.ts",
+  // Declaration-only TypeScript types: no executable code to count.
+  // Same justification as scaffold/templates/** above — lcov can't
+  // measure pure `export interface` / `export type` files. The host
+  // shim is a `export type *` re-export; the SDK file is the canonical
+  // type surface. Both ship with byte-for-byte alignment enforced by
+  // host-shim tests, not lcov.
+  "packages/@ezcorp/sdk/src/types.ts",
+  "src/extensions/sdk/types.ts",
 ];
 
 type FileCov = { totalLines: number; coveredLines: number; missed: number[] };
 
 const thresholdsText = await Bun.file(THRESHOLDS_PATH).text();
 const thresholds = JSON.parse(thresholdsText) as Record<string, number>;
+// Bun's `Glob` treats `[id]` as a character class — a literal SvelteKit
+// route segment like `[id]` would never match itself. Escape `[` and `]`
+// in the threshold key before constructing the Glob so bracketed paths
+// match literally; non-bracketed keys are unaffected.
+function escapeGlob(p: string): string {
+  return p.replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+}
 const thresholdGlobs = Object.keys(thresholds).map((pat) => ({
   pat,
-  glob: new Glob(pat),
+  glob: new Glob(escapeGlob(pat)),
   specificity: pat.replace(/\*/g, "").length,
   threshold: thresholds[pat] ?? 0,
 }));
 // Sort most-specific first so first match wins.
 thresholdGlobs.sort((a, b) => b.specificity - a.specificity);
 
-const excludeGlobs = EXCLUDES.map((p) => new Glob(p));
+const excludeGlobs = EXCLUDES.map((p) => new Glob(escapeGlob(p)));
 
 const lcov = await Bun.file(LCOV_PATH).text();
 const perFile = new Map<string, FileCov>();
@@ -72,13 +87,22 @@ for (const line of lcov.split("\n")) {
 }
 
 const violations: string[] = [];
+const matchedThresholds = new Set<string>();
 let enforced = 0;
 for (const [file, cov] of perFile) {
   if (excludeGlobs.some((g) => g.match(file))) continue;
   const match = thresholdGlobs.find((t) => t.glob.match(file));
   if (!match) continue;
+  matchedThresholds.add(match.pat);
   enforced++;
-  if (cov.totalLines === 0) continue;
+  if (cov.totalLines === 0) {
+    violations.push(
+      `${file}: 0 measured lines (file in lcov but no DA records) — ` +
+        `coverage script doesn't measure this path. Either add coverage ` +
+        `for it, exclude it, or extend test-coverage.sh.`,
+    );
+    continue;
+  }
   const pct = (cov.coveredLines / cov.totalLines) * 100;
   if (pct + 1e-9 < match.threshold) {
     const missedCsv = cov.missed.slice(0, 40).join(",") + (cov.missed.length > 40 ? ",..." : "");
@@ -86,6 +110,30 @@ for (const [file, cov] of perFile) {
       `${file}: ${pct.toFixed(2)}% < ${match.threshold}% — missed lines: ${missedCsv}`,
     );
   }
+}
+
+// Threshold rules that no lcov file matched at all are silent gates —
+// either the source file moved, the threshold key has a typo, or the
+// test runner that produces this lcov never exercises that path (e.g.
+// vitest-only Svelte components when only bun:test feeds lcov). Surface
+// each as a failure so the silence is audible.
+//
+// Skip threshold patterns whose key is itself covered by an EXCLUDES
+// pattern (e.g. a `web/src/lib/**` wildcard with an exclude carve-out)
+// — those aren't enforced.
+for (const t of thresholdGlobs) {
+  if (matchedThresholds.has(t.pat)) continue;
+  if (excludeGlobs.some((g) => g.match(t.pat))) continue;
+  // Wildcard threshold keys (e.g. `web/src/lib/**`) are expected to
+  // produce zero direct matches when more-specific keys catch every
+  // file — that's not a missing gate, it's the wildcard-is-fallback
+  // pattern. Only fail-loud on EXACT-file threshold keys (no `*`).
+  if (t.pat.includes("*")) continue;
+  violations.push(
+    `${t.pat}: listed in thresholds but no lcov data — ` +
+      `coverage script doesn't measure this path. Either add coverage ` +
+      `for it, exclude it, or extend test-coverage.sh.`,
+  );
 }
 
 if (violations.length > 0) {

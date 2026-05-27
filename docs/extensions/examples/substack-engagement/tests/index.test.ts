@@ -9,7 +9,7 @@
 // a throw from one scan so the others still run.
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { runScheduledScan } from "../index";
+import { runScheduledScan, tools } from "../index";
 import {
   _setLlmForTests,
   _setVoiceStoreForTests,
@@ -187,6 +187,71 @@ describe("runScheduledScan — drafts only, NEVER sends (locked decision #1)", (
     expect(await runScheduledScan()).toBeUndefined();
     expect(sends).toHaveLength(0);
     expect(await list()).toHaveLength(0);
+  });
+});
+
+// ── dispatcher tools map — every handler arrow delegates ────────
+//
+// The exported `tools` map's handler arrows (index.ts:63-75) are the
+// thin adapters the host's tools/call dispatch invokes. Driving each one
+// through the map proves it forwards args + ctx into the right lib
+// function (and runs the otherwise-uncovered ctx-passing wrappers).
+
+const CTX = {
+  invocationMetadata: {
+    settings: {
+      substack_publication_url: "https://me.substack.com",
+      substack_session_token: "tok",
+      substack_user_id: "42",
+    },
+  },
+};
+
+describe("tools map handlers delegate to their lib functions", () => {
+  function parse(res: { content: Array<{ text: string }> }): Record<string, unknown> {
+    return JSON.parse(res.content[0]!.text);
+  }
+
+  test("every handler invokes its delegate and returns a tool result", async () => {
+    const { client } = makeRecordingClient({
+      comments: [{ id: "c-1", postId: "p-1", author: "a", body: "hi", createdAt: 1 }],
+      subscribers: [{ id: "s-1", name: "Ada", subscribedAt: 1 }],
+      notes: { "n-1": { author: "carol", body: "a note" } },
+    });
+    _setSubstackClientForTests(client);
+    _setNotesStoreForTests({
+      async get<T>() {
+        return { value: { noteRefs: ["n-1"] } as T, exists: true };
+      },
+    });
+
+    // ctx-passing scan handlers (index.ts:63-68).
+    expect(parse(await tools.scan_comments!({}, CTX)).ok).toBe(true);
+    expect(parse(await tools.scan_subscribers!({}, CTX)).ok).toBe(true);
+    expect(parse(await tools.scan_notes!({}, CTX)).ok).toBe(true);
+
+    // arg-only read/mutate handlers (index.ts:69-72,75).
+    const listed = parse(await tools.list_queue!({}, CTX));
+    expect(listed.ok).toBe(true);
+    const firstId = (listed.items as Array<{ id: string }>)[0]!.id;
+
+    expect(parse(await tools.edit_item!({ id: firstId, draft_body: "edited" }, CTX)).ok).toBe(true);
+    expect(parse(await tools.approve_item!({ id: firstId }, CTX)).ok).toBe(true);
+    expect(parse(await tools.open_review_queue!({}, CTX)).cardType).toBe("substack-review");
+
+    // ctx-passing send handler (index.ts:73-74) — sends the approved item.
+    expect(parse(await tools.send_approved!({}, CTX)).ok).toBe(true);
+
+    // reject_item on a fresh pending row (index.ts:71).
+    const pending = parse(await tools.list_queue!({ status: "pending" }, CTX));
+    const pendingId = (pending.items as Array<{ id: string }>)[0]?.id;
+    if (pendingId) {
+      expect(parse(await tools.reject_item!({ id: pendingId }, CTX)).ok).toBe(true);
+    } else {
+      // No pending row left — exercise the wrapper against a known-missing id
+      // so the arrow body (index.ts:71) still runs.
+      expect((await tools.reject_item!({ id: "ghost" }, CTX)).isError).toBe(true);
+    }
   });
 });
 

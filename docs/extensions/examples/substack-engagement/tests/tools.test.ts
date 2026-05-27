@@ -10,12 +10,14 @@ import {
   readVoiceProfile,
   _setLlmForTests,
   _setVoiceStoreForTests,
+  _setPacingStoreForTests,
   setDraftConfig,
 } from "../lib/tools";
 import {
   list,
   get,
   approve,
+  enqueue,
   _setQueueStoreForTests,
   _setClockForTests,
   _resetQueueForTests,
@@ -420,6 +422,92 @@ describe("send_approved", () => {
     expect(out.failed).toBe(0);
     expect(out.deferred).toBe(0);
     expect(sent).toHaveLength(0);
+  });
+});
+
+// ── pacing-state load fallback (tools.ts:139-140) ───────────────
+//
+// `sendApproved` loads the persisted pacing state once per call. A
+// storage read that THROWS (e.g. a transient store error) must not
+// abort the send — `loadPacingState` catches and falls back to the
+// fresh initial state, so the send proceeds against a clean budget.
+
+describe("loadPacingState — store.get throws → initial state fallback", () => {
+  test("a throwing pacing store does not break send_approved", async () => {
+    // A reply send still goes through even though the pacing store's get()
+    // throws (reply isn't paced, but loadPacingState is called regardless).
+    const { client, sent } = makeClient({
+      comments: [{ id: "c-1", postId: "p", author: "a", body: "hi", createdAt: 0 }],
+    });
+    _setSubstackClientForTests(client);
+    _setPacingStoreForTests({
+      async get() {
+        throw new Error("pacing store offline");
+      },
+      async set() {
+        return { ok: true as const, sizeBytes: 0 };
+      },
+    });
+    await scanComments({}, SETTINGS);
+    const id = (await list())[0]!.id;
+    await approve(id);
+
+    const out = parse(await sendApproved({}, SETTINGS));
+    expect(out.ok).toBe(true);
+    expect(out.sent).toBe(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  test("a paced note-comment sends against the fresh initial state when load throws", async () => {
+    // The note-comment IS paced. With a throwing store, the fallback initial
+    // state means an empty budget → the first send is allowed under defaults.
+    const { client, sent } = makeClient();
+    _setSubstackClientForTests(client);
+    _setPacingStoreForTests({
+      async get() {
+        throw new Error("pacing store offline");
+      },
+      async set() {
+        return { ok: true as const, sizeBytes: 0 };
+      },
+    });
+    const item = await enqueue({
+      kind: "note-comment",
+      status: "approved",
+      target_ref: "n-1",
+      context: "a note",
+      draft_body: "thoughtful comment",
+    });
+
+    const out = parse(await sendApproved({ id: item.id }, SETTINGS));
+    // Not deferred — the fresh state allowed the send (proves the fallback
+    // produced a usable initial pacing state, not a throw).
+    expect(out.deferred).toBe(0);
+    expect(out.sent).toBe(1);
+    expect(sent.some((s) => s.method === "note" && s.ref === "n-1")).toBe(true);
+  });
+});
+
+// ── unbound LLM throw (tools.ts:165) ────────────────────────────
+//
+// `llm()` is the single accessor for the bound drafting LLM. When no
+// LLM is bound (production never wired it / a test reset the seam),
+// any draft path must throw loudly rather than silently no-op — a
+// missing LLM is a wiring bug, not a recoverable per-draft failure.
+
+describe("llm() — throws when no LLM is bound", () => {
+  test("a draft path with no LLM bound rejects with the bind hint", async () => {
+    const { client } = makeClient({
+      comments: [{ id: "c-1", postId: "p", author: "a", body: "hi", createdAt: 0 }],
+    });
+    _setSubstackClientForTests(client);
+    _setLlmForTests(null); // reset the LLM seam — nothing bound
+
+    // scanComments → draftAndEnqueue → draftRowBody → llm() throws
+    // synchronously; the rejection propagates out of the scan.
+    await expect(scanComments({}, SETTINGS)).rejects.toThrow(
+      "LLM not bound — call setLlm()",
+    );
   });
 });
 

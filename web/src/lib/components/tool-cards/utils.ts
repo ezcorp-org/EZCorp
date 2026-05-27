@@ -35,6 +35,7 @@ export function getCardComponentName(cardType: string | undefined, permissionPen
 		case 'design-brief': return 'DesignBriefCard';
 		case 'kokoro-tts-player': return 'KokoroTtsPlayerCard';
 		case 'price-chart': return 'PriceChartCard';
+		case 'substack-review': return 'SubstackReviewCard';
 		case 'weather-panel': return 'WeatherCard';
 		case 'time-clock': return 'TimeClockCard';
 		case 'image-gen-grid': return 'ImageGenCard';

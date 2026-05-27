@@ -11,7 +11,6 @@ import {
 } from "../lib/pacing";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 
 // A fixed UTC instant: 2026-06-01T12:00:00Z (a Monday noon).
 const NOON = Date.parse("2026-06-01T12:00:00Z");

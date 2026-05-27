@@ -25,6 +25,7 @@
  */
 
 import { test, expect } from "./fixtures/test-base.js";
+import type { MockOverrides } from "./fixtures/api-mocks.js";
 import { makeProject, makeConversation } from "./fixtures/data.js";
 
 const EXT = "substack-engagement";
@@ -79,7 +80,7 @@ async function mockToolInvoke(
 
 async function navigateAndOpenCard(
 	page: import("@playwright/test").Page,
-	mockApi: (o: unknown) => Promise<void>,
+	mockApi: (overrides?: MockOverrides) => Promise<void>,
 	emitSse: (e: { type: string; data: unknown }) => Promise<void>,
 	payload: string,
 ) {

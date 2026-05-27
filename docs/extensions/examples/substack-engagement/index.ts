@@ -8,6 +8,12 @@
 //
 // Wiring contract:
 //   - tools/call → the handlers in `lib/tools.ts` (+ Phase 2/3 modules).
+//     The Phase 4 review card (SubstackReviewCard.svelte) is just another
+//     tools/call client: its Approve & Send / Edit / Reject buttons POST
+//     the approve_item / edit_item / send_approved / reject_item tools to
+//     the host's `/api/tool-invoke` route, which dispatches into the same
+//     handlers below (open-question #2 resolution — no bidirectional
+//     canvas-event channel; the card needs no eventSubscriptions).
 //   - the `*/15 * * * *` cron → `runScheduledScan` (drafts only, never
 //     sends). The SDK's Schedule class registers the handler; the host's
 //     ScheduleDaemon fires it ownerless — `Storage("global")` is the only
@@ -25,7 +31,6 @@ import {
   Llm,
   Schedule,
   Storage,
-  createCanvas,
   type ToolHandler,
   type ToolHandlerContext,
 } from "@ezcorp/sdk/runtime";
@@ -118,8 +123,10 @@ async function safe(fn: () => Promise<unknown>): Promise<void> {
 //
 // Extracted so a test can cover the wiring branch without opening
 // stdin. Binds the project-scope queue store, the user-scope voice
-// store, the LLM, the dispatcher, the cron handler, and the canvas
-// event surface for the review card (Phase 4).
+// store, the LLM, the tool dispatcher, and the cron handler. The
+// Phase 4 review card reaches the approve/edit/send/reject tools via
+// the host's `/api/tool-invoke` route (the same dispatcher), so there
+// is no separate canvas-event surface to register here.
 
 export function start(): void {
   const ch = getChannel();
@@ -160,37 +167,6 @@ export function start(): void {
   const schedule = new Schedule();
   schedule.on("*/15 * * * *", async () => {
     await runScheduledScan();
-  });
-
-  // Phase 4 review-card events: Approve & Send / Reject / Edit flow back
-  // through the host's generic event route to these handlers. Wiring
-  // decision (open question 2, documented in the Phase 4 commit): the
-  // card uses createCanvas bidirectional events (NOT direct tool
-  // invocation) so the ownerless-cron-drafted queue stays consistent
-  // with a single subprocess source of truth.
-  createCanvas<{
-    approve: { id: string };
-    reject: { id: string };
-    edit: { id: string; draft_body: string };
-    send: { id: string };
-  }>({
-    cardType: "substack-review",
-    namespace: "substack-engagement",
-    events: {
-      approve: async ({ payload }) => {
-        await approveItem({ id: (payload as { id?: string }).id ?? "" });
-      },
-      reject: async ({ payload }) => {
-        await rejectItem({ id: (payload as { id?: string }).id ?? "" });
-      },
-      edit: async ({ payload }) => {
-        const p = payload as { id?: string; draft_body?: string };
-        await editItem({ id: p.id ?? "", draft_body: p.draft_body ?? "" });
-      },
-      send: async ({ payload }) => {
-        await sendApproved({ id: (payload as { id?: string }).id ?? "" }, undefined);
-      },
-    },
   });
 
   ch.start();

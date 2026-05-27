@@ -58,8 +58,9 @@ const INDEX_KEY = "queue-index";
 //
 // Mirrors the SDK runtime Storage interface so the same in-memory fake
 // works across every test file. The default is bound lazily by the
-// caller (index.ts) to `new Storage("project")` — this module never
-// imports Storage directly so unit tests stay free of channel wiring.
+// caller (index.ts) to `new Storage("global")` (the SDK's only ownerless
+// scope — see the module header) — this module never imports Storage
+// directly so unit tests stay free of channel wiring.
 
 export interface QueueStoreLike {
   get<T = unknown>(
@@ -71,7 +72,7 @@ export interface QueueStoreLike {
 
 let _store: QueueStoreLike | null = null;
 
-/** Bind the production store (index.ts wires `new Storage("project")`). */
+/** Bind the production store (index.ts wires `new Storage("global")`). */
 export function setQueueStore(store: QueueStoreLike): void {
   _store = store;
 }

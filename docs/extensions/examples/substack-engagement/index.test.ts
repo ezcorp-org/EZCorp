@@ -136,15 +136,13 @@ describe("substack-engagement — manifest shape", () => {
     expect(perms.env).toBeUndefined();
   });
 
-  test("declares review-card events in its own namespace only", () => {
-    const subs = manifest.permissions.eventSubscriptions as string[];
-    expect(subs).toEqual([
-      "substack-engagement:approve",
-      "substack-engagement:reject",
-      "substack-engagement:edit",
-      "substack-engagement:send",
-    ]);
-    for (const e of subs) expect(e.startsWith("substack-engagement:")).toBe(true);
+  test("requests NO eventSubscriptions (card drives tools via /api/tool-invoke)", () => {
+    // Open-question #2 resolution: the review card POSTs approve_item /
+    // edit_item / send_approved / reject_item to the host's
+    // `/api/tool-invoke` route — there is no bidirectional canvas-event
+    // channel, so the manifest grants no event subscriptions.
+    const perms = manifest.permissions as Record<string, unknown>;
+    expect(perms.eventSubscriptions).toBeUndefined();
   });
 
   test("smokeTest targets the no-network list_queue tool", () => {

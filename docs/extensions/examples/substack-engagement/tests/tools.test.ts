@@ -409,6 +409,18 @@ describe("send_approved", () => {
     const res = await sendApproved({ id: "ghost" }, SETTINGS);
     expect((res as { code?: string }).code).toBe("NOT_FOUND");
   });
+
+  test("empty batch (no approved items) → {sent:0,failed:0,deferred:0}", async () => {
+    const { client, sent } = makeClient();
+    _setSubstackClientForTests(client);
+    // Nothing approved in the queue → the loop never runs, no client send.
+    const out = parse(await sendApproved({}, SETTINGS));
+    expect(out.ok).toBe(true);
+    expect(out.sent).toBe(0);
+    expect(out.failed).toBe(0);
+    expect(out.deferred).toBe(0);
+    expect(sent).toHaveLength(0);
+  });
 });
 
 // ── open_review_queue ───────────────────────────────────────────

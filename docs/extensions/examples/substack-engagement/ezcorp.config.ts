@@ -437,17 +437,11 @@ export default defineExtension({
         "Periodically scan comments, new subscribers, and targeted Notes to " +
         "draft (never send) engagement messages into the review queue.",
     },
-    // Review-card bidirectional events (Phase 4). The card POSTs these to
-    // the host's generic event route; the dispatcher delivers them to this
-    // extension's createCanvas handlers (index.ts:start). Each event MUST be
-    // namespaced to `substack-engagement:` — the dispatcher rejects any
-    // cross-namespace declaration.
-    eventSubscriptions: [
-      "substack-engagement:approve",
-      "substack-engagement:reject",
-      "substack-engagement:edit",
-      "substack-engagement:send",
-    ],
+    // No `eventSubscriptions`: the review card (SubstackReviewCard.svelte)
+    // drives Approve & Send / Edit / Reject by POSTing the approve_item /
+    // edit_item / send_approved / reject_item tools to `/api/tool-invoke`
+    // directly (open-question #2 resolution). There is no bidirectional
+    // canvas-event channel, so no event grants are needed.
     // Reserved for a future "you have N drafts to review" nudge. The host
     // forces excluded=true regardless of this flag (the field is for a
     // future opt-in tier); declared here to document the intent.

@@ -5,10 +5,11 @@ import {
   resolveClient,
   getProductionClient,
   _setSubstackClientForTests,
-  _setSubstackClientFactoryForTests,
+  _setTransportFactoryForTests,
   _resetSubstackClientForTests,
   type SubstackClient,
   type SubstackCredentials,
+  type LiveTransport,
 } from "../lib/substack-client";
 
 const CREDS: SubstackCredentials = {
@@ -44,6 +45,30 @@ function fakeClient(): SubstackClient {
       return { ok: true };
     },
   };
+}
+
+/**
+ * A fake low-level transport that records every `callTool` and returns a
+ * scripted response. Mirrors the MCP `Client` surface `buildLiveClient`
+ * consumes — lets the production client-building wiring run without the
+ * SDK import or a spawned child.
+ */
+function fakeTransport(
+  respond: (req: {
+    name: string;
+    arguments: Record<string, unknown>;
+  }) =>
+    | { content?: Array<{ type: string; text?: string }>; isError?: boolean }
+    | Promise<{ content?: Array<{ type: string; text?: string }>; isError?: boolean }>,
+) {
+  const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  const transport: LiveTransport = {
+    async callTool(req) {
+      calls.push(req);
+      return respond(req);
+    },
+  };
+  return { transport, calls };
 }
 
 afterEach(() => {
@@ -118,25 +143,27 @@ describe("resolveClient", () => {
     }
   });
 
-  test("builds the production client via the injected factory + threads creds/transport", async () => {
+  test("builds the production client over the injected transport + threads the transport spec", async () => {
     _setSubstackClientForTests(null);
-    const captured: { creds?: SubstackCredentials; command?: string } = {};
-    const made = fakeClient();
-    _setSubstackClientFactoryForTests(async (creds, transport) => {
-      captured.creds = creds;
-      captured.command = transport.command;
-      return made;
+    let seenCommand: string | undefined;
+    let seenArgs: string[] | undefined;
+    _setTransportFactoryForTests(async (transport) => {
+      seenCommand = transport.command;
+      seenArgs = transport.args;
+      return fakeTransport(() => ({ content: [{ type: "text", text: "ok" }] })).transport;
     });
     const res = await resolveClient(SETTINGS);
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.client).toBe(made);
-    expect(captured.creds).toEqual(CREDS);
-    expect(captured.command).toBe("npx");
+    // The returned client is the REAL built client (not the fake transport).
+    if (res.ok) expect(typeof res.client.postCommentReply).toBe("function");
+    // The transport spec built from creds was threaded into the factory.
+    expect(seenCommand).toBe("npx");
+    expect(seenArgs).toEqual(["-y", "substack-mcp@latest"]);
   });
 
-  test("factory throw → TRANSPORT_ERROR (no crash)", async () => {
+  test("transport factory throw → TRANSPORT_ERROR (no crash)", async () => {
     _setSubstackClientForTests(null);
-    _setSubstackClientFactoryForTests(async () => {
+    _setTransportFactoryForTests(async () => {
       throw new Error("spawn ENOENT");
     });
     const res = await resolveClient(SETTINGS);
@@ -151,14 +178,116 @@ describe("resolveClient", () => {
 describe("getProductionClient", () => {
   test("memoizes the client across calls within a subprocess lifetime", async () => {
     let factoryCalls = 0;
-    const made = fakeClient();
-    _setSubstackClientFactoryForTests(async () => {
+    _setTransportFactoryForTests(async () => {
       factoryCalls++;
-      return made;
+      return fakeTransport(() => ({})).transport;
     });
     const a = await getProductionClient(CREDS);
     const b = await getProductionClient(CREDS);
     expect(a).toBe(b);
     expect(factoryCalls).toBe(1);
+  });
+});
+
+// ── buildLiveClient wiring (over an injected low-level transport) ─
+//
+// The whole point of the low-level seam: every line of buildLiveClient
+// EXCEPT the dynamic-import/connect else-branch runs here. We drive the
+// returned client's methods and assert callText's result mapping + the
+// per-method dispatch (tool name + args), plus the read-method stubs.
+
+describe("buildLiveClient — client wiring over the injected transport", () => {
+  async function clientWith(
+    respond: Parameters<typeof fakeTransport>[0],
+  ): Promise<{ client: SubstackClient; calls: ReturnType<typeof fakeTransport>["calls"] }> {
+    const { transport, calls } = fakeTransport(respond);
+    _setTransportFactoryForTests(async () => transport);
+    const client = await getProductionClient(CREDS);
+    return { client, calls };
+  }
+
+  test("send methods route through callTool with the right tool name + args", async () => {
+    const { client, calls } = await clientWith((req) => ({
+      content: [{ type: "text", text: `${req.name}-id` }],
+    }));
+
+    const reply = await client.postCommentReply({
+      commentId: "c-1",
+      postId: "p-1",
+      body: "hi",
+    });
+    expect(reply).toEqual({ ok: true, id: "post_comment_reply-id" });
+
+    const dm = await client.sendDirectMessage({ subscriberId: "s-1", body: "welcome" });
+    expect(dm).toEqual({ ok: true, id: "send_direct_message-id" });
+
+    const note = await client.postNoteComment({ noteId: "n-1", body: "nice" });
+    expect(note).toEqual({ ok: true, id: "post_note_comment-id" });
+
+    expect(calls.map((c) => c.name)).toEqual([
+      "post_comment_reply",
+      "send_direct_message",
+      "post_note_comment",
+    ]);
+    // postCommentReply forwards the publication url + the reply fields.
+    expect(calls[0]?.arguments).toEqual({
+      publicationUrl: CREDS.publicationUrl,
+      commentId: "c-1",
+      postId: "p-1",
+      body: "hi",
+    });
+    expect(calls[1]?.arguments).toEqual({ subscriberId: "s-1", body: "welcome" });
+    expect(calls[2]?.arguments).toEqual({ noteId: "n-1", body: "nice" });
+  });
+
+  test("callText: empty/non-text content → ok with undefined id", async () => {
+    const { client } = await clientWith(() => ({ content: [] }));
+    expect(await client.postCommentReply({ commentId: "c", postId: "p", body: "b" })).toEqual({
+      ok: true,
+      id: undefined,
+    });
+  });
+
+  test("callText: isError with text → ok:false with that text", async () => {
+    const withText = await clientWith(() => ({
+      content: [{ type: "text", text: "rate limited" }],
+      isError: true,
+    }));
+    expect(await withText.client.sendDirectMessage({ subscriberId: "s", body: "b" })).toEqual({
+      ok: false,
+      error: "rate limited",
+    });
+  });
+
+  test("callText: isError without text → ok:false with the tool-name fallback", async () => {
+    // Fresh test → afterEach reset cleared the memoized client first.
+    const noText = await clientWith(() => ({ isError: true }));
+    expect(await noText.client.postNoteComment({ noteId: "n", body: "b" })).toEqual({
+      ok: false,
+      error: "post_note_comment reported isError",
+    });
+  });
+
+  test("callText: a thrown transport error → ok:false with the message", async () => {
+    const { client } = await clientWith(() => {
+      throw new Error("socket hangup");
+    });
+    expect(await client.postCommentReply({ commentId: "c", postId: "p", body: "b" })).toEqual({
+      ok: false,
+      error: "socket hangup",
+    });
+  });
+
+  test("read methods return their stub defaults (LIVE-UNTESTED placeholders)", async () => {
+    const { client, calls } = await clientWith(() => ({}));
+    expect(await client.listOwnPostComments({})).toEqual([]);
+    expect(await client.listNewSubscribers("cur-9")).toEqual({
+      subscribers: [],
+      cursor: "cur-9",
+    });
+    expect(await client.listNewSubscribers(null)).toEqual({ subscribers: [], cursor: "" });
+    expect(await client.listNote("n-7")).toEqual({ id: "n-7", author: "", body: "" });
+    // The read stubs never touch the transport.
+    expect(calls).toHaveLength(0);
   });
 });

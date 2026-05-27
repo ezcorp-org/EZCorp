@@ -280,4 +280,25 @@ describe("safe() — one failing scan never aborts the others", () => {
     // Still no send (failure path must not auto-send either).
     expect(sends).toHaveLength(0);
   });
+
+  test("a scan that throws OUT (uncaught internally) is swallowed by safe()'s catch", async () => {
+    // scanComments catches client errors internally, so to exercise safe()'s
+    // catch we need a step that throws PAST the tool: readVoiceProfile reads
+    // the voice store without a try/catch, so a throwing store propagates out
+    // of scanComments → into runScheduledScan → caught + logged by safe().
+    const { client, sends } = makeRecordingClient({
+      comments: [{ id: "c-1", postId: "p-1", author: "a", body: "hi", createdAt: 1 }],
+    });
+    _setSubstackClientForTests(client);
+    _setVoiceStoreForTests({
+      async get() {
+        throw new Error("voice store offline");
+      },
+    });
+
+    // safe() swallows the propagated throw — runScheduledScan still resolves.
+    expect(await runScheduledScan()).toBeUndefined();
+    // And the never-send invariant holds even on the failure path.
+    expect(sends).toHaveLength(0);
+  });
 });

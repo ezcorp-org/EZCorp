@@ -20,13 +20,30 @@ import * as realRuntime from "@ezcorp/sdk/runtime";
 // ── Spies that record what start() binds ────────────────────────
 
 // Each `new Storage(scope)` records its scope so we can assert the
-// global×3 / user×3 split the wiring promises.
+// global×3 / user×3 split the wiring promises. The instance is a working
+// in-memory store (get/set/delete) so the cron handler the test fires can
+// run the real scans cleanly — no channel, no swallowed-error log noise.
 const storageScopes: string[] = [];
 class FakeStorage {
   scope: string;
+  private map = new Map<string, unknown>();
   constructor(scope: string) {
     this.scope = scope;
     storageScopes.push(scope);
+  }
+  async get<T>(key: string): Promise<{ value: T | null; exists: boolean }> {
+    return this.map.has(key)
+      ? { value: this.map.get(key) as T, exists: true }
+      : { value: null, exists: false };
+  }
+  async set<T>(key: string, value: T): Promise<{ ok: true; sizeBytes: number }> {
+    this.map.set(key, value);
+    return { ok: true, sizeBytes: 0 };
+  }
+  async delete(key: string): Promise<{ deleted: boolean }> {
+    const had = this.map.has(key);
+    this.map.delete(key);
+    return { deleted: had };
   }
 }
 
@@ -102,10 +119,10 @@ describe("start() — production wiring", () => {
     expect(typeof scheduleOns[0]?.handler).toBe("function");
 
     // The registered handler delegates to runScheduledScan. The FakeStorage
-    // seams have no get/set, so the real scans inside throw — but
-    // runScheduledScan's `safe()` swallows every step, so the cron handler
-    // still resolves cleanly (the drafts-only, never-throw contract).
+    // seams are working in-memory stores and the cron passes no creds, so
+    // each scan soft-fails to MISSING_CREDENTIALS (a tool error, not a
+    // throw) — the handler resolves cleanly with no swallowed-error noise.
     expect(typeof runScheduledScan).toBe("function");
-    await expect(scheduleOns[0]?.handler()).resolves.toBeUndefined();
+    expect(await scheduleOns[0]!.handler()).toBeUndefined();
   });
 });

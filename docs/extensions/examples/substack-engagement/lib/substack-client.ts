@@ -5,13 +5,14 @@
 // the network or spawn a child process. Mirrors substack-pilot's
 // `McpCaller` seam (`docs/extensions/examples/substack-pilot/lib/substack.ts`):
 //
-//   - `_setSubstackClientForTests(fake)` overrides the client used by
-//     the tools. Pass `null` to clear and fall back to the production
-//     factory.
-//   - `_setSubstackClientFactoryForTests(factory)` overrides the
-//     import-and-spawn step so the production-wiring path (settings →
-//     transport env shaping, error surfacing) is fully tested WITHOUT
-//     importing `@modelcontextprotocol/sdk` or running `npx`.
+//   - `_setSubstackClientForTests(fake)` overrides the whole client used
+//     by the tools. Pass `null` to clear and fall back to the production
+//     path.
+//   - `_setTransportFactoryForTests(factory)` overrides the LOW-LEVEL
+//     import-and-connect step (returning a fake `LiveTransport`) so the
+//     production-wiring path (transport env shaping, `callText` result
+//     mapping, per-method dispatch, error surfacing) is fully tested
+//     WITHOUT importing `@modelcontextprotocol/sdk` or running `npx`.
 //
 // Locked decision #7 (mocked-vs-live boundary): live verification is
 // BLOCKED on a real session cookie this run. The production transport
@@ -157,17 +158,20 @@ export function _setSubstackClientForTests(client: SubstackClient | null): void 
   _client = client;
 }
 
-// ── Lazy production factory ─────────────────────────────────────
+// ── Lazy production transport ───────────────────────────────────
 //
-// `SubstackClientFactory` builds the real client from credentials. The
-// production factory imports the transport SDK on demand (so unit tests
-// that inject a fake never trip on module side-effects) and shapes a
-// minimal child-process env — never forwarding the host's process.env.
+// The production path builds the real client from credentials. It
+// imports the transport SDK on demand (so unit tests that inject a fake
+// never trip on module side-effects) and shapes a minimal child-process
+// env — never forwarding the host's process.env.
 //
-// `_setSubstackClientFactoryForTests` overrides the import-and-spawn
-// step with an injected factory so tests can assert the transport
-// shape (command/args/env allowlist) WITHOUT importing the MCP SDK or
-// spawning `npx`. Mirrors substack-pilot's `_setMcpClientFactoryForTests`.
+// The injectable seam is LOW-LEVEL: `_setTransportFactoryForTests`
+// overrides ONLY the import-and-connect step, returning a `LiveTransport`
+// (the thin `callTool` surface). `buildLiveClient` then builds `callText`
+// + the per-method SubstackClient dispatch on top of that transport, so
+// that wiring IS exercised by tests — only the dynamic-import/connect
+// else-branch stays uncovered. Mirrors substack-pilot's
+// `getProductionCaller` / `_setMcpClientFactoryForTests`.
 
 export interface TransportSpec {
   command: string;
@@ -175,21 +179,37 @@ export interface TransportSpec {
   env: Record<string, string>;
 }
 
-export type SubstackClientFactory = (
-  creds: SubstackCredentials,
-  transport: TransportSpec,
-) => Promise<SubstackClient>;
+/**
+ * The low-level MCP transport surface `buildLiveClient` consumes. The
+ * production impl is `@modelcontextprotocol/sdk`'s `Client`; tests inject
+ * a fake exposing just `callTool`.
+ */
+export interface LiveTransport {
+  callTool(req: {
+    name: string;
+    arguments: Record<string, unknown>;
+  }): Promise<{
+    content?: Array<{ type: string; text?: string }>;
+    isError?: boolean;
+  }>;
+}
 
-let _factory: SubstackClientFactory | null = null;
+export type TransportFactory = (
+  transport: TransportSpec,
+) => Promise<LiveTransport>;
+
+let _transportFactory: TransportFactory | null = null;
 
 /**
- * Test-only: replace the transport import-and-spawn step with an
- * injected factory. Pass `null` to restore the production path.
+ * Test-only: replace the SDK import-and-connect step with an injected
+ * factory returning a fake `LiveTransport`. This leaves `buildLiveClient`'s
+ * `callText` + per-method dispatch fully exercised. Pass `null` to restore
+ * the production import-and-connect path.
  */
-export function _setSubstackClientFactoryForTests(
-  factory: SubstackClientFactory | null,
+export function _setTransportFactoryForTests(
+  factory: TransportFactory | null,
 ): void {
-  _factory = factory;
+  _transportFactory = factory;
 }
 
 let _productionClientPromise: Promise<SubstackClient> | null = null;
@@ -218,73 +238,71 @@ export function buildTransportSpec(creds: SubstackCredentials): TransportSpec {
 /**
  * Resolve the production SubstackClient for the given credentials.
  * Constructed lazily and reused across calls within the subprocess
- * lifetime. When a test factory is injected, it is used; otherwise the
- * real transport is imported and spawned (the `// LIVE-UNTESTED` block).
+ * lifetime. Always routes through `buildLiveClient` — the only seam is
+ * the LOW-LEVEL transport factory inside it, so the client-building
+ * wiring (callText + per-method dispatch) is always exercised.
  */
 export async function getProductionClient(
   creds: SubstackCredentials,
 ): Promise<SubstackClient> {
   if (_productionClientPromise) return _productionClientPromise;
   const transport = buildTransportSpec(creds);
-  _productionClientPromise = (async () => {
-    if (_factory) {
-      return _factory(creds, transport);
-    }
-    // LIVE-UNTESTED: the no-factory dispatch into the real transport. The
-    // injected-factory branch above is the only path unit tests exercise;
-    // this line only runs in production (no test cookie this run), so it
-    // joins the live-client block below under the coverage fence.
-    /* c8 ignore next */
-    return buildLiveClient(creds, transport);
-  })();
+  _productionClientPromise = buildLiveClient(creds, transport);
   return _productionClientPromise;
 }
 
 // ── Live transport (UNVERIFIED — no session cookie this run) ─────
 //
-// Untested by design — this is the sole block excluded from coverage,
-// mirroring substack-pilot/lib/substack.ts:199-219. It dynamically
-// imports the MCP SDK + substack-api lib and spawns the stdio child.
-// Everything that consumes the resulting client (the tools) IS tested
-// via the injected fake; only the import+spawn handshake is uncovered.
+// Mirrors substack-pilot/lib/substack.ts:getProductionCaller. The
+// LOW-LEVEL transport (`callTool`) is resolved via an injectable factory:
+// tests inject a fake `LiveTransport`, leaving the dynamic-import/connect
+// ELSE-branch the ONLY thing uncovered. Everything built on top of the
+// transport — the `callText` wrapper and the per-method SubstackClient
+// dispatch — IS exercised by the transport-factory test.
 //
-// LIVE-UNTESTED: requires a real Substack session cookie + a running
-// `npx substack-mcp` child. Build + tests run against the injected
-// fake; this path is wired but never exercised this run.
-/* c8 ignore start */
+// Open question 1 (documented in the Phase 1 commit): substack-mcp's
+// comment surface; DM + Notes ops fall back to the substack-api TS lib /
+// Playwright. The session token authenticates all of them. BOTH live
+// behind the same import/connect block and are `// LIVE-UNTESTED`.
+
+/**
+ * Resolve the low-level MCP transport: an injected fake under test, else
+ * the real `@modelcontextprotocol/sdk` stdio child (the sole uncovered
+ * block — requires a real session cookie + a running `npx substack-mcp`).
+ */
+async function resolveTransport(transport: TransportSpec): Promise<LiveTransport> {
+  if (_transportFactory) {
+    return _transportFactory(transport);
+  }
+  /* c8 ignore start */
+  // LIVE-UNTESTED: dynamic import keeps the MCP SDK off the unit-test hot
+  // path (no module side-effects, no native deps) and the connect spawns
+  // the stdio child. Only reachable in production (no test cookie this run).
+  // Kept compact (single-statement) — this is the sole uncovered block.
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const sdkClient = new Client({ name: "ezcorp-substack-engagement", version: "1.0.0" }, { capabilities: {} });
+  const { command, args, env } = transport;
+  await sdkClient.connect(new StdioClientTransport({ command, args, env }));
+  return sdkClient as LiveTransport;
+  /* c8 ignore stop */
+}
+
 async function buildLiveClient(
   creds: SubstackCredentials,
   transport: TransportSpec,
 ): Promise<SubstackClient> {
-  // LIVE-UNTESTED: dynamic import keeps the MCP SDK + substack-api off
-  // the unit-test hot path (no module side-effects, no native deps).
-  const { Client } = await import(
-    "@modelcontextprotocol/sdk/client/index.js"
-  );
-  const { StdioClientTransport } = await import(
-    "@modelcontextprotocol/sdk/client/stdio.js"
-  );
-  const sdkClient = new Client(
-    { name: "ezcorp-substack-engagement", version: "1.0.0" },
-    { capabilities: {} },
-  );
-  const sdkTransport = new StdioClientTransport({
-    command: transport.command,
-    args: transport.args,
-    env: transport.env,
-  });
-  await sdkClient.connect(sdkTransport);
+  const transportClient = await resolveTransport(transport);
 
-  // LIVE-UNTESTED: substack-mcp's comment surface; DM + Notes ops fall
-  // back to the substack-api TS lib / Playwright (open question 1). The
-  // session token authenticates all of them. Shapes mirror the seam.
+  // Wrap the transport's `callTool` into the SendResult shape. Tested via
+  // the injected fake transport: success (id from text), isError, throw.
   const callText = async (
     tool: string,
     args: Record<string, unknown>,
   ): Promise<SendResult> => {
     try {
-      const res = await sdkClient.callTool({ name: tool, arguments: args });
-      const first = (res.content as Array<{ type: string; text?: string }> | undefined)?.[0];
+      const res = await transportClient.callTool({ name: tool, arguments: args });
+      const first = res.content?.[0];
       const text = first?.type === "text" ? (first.text ?? "") : "";
       if (res.isError) return { ok: false, error: text || `${tool} reported isError` };
       return { ok: true, id: text || undefined };
@@ -328,7 +346,11 @@ async function buildLiveClient(
     },
   } satisfies SubstackClient;
 }
-/* c8 ignore stop */
+
+/** Discriminated result of {@link resolveClient}. */
+export type ResolveClientResult =
+  | { ok: true; client: SubstackClient }
+  | { ok: false; reason: "MISSING_CREDENTIALS" | "TRANSPORT_ERROR"; error: string };
 
 /**
  * Resolve the SubstackClient for a tool call. Returns the injected test
@@ -338,10 +360,7 @@ async function buildLiveClient(
  */
 export async function resolveClient(
   settings: Record<string, unknown> | undefined,
-): Promise<
-  | { ok: true; client: SubstackClient }
-  | { ok: false; reason: "MISSING_CREDENTIALS" | "TRANSPORT_ERROR"; error: string }
-> {
+): Promise<ResolveClientResult> {
   if (_client) return { ok: true, client: _client };
   const creds = readCredentials(settings);
   if (!creds) {
@@ -368,6 +387,6 @@ export async function resolveClient(
 /** Test-only: reset all module-level seam state between test files. */
 export function _resetSubstackClientForTests(): void {
   _client = null;
-  _factory = null;
+  _transportFactory = null;
   _productionClientPromise = null;
 }

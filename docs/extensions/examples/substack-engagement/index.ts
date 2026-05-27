@@ -172,5 +172,8 @@ export function start(): void {
   ch.start();
 }
 
-// Gated on `import.meta.main` so test imports don't open stdin.
+// Gated on `import.meta.main` so test imports don't open stdin. The guard
+// itself only fires when run as the entrypoint (never under test, where
+// `import.meta.main` is false) — start()'s body is covered by start.test.ts.
+/* c8 ignore next */
 if (import.meta.main) start();

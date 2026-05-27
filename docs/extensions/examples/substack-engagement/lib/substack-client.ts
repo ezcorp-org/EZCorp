@@ -230,6 +230,11 @@ export async function getProductionClient(
     if (_factory) {
       return _factory(creds, transport);
     }
+    // LIVE-UNTESTED: the no-factory dispatch into the real transport. The
+    // injected-factory branch above is the only path unit tests exercise;
+    // this line only runs in production (no test cookie this run), so it
+    // joins the live-client block below under the coverage fence.
+    /* c8 ignore next */
     return buildLiveClient(creds, transport);
   })();
   return _productionClientPromise;

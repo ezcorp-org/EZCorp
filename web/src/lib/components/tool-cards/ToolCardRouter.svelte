@@ -12,6 +12,7 @@
 	import DesignBriefCard from "./DesignBriefCard.svelte";
 	import KokoroTtsPlayerCard from "./KokoroTtsPlayerCard.svelte";
 	import PriceChartCard from "./PriceChartCard.svelte";
+	import SubstackReviewCard from "./SubstackReviewCard.svelte";
 	import WeatherCard from "./WeatherCard.svelte";
 	import { parseWeatherPayload } from "./weather-card-logic.js";
 	import TimeClockCard from "./TimeClockCard.svelte";
@@ -85,6 +86,8 @@
 	<KokoroTtsPlayerCard {toolCall} {conversationId} {messageId} />
 {:else if cardName === 'PriceChartCard'}
 	<PriceChartCard {toolCall} {conversationId} {mode} />
+{:else if cardName === 'SubstackReviewCard'}
+	<SubstackReviewCard {toolCall} {conversationId} />
 {:else if shouldRenderWeatherCard}
 	<WeatherCard {toolCall} />
 {:else if shouldRenderTimeClockCard}

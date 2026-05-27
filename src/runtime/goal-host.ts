@@ -55,6 +55,7 @@ import { conversations, messages, runs } from "../db/schema";
 import { sql } from "drizzle-orm";
 import { resolveModel as defaultResolveModel } from "../providers/router";
 import { getCredential as defaultGetCredential } from "../providers/credentials";
+import { dequeue as dequeuePendingDefault } from "./pending-messages";
 import type { EzActionResult } from "./ez-actions/types";
 
 const log = logger.child("goal-host");
@@ -955,17 +956,13 @@ export class GoalHost {
     this.scanGoalConversationsFn =
       opts.scanGoalConversations ?? defaultScanGoalConversations;
     this.nowFn = opts.now ?? (() => Date.now());
-    this.dequeuePendingFn =
-      opts.dequeuePending ??
-      ((conversationId: string) => {
-        // Live wiring. Lazy require so test-only goal-hosts don't pull
-        // pending-messages into their dependency graph.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const mod = require("./pending-messages") as {
-          dequeue: (id: string) => unknown;
-        };
-        return mod.dequeue(conversationId);
-      });
+    // Live wiring via a static import (not a lazy `require`): a relative
+    // `require("./pending-messages")` is emitted verbatim by the production
+    // bundler (rolldown/svelte-adapter-bun) and fails to resolve, breaking
+    // `bun run build`. `pending-messages` is a pure in-memory module with no
+    // deps or cycle, so a static import is free; the `dequeuePending` test
+    // override still bypasses it entirely.
+    this.dequeuePendingFn = opts.dequeuePending ?? dequeuePendingDefault;
   }
 
   /** True when the feature flag is on (EZCORP_GOAL_ENABLED). */

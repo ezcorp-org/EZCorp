@@ -2,17 +2,17 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: 65-02 (Hybrid Search route — Wave 2; depends on 65-01's searchMessages())
+current_plan: 66-01 (Sidebar Search — next phase; depends on 65's /api/search/messages contract)
 status: completed
-stopped_at: Completed 65-01-PLAN.md
-last_updated: "2026-05-29T19:43:50.821Z"
-last_activity: "2026-05-29 — 65-01 landed: searchMessages() message-grained RRF builder (SRCH-02..07)"
+stopped_at: Completed 65-02-PLAN.md
+last_updated: "2026-05-29T19:54:00.280Z"
+last_activity: "2026-05-29 — 65-02 landed: GET /api/search/messages route + searchMessages() client contract (SRCH-01/03/08); Phase 65 complete"
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 7
-  completed_plans: 6
-  percent: 33
+  completed_plans: 7
+  percent: 50
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 65 — Hybrid Search SQL + API (IN PROGRESS — 65-01 of 2 plans landed)
-Current Plan: 65-02 (Hybrid Search route — Wave 2; depends on 65-01's searchMessages())
-Status: 65-01 complete — SRCH-02/03/04/05/06/07 satisfied by the RRF builder; SRCH-01/08 (route + degraded fallback) land in 65-02
-Last activity: 2026-05-29 — 65-01 landed: searchMessages() message-grained RRF builder (SRCH-02..07)
+Phase: 65 — Hybrid Search SQL + API (COMPLETE — 2 of 2 plans landed)
+Current Plan: 66-01 (Sidebar Search — next phase; depends on 65's /api/search/messages contract)
+Status: Phase 65 complete — 65-01 RRF builder (SRCH-02..07) + 65-02 route & client contract (SRCH-01/03/08); all SRCH-01..08 satisfied. Next: `/gsd:plan-phase 66` (or 67/68 — all depend only on 65/64, can run in parallel)
+Last activity: 2026-05-29 — 65-02 landed: GET /api/search/messages route + searchMessages() client contract (SRCH-01/03/08); Phase 65 complete
 
-Progress: [███       ] v1.5 33% — 2/6 phases complete (63 + 64); Phase 65 in flight
+Progress: [█████     ] v1.5 50% — 3/6 phases complete (63 + 64 + 65); 66/67/68 unblocked
 
 **v1.5 phase map (35/35 requirements, 100% coverage):**
 | Phase | Goal | Requirements | Depends on |
@@ -549,6 +549,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 64-embed-on-write-worker P01 | 15 | 2 tasks | 4 files |
 | Phase 64-embed-on-write-worker P02 | 10 | 2 tasks | 4 files |
 | Phase 65 P01 | 50min | 3 tasks | 4 files |
+| Phase 65 P02 | ~5min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -713,6 +714,8 @@ Plan 54-03 execution decisions:
 - [Phase 65]: 65-01: SRCH-05 needs SET hnsw.iterative_scan='relaxed_order' + a single-table ANN scan (message_chunks alone, conversation_id=ANY(ARRAY(scoped ids)), role/DISTINCT/joins moved OUTSIDE) to drive idx_message_chunks_embedding on PGlite 0.3.16/pgvector 0.8.0 — the plan's 'default behavior, no GUC' premise was live-probed FALSE.
 - [Phase 65]: 65-01: Wave 2 (65-02) builds /api/search/messages directly on searchMessages({projectId, query, mode, queryEmbedding, userId?, limit?, offset?}) → MessageSearchHit[]. searchMessages itself SETs the iterative_scan GUC and returns [] for a <2-char query or a null queryEmbedding in a vector-needing mode. RRF_K=60, exported. Snippet asymmetry: <mark> (ts_headline) for lexical/both, plain 35-word slice for semantic-only.
 - [Phase 65]: 65-01: PGlite-seed quirks for the route test — raw `INSERT INTO message_chunks` MUST pass an explicit id (raw SQL skips drizzle $defaultFn); a 'lexical-only' row needs a NULL embedding (ANN returns nearest-K regardless of distance, so a 'far' vector still surfaces in a tiny corpus); the SRCH-05 EXPLAIN proof needs a LARGE corpus (~2.5k chunks) for the HNSW cost crossover, NOT the plan's ≥100 floor.
+- [Phase 65]: 65-02: limit/offset handler-clamped to [1,50]/[0,inf) (not zod-rejected); only unknown mode 400s via zod enum
+- [Phase 65]: 65-02: degraded gate is server-owned — hybrid/semantic fall back to keyword (degraded:true, servedMode:keyword) on embedder-down or throw; clients always get a 200 envelope
 
 ### Pending Todos
 
@@ -738,6 +741,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T19:43:08.017Z
-Stopped at: Completed 65-01-PLAN.md
+Last session: 2026-05-29T19:53:43.588Z
+Stopped at: Completed 65-02-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

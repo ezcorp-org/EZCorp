@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: 66-01 (Sidebar Search — next phase; depends on 65's /api/search/messages contract)
+current_plan: 66-02 (sidebar wiring — next; consumes 66-01 helpers)
 status: completed
-stopped_at: Phase 66 context gathered
-last_updated: "2026-05-29T20:42:49.047Z"
-last_activity: "2026-05-29 — 65-02 landed: GET /api/search/messages route + searchMessages() client contract (SRCH-01/03/08); Phase 65 complete"
+stopped_at: Completed 66-01-PLAN.md
+last_updated: "2026-05-29T21:36:48.450Z"
+last_activity: "2026-05-29 — 66-01 landed: 3 pure search helpers + their unit tests + /api/search/messages e2e fixture mock (unblocks 66-02/03/04)"
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 11
+  completed_plans: 8
   percent: 50
 ---
 
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 65 — Hybrid Search SQL + API (COMPLETE — 2 of 2 plans landed)
-Current Plan: 66-01 (Sidebar Search — next phase; depends on 65's /api/search/messages contract)
-Status: Phase 65 complete — 65-01 RRF builder (SRCH-02..07) + 65-02 route & client contract (SRCH-01/03/08); all SRCH-01..08 satisfied. Next: `/gsd:plan-phase 66` (or 67/68 — all depend only on 65/64, can run in parallel)
-Last activity: 2026-05-29 — 65-02 landed: GET /api/search/messages route + searchMessages() client contract (SRCH-01/03/08); Phase 65 complete
+Phase: 66 — Sidebar Search (IN PROGRESS — Wave-0 infra landed)
+Current Plan: 66-02 (sidebar wiring — next; consumes 66-01 helpers)
+Status: 66-01 complete — Wave-0 pure helpers + e2e mock landed (UI-01..04 helper-level): resolveDeepLink (window/branch decision), sanitizeSnippet (DOMPurify <mark>-only), search-mode (global LS + groupHitsByConversation), and the /api/search/messages Playwright mock + makeSearchHit. 21/21 tests green. Next: 66-02 sidebar + 66-03 deep-link (consume these helpers) + 66-04 e2e (consume the mock).
+Last activity: 2026-05-29 — 66-01 landed: 3 pure search helpers + their unit tests + /api/search/messages e2e fixture mock (unblocks 66-02/03/04)
 
 Progress: [█████     ] v1.5 50% — 3/6 phases complete (63 + 64 + 65); 66/67/68 unblocked
 
@@ -550,6 +550,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 64-embed-on-write-worker P02 | 10 | 2 tasks | 4 files |
 | Phase 65 P01 | 50min | 3 tasks | 4 files |
 | Phase 65 P02 | ~5min | 3 tasks | 6 files |
+| Phase 66 P01 | 6min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -716,6 +717,8 @@ Plan 54-03 execution decisions:
 - [Phase 65]: 65-01: PGlite-seed quirks for the route test — raw `INSERT INTO message_chunks` MUST pass an explicit id (raw SQL skips drizzle $defaultFn); a 'lexical-only' row needs a NULL embedding (ANN returns nearest-K regardless of distance, so a 'far' vector still surfaces in a tiny corpus); the SRCH-05 EXPLAIN proof needs a LARGE corpus (~2.5k chunks) for the HNSW cost crossover, NOT the plan's ≥100 floor.
 - [Phase 65]: 65-02: limit/offset handler-clamped to [1,50]/[0,inf) (not zod-rejected); only unknown mode 400s via zod enum
 - [Phase 65]: 65-02: degraded gate is server-owned — hybrid/semantic fall back to keyword (degraded:true, servedMode:keyword) on embedder-down or throw; clients always get a 200 envelope
+- [Phase 66]: 66-01: deep-link test runs under vitest (.unit.test.ts) not bun test — resolveDeepLink transitively imports Svelte-rune inline-tool-store via load-messages.ts
+- [Phase 66]: 66-01: window-grow policy grows directly to distanceFromTail (minimal covering window); distanceFromTail = path.length - idx (pathToRoot is root->leaf, tail=1)
 
 ### Pending Todos
 
@@ -741,6 +744,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T20:42:49.043Z
-Stopped at: Phase 66 context gathered
+Last session: 2026-05-29T21:36:20.458Z
+Stopped at: Completed 66-01-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

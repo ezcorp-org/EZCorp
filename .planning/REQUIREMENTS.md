@@ -39,10 +39,10 @@ Requirements for the v1.5 milestone. Each maps to exactly one roadmap phase (63â
 
 ### Sidebar Search
 
-- [ ] **UI-01**: The conversation sidebar search offers a Hybrid / Keyword / Semantic mode toggle, defaulting to Hybrid
-- [ ] **UI-02**: The selected search mode persists across sessions (localStorage)
-- [ ] **UI-03**: Selecting a result navigates to the conversation and scrolls to the matching message with a brief highlight pulse
-- [ ] **UI-04**: Existing sidebar-search behavior (debounce, minimum query length, title matching, project + user scoping) is preserved
+- [x] **UI-01**: The conversation sidebar search offers a Hybrid / Keyword / Semantic mode toggle, defaulting to Hybrid
+- [x] **UI-02**: The selected search mode persists across sessions (localStorage)
+- [x] **UI-03**: Selecting a result navigates to the conversation and scrolls to the matching message with a brief highlight pulse
+- [x] **UI-04**: Existing sidebar-search behavior (debounce, minimum query length, title matching, project + user scoping) is preserved
 
 ### Command Palette Search
 
@@ -120,10 +120,10 @@ Which phases cover which requirements. Populated during roadmap creation (Phases
 | SRCH-06 | Phase 65 | Complete |
 | SRCH-07 | Phase 65 | Complete |
 | SRCH-08 | Phase 65 | Complete |
-| UI-01 | Phase 66 | Pending |
-| UI-02 | Phase 66 | Pending |
-| UI-03 | Phase 66 | Pending |
-| UI-04 | Phase 66 | Pending |
+| UI-01 | Phase 66 | Complete |
+| UI-02 | Phase 66 | Complete |
+| UI-03 | Phase 66 | Complete |
+| UI-04 | Phase 66 | Complete |
 | PAL-01 | Phase 67 | Pending |
 | PAL-02 | Phase 67 | Pending |
 | PAL-03 | Phase 67 | Pending |

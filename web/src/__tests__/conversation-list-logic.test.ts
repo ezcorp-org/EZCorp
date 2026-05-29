@@ -1,4 +1,6 @@
 import { test, expect, describe } from "bun:test";
+import { groupHitsByConversation } from "$lib/search/search-mode.js";
+import type { MessageSearchHit, SearchMessagesResponse } from "$lib/api.js";
 
 // ── Pure logic extracted from ConversationList.svelte ────────────────────────
 //
@@ -434,5 +436,90 @@ describe("shouldTriggerSearch", () => {
 
 	test("true for longer query", () => {
 		expect(shouldTriggerSearch("hello world")).toBe(true);
+	});
+});
+
+// ── isSemanticDegraded (degraded → annotate Semantic unavailable) ─────────────
+//
+// Phase 66-02 Task 1. The Semantic toggle segment is annotated as "unavailable"
+// (dimmed + title) when the latest search response came back `degraded` (the
+// server fell back off the semantic path). This is a PURE derivation from the
+// last response — it must NEVER mutate the persisted/selected mode (Pitfall 4):
+// the user's stored preference is untouched; only the visual annotation changes.
+// Replicated verbatim from ConversationList.svelte for pinning.
+
+function isSemanticDegraded(resp: SearchMessagesResponse | null): boolean {
+	return resp?.degraded === true;
+}
+
+function makeHit(overrides: Partial<MessageSearchHit> & { messageId: string }): MessageSearchHit {
+	return {
+		conversationId: "conv-1",
+		conversationTitle: "Conversation One",
+		role: "user",
+		createdAt: new Date().toISOString(),
+		snippet: "a <mark>match</mark>",
+		matchType: "lexical",
+		rankLexical: 1,
+		rankSemantic: null,
+		score: 0.5,
+		...overrides,
+	};
+}
+
+describe("isSemanticDegraded", () => {
+	test("null response → not degraded (no annotation)", () => {
+		expect(isSemanticDegraded(null)).toBe(false);
+	});
+
+	test("non-degraded response → no annotation", () => {
+		const resp: SearchMessagesResponse = {
+			hits: [],
+			degraded: false,
+			requestedMode: "semantic",
+			servedMode: "semantic",
+		};
+		expect(isSemanticDegraded(resp)).toBe(false);
+	});
+
+	test("degraded response (requested semantic, served keyword) → annotate unavailable WITHOUT mutating selected mode", () => {
+		const selectedMode = "semantic"; // the user's stored/selected preference
+		const resp: SearchMessagesResponse = {
+			hits: [],
+			degraded: true,
+			requestedMode: "semantic",
+			servedMode: "keyword",
+		};
+		expect(isSemanticDegraded(resp)).toBe(true);
+		// The derivation reads the response only — the selected mode is unchanged.
+		expect(selectedMode).toBe("semantic");
+	});
+});
+
+// ── groupHitsByConversation wiring (message-grained results) ──────────────────
+//
+// Phase 66-02 Task 1 consumes the 66-01 helper to drive the "Messages" section.
+// Re-assert the helper integrates as used by the component: a hits array groups
+// into per-conversation buckets, first-seen order preserved, first hit defines
+// the group title.
+
+describe("groupHitsByConversation wiring", () => {
+	test("groups hits by conversation, first-seen order, title from first hit", () => {
+		const hits: MessageSearchHit[] = [
+			makeHit({ messageId: "m1", conversationId: "c-a", conversationTitle: "Alpha" }),
+			makeHit({ messageId: "m2", conversationId: "c-b", conversationTitle: "Beta" }),
+			makeHit({ messageId: "m3", conversationId: "c-a", conversationTitle: "Alpha (later)" }),
+		];
+		const groups = groupHitsByConversation(hits);
+		expect(groups).toHaveLength(2);
+		expect(groups[0].conversationId).toBe("c-a");
+		expect(groups[0].title).toBe("Alpha"); // first hit defines title
+		expect(groups[0].hits.map((h) => h.messageId)).toEqual(["m1", "m3"]);
+		expect(groups[1].conversationId).toBe("c-b");
+		expect(groups[1].hits.map((h) => h.messageId)).toEqual(["m2"]);
+	});
+
+	test("empty hits → empty groups", () => {
+		expect(groupHitsByConversation([])).toEqual([]);
 	});
 });

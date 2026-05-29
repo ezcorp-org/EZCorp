@@ -3,10 +3,18 @@
 		fetchConversations,
 		deleteConversation,
 		updateConversation,
-		searchConversations,
+		searchMessages,
 		type Conversation,
-		type SearchResult,
+		type SearchMode,
+		type MessageSearchHit,
+		type SearchMessagesResponse,
 	} from "$lib/api.js";
+	import {
+		loadSearchMode,
+		persistSearchMode,
+		groupHitsByConversation,
+	} from "$lib/search/search-mode.js";
+	import { sanitizeSnippet } from "$lib/search/snippet-sanitize.js";
 	import {
 		groupConversations,
 		unreadForkCount,
@@ -25,7 +33,10 @@
 		projectId: string;
 		activeConversationId?: string;
 		oncreate: () => void;
-		onselect: (id: string) => void;
+		// Widened (66-02): message rows pass an optional second arg so the
+		// consumer can deep-link to a specific message (deep-link plumbing
+		// lands in 66-03; this plan only emits the messageId).
+		onselect: (id: string, messageId?: string) => void;
 	} = $props();
 
 	const PAGE_SIZE = 30;
@@ -46,9 +57,18 @@
 	// Search state
 	let searchOpen = $state(false);
 	let searchQuery = $state("");
-	let searchResults = $state<SearchResult[]>([]);
 	let searchLoading = $state(false);
 	let searchInputEl = $state<HTMLInputElement | null>(null);
+
+	// Search mode (UI-01/UI-02): initialized from the GLOBAL localStorage key,
+	// defaulting to "hybrid". Only an explicit user toggle persists — a degraded
+	// server response NEVER mutates this value (Pitfall 4).
+	let searchMode = $state<SearchMode>(loadSearchMode());
+
+	// Message-grained results (UI-04): the "Messages" section owns content
+	// matches via the Phase 65 /api/search/messages contract.
+	let messageResults = $state<MessageSearchHit[]>([]);
+	let lastResponse = $state<SearchMessagesResponse | null>(null);
 
 	// Debounce for API search
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -61,7 +81,8 @@
 	function closeSearch() {
 		searchOpen = false;
 		searchQuery = "";
-		searchResults = [];
+		messageResults = [];
+		lastResponse = null;
 		searchLoading = false;
 		clearTimeout(searchTimer);
 	}
@@ -69,61 +90,65 @@
 	function handleSearchInput() {
 		clearTimeout(searchTimer);
 		if (searchQuery.length < 2) {
-			searchResults = [];
+			messageResults = [];
+			lastResponse = null;
 			searchLoading = false;
 			return;
 		}
+		const q = searchQuery;
+		const mode = searchMode;
 		searchLoading = true;
 		searchTimer = setTimeout(async () => {
 			try {
-				searchResults = await searchConversations(projectId, searchQuery);
+				const resp = await searchMessages(projectId, q, { mode });
+				messageResults = resp.hits;
+				lastResponse = resp;
 			} catch {
-				searchResults = [];
+				messageResults = [];
+				lastResponse = null;
 			}
 			searchLoading = false;
 		}, 300);
+	}
+
+	// UI-01/UI-02: explicit mode selection. Persist to the global key, then
+	// re-run the current query in the new mode through the SAME 300ms debounce
+	// + <2-char guard (do NOT bypass them). Never persists on degrade.
+	function selectMode(next: SearchMode) {
+		searchMode = next;
+		persistSearchMode(next);
+		handleSearchInput();
 	}
 
 	function handleSearchKeydown(e: KeyboardEvent) {
 		if (e.key === "Escape") closeSearch();
 	}
 
-	// Client-side title filter (instant, no debounce)
-	type SearchableConversation = Conversation & { snippet?: string };
-
-	let filteredConversations = $derived((): SearchableConversation[] => {
+	// Client-side title filter (instant, no debounce). UI-04: title matching
+	// continues to work, now TITLE-ONLY — the "Messages" section owns content
+	// matches, so we no longer merge the conversation-search content results
+	// (avoids double-surfacing the same conversation across both sections).
+	let filteredConversations = $derived((): Conversation[] => {
 		if (!searchOpen || searchQuery.length === 0) return [];
 		const q = searchQuery.toLowerCase();
-		// Title matches from local list
-		const titleMatches = conversations.filter((c) =>
-			c.title.toLowerCase().includes(q),
-		);
-		// Merge with API results (content matches that aren't already title-matched)
-		const titleIds = new Set(titleMatches.map((c) => c.id));
-		const contentMatches: SearchableConversation[] = searchResults
-			.filter((r) => !titleIds.has(r.id))
-			.map((r) => {
-				// Find the conversation object if we have it, otherwise create a minimal one
-				const conv = conversations.find((c) => c.id === r.id);
-				return {
-					id: r.id,
-					projectId,
-					title: r.title,
-					model: conv?.model ?? null,
-					provider: conv?.provider ?? null,
-					systemPrompt: conv?.systemPrompt ?? null,
-					agentConfigId: conv?.agentConfigId ?? null,
-					modeId: conv?.modeId ?? null,
-					test: conv?.test ?? null,
-					createdAt: conv?.createdAt ?? r.updatedAt,
-					updatedAt: r.updatedAt,
-					snippet: r.snippet,
-				};
-			});
-		return [...titleMatches, ...contentMatches];
+		return conversations.filter((c) => c.title.toLowerCase().includes(q));
 	});
 
+	// Message hits grouped per conversation (66-01 helper).
+	let messageGroups = $derived(groupHitsByConversation(messageResults));
+
+	// Degraded annotation: dim the Semantic segment when the latest response
+	// fell back off the semantic path. Pure read — never mutates searchMode.
+	let semanticDegraded = $derived(lastResponse?.degraded === true);
+
 	let isSearchActive = $derived(searchOpen && searchQuery.length > 0);
+
+	// Match-type glyph: distinct icon per lexical / semantic / both.
+	function matchTypeGlyph(t: MessageSearchHit["matchType"]): string {
+		if (t === "semantic") return "≈"; // approximate / vector match
+		if (t === "both") return "⊕"; // lexical + semantic
+		return "“"; // lexical / keyword match
+	}
 
 	export function refresh() {
 		loadConversations();
@@ -325,6 +350,50 @@
 				</svg>
 			</button>
 		</div>
+		<!-- UI-01: search-mode toggle (Hybrid / Keyword / Semantic), defaults Hybrid -->
+		<div
+			class="flex items-stretch gap-1 border-b border-[var(--color-border)] px-3 py-2"
+			role="group"
+			aria-label="Search mode"
+			data-testid="search-mode-toggle"
+		>
+			<button
+				type="button"
+				onclick={() => selectMode("hybrid")}
+				aria-pressed={searchMode === "hybrid"}
+				class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors
+					{searchMode === 'hybrid'
+						? 'bg-blue-600 text-white'
+						: 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-secondary)]'}"
+			>
+				Hybrid
+			</button>
+			<button
+				type="button"
+				onclick={() => selectMode("keyword")}
+				aria-pressed={searchMode === "keyword"}
+				class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors
+					{searchMode === 'keyword'
+						? 'bg-blue-600 text-white'
+						: 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-secondary)]'}"
+			>
+				Keyword
+			</button>
+			<button
+				type="button"
+				onclick={() => selectMode("semantic")}
+				aria-pressed={searchMode === "semantic"}
+				title={semanticDegraded ? "Semantic search unavailable — falling back to keyword" : undefined}
+				class="flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors
+					{searchMode === 'semantic'
+						? 'bg-blue-600 text-white'
+						: 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-tertiary)] hover:text-[var(--color-text-secondary)]'}
+					{semanticDegraded ? 'opacity-40' : ''}"
+				data-testid="search-mode-semantic"
+			>
+				Semantic
+			</button>
+		</div>
 	{/if}
 
 	<div class="flex-1 overflow-y-auto">
@@ -333,29 +402,73 @@
 				<SkeletonLoader type="list" rows={8} />
 			</div>
 		{:else if isSearchActive}
-			<!-- Search results view -->
-			{#if filteredConversations().length === 0 && !searchLoading}
-				<p class="p-4 text-xs text-[var(--color-text-muted)]">No matching conversations</p>
+			<!-- Search results view: two labeled sections (Conversations + Messages) -->
+			{#if semanticDegraded}
+				<!-- Non-blocking degraded notice (UI): does NOT mutate the stored mode -->
+				<div
+					class="border-b border-[var(--color-border)] bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300"
+					role="status"
+					data-testid="search-degraded-notice"
+				>
+					Semantic search unavailable — showing keyword matches.
+				</div>
+			{/if}
+			{#if filteredConversations().length === 0 && messageGroups.length === 0 && !searchLoading}
+				<p class="p-4 text-xs text-[var(--color-text-muted)]" data-testid="search-empty">No matching messages.</p>
 			{:else}
-				{#each filteredConversations() as conv (conv.id)}
-					{@const isActive = activeConversationId === conv.id}
-					<button
-						onclick={() => onselect(conv.id)}
-						class="flex w-full flex-col px-3 py-2 text-left transition-colors
-							{isActive ? 'bg-[var(--color-surface-tertiary)]' : 'hover:bg-[var(--color-surface-tertiary)]/70'}"
-					>
-						<span class="truncate text-sm {isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)]'}">
-							<MentionText text={conv.title} />
+				{#if filteredConversations().length > 0}
+					<div class="px-3 pt-3 pb-1">
+						<span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+							Conversations
 						</span>
-						{#if conv.snippet}
-							<span class="line-clamp-1 text-[10px] text-[var(--color-text-muted)] [&_mark]:bg-yellow-500/30 [&_mark]:text-yellow-200 [&_mark]:rounded-sm">
-								{@html conv.snippet}
+					</div>
+					{#each filteredConversations() as conv (conv.id)}
+						{@const isActive = activeConversationId === conv.id}
+						<button
+							onclick={() => onselect(conv.id)}
+							class="flex w-full flex-col px-3 py-2 text-left transition-colors
+								{isActive ? 'bg-[var(--color-surface-tertiary)]' : 'hover:bg-[var(--color-surface-tertiary)]/70'}"
+						>
+							<span class="truncate text-sm {isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)]'}">
+								<MentionText text={conv.title} />
 							</span>
-						{:else}
 							<span class="text-[10px] text-[var(--color-text-muted)]">{relativeTime(conv.updatedAt)}</span>
-						{/if}
-					</button>
-				{/each}
+						</button>
+					{/each}
+				{/if}
+
+				{#if messageGroups.length > 0}
+					<div class="px-3 pt-3 pb-1">
+						<span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+							Messages
+						</span>
+					</div>
+					{#each messageGroups as group (group.conversationId)}
+						<div class="px-3 pt-1.5 pb-0.5">
+							<span class="truncate text-[11px] font-medium text-[var(--color-text-secondary)]">
+								<MentionText text={group.title} />
+							</span>
+						</div>
+						{#each group.hits as hit (hit.messageId)}
+							<button
+								onclick={() => onselect(hit.conversationId, hit.messageId)}
+								class="flex w-full flex-col gap-0.5 px-3 py-1.5 pl-5 text-left transition-colors hover:bg-[var(--color-surface-tertiary)]/70"
+								data-testid="message-hit"
+							>
+								<span class="flex items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+									<span
+										class="shrink-0 rounded bg-[var(--color-surface-tertiary)] px-1 py-0.5 text-[9px] font-medium uppercase leading-none"
+									>{hit.role}</span>
+									<span class="shrink-0" title="{hit.matchType} match" aria-hidden="true">{matchTypeGlyph(hit.matchType)}</span>
+									<span class="ml-auto shrink-0">{relativeTime(hit.createdAt)}</span>
+								</span>
+								<span class="line-clamp-2 text-[11px] text-[var(--color-text-secondary)] [&_mark]:bg-yellow-500/30 [&_mark]:text-yellow-200 [&_mark]:rounded-sm">
+									{@html sanitizeSnippet(hit.snippet)}
+								</span>
+							</button>
+						{/each}
+					{/each}
+				{/if}
 			{/if}
 		{:else if grouped().length === 0}
 			<p class="p-4 text-xs text-[var(--color-text-muted)]">No conversations yet</p>

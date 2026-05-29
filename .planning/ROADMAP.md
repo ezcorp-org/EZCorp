@@ -7,8 +7,20 @@
 - ✅ **v1.2 Textbox Shortcuts & Better Extensions** — Phases 31-48 (shipped 2026-05-06)
 - ✅ **v1.3 Security & Permissions** — Phases 49-53 + parallel tracks (shipped 2026-05-09)
 - ✅ **v1.4 Trust Hardening & v1.3 Closeout** — Phases 54-62 (shipped 2026-05-13)
+- 🔨 **v1.5 Hybrid Chat Search** — Phases 63-68 (in progress, roadmap defined 2026-05-29)
 
 ## Phases
+
+### v1.5 Hybrid Chat Search (Phases 63-68) — ACTIVE
+
+**Milestone Goal:** Make every past chat findable instantly — add semantic (pgvector/HNSW) recall alongside the existing lexical (Postgres FTS) precision, surfaced through the sidebar search box and a new Cmd+K palette. Additive only; build order is unanimous across all four research streams: schema → embed-on-write worker → hybrid SQL + API → (sidebar ∥ palette ∥ backfill).
+
+- [ ] **Phase 63: Indexing Primitives** — schema (`message_chunks` HNSW + `message_embed_outbox`), chunker, transactional outbox enqueue, embedder truncation fix, test-harness widening (IDX-01..07)
+- [ ] **Phase 64: Embed-on-Write Worker** — background outbox drainer on the HostMaintenanceDaemon pattern with degraded-mode gate, retry/backoff, boot recovery, kill-switch (ING-01..05)
+- [ ] **Phase 65: Hybrid Search SQL + API** — single-CTE RRF query builder + `/api/search/messages` endpoint with hybrid/keyword/semantic modes, in-CTE tenant scoping, snippet asymmetry, match-type tagging, degraded fallback (SRCH-01..08)
+- [ ] **Phase 66: Sidebar Search** — Hybrid/Keyword/Semantic mode toggle on `ConversationList.svelte` with localStorage persistence + deep-link to matching message (UI-01..04)
+- [ ] **Phase 67: Command Palette Search** — Cmd+K global search palette extending `CommandPalette.svelte`, Cmd+Shift+P rebind, grouped sections, match-type icons, deep-link, a11y, mobile BottomSheet fallback (PAL-01..07)
+- [ ] **Phase 68: Backfill + Operations** — resumable idempotent backfill script with throttle, post-batch ANALYZE, and embedding-progress observability (OPS-01..04)
 
 <details>
 <summary>✅ v1.0 MVP (Phases 1-11) — SHIPPED 2026-03-10</summary>
@@ -122,23 +134,99 @@ Full details: `.planning/milestones/v1.4-ROADMAP.md` and `.planning/milestones/v
 
 </details>
 
+## Phase Details
+
+### Phase 63: Indexing Primitives
+**Goal**: The durable indexing foundation exists — chat messages get chunked and enqueued for embedding transactionally at the write boundary, on the correct (HNSW) index type, with the pre-existing embedder truncation defect fixed and the test harness hardened so no downstream search test can flake.
+**Depends on**: Nothing (foundation — universal prerequisite for all v1.5 work)
+**Requirements**: IDX-01, IDX-02, IDX-03, IDX-04, IDX-05, IDX-06, IDX-07
+**Success Criteria** (what must be TRUE):
+  1. Creating a user or assistant message writes exactly one `message_embed_outbox` row in the same transaction as the message insert — kill the process between the two and no message ever exists without its embed job (and no embed job without its message).
+  2. Creating a system- or tool-role message writes NO outbox row — templated prompts and tool JSON are excluded from the index at the write boundary.
+  3. Deleting a message (or its parent conversation) removes all of that message's `message_chunks` rows automatically via `ON DELETE CASCADE`, with no new code in any delete path.
+  4. The `message_chunks` table carries a `vector(384)` embedding on an HNSW index (verified `indexdef ILIKE '%hnsw%'`, NOT ivfflat) plus an `embedding_model_id` column recording which model produced each chunk.
+  5. Feeding the embedder a 10,000-character string produces a result truncated to the model's 256-token limit (explicit `max_length: 256` + `truncation: true`), and the full embedding-touching test suite runs green under parallel `bun test` (`embeddings.ts` registered in `mock-cleanup.ts MODULE_PATHS`).
+**Plans**: 3 plans (2 waves)
+  - [ ] 63-01-PLAN.md — Embedder primitives: EMBEDDING_MODEL_ID + 256-token truncation fix + getTokenizer + pure token-aware chunker + isEmbedEligible; IDX-07 regression pin (IDX-01/05/06/07, wave 1)
+  - [ ] 63-02-PLAN.md — Schema + migration: message_chunks (vector(384) HNSW, embedding_model_id, ON DELETE CASCADE) + message_embed_outbox; schema/HNSW/CASCADE tests (IDX-02/03, wave 1)
+  - [ ] 63-03-PLAN.md — Transactional write boundary: db.transaction in createMessage + in-tx outbox enqueue + edit re-enqueue (IDX-04/05, wave 2)
+
+### Phase 64: Embed-on-Write Worker
+**Goal**: A background worker turns enqueued outbox jobs into searchable `message_chunks` without ever touching the chat streaming/finalize hot path, surviving crashes, embedder unavailability, and poison pills.
+**Depends on**: Phase 63 (worker drains the outbox and writes the chunks defined there)
+**Requirements**: ING-01, ING-02, ING-03, ING-04, ING-05
+**Success Criteria** (what must be TRUE):
+  1. Sending 100 chat messages drains the outbox into populated `message_chunks` rows on the worker's own schedule, while streaming finalize latency stays unchanged (embedding never blocks the SSE turn-end).
+  2. When the embedder is not ready (degraded mode), the worker pauses without consuming jobs and resumes automatically once `isEmbeddingReady()` returns true — no jobs are lost or errored during the pause.
+  3. A job that repeatedly fails retries with backoff and stops after a capped number of attempts, leaving the failed row inspectable rather than looping forever.
+  4. After a crash mid-embed, the next boot clears stale in-flight locks (`runBacklogRecovery`) so every previously-claimed-but-unfinished message gets re-drained — no message is permanently stuck.
+  5. Setting the kill-switch environment variable disables the worker entirely; chat continues to function and the outbox simply accumulates until the worker is re-enabled.
+**Plans**: TBD
+
+### Phase 65: Hybrid Search SQL + API
+**Goal**: A single authenticated endpoint returns ranked, tenant-scoped, message-grained search hits that fuse lexical and semantic signal in one SQL round-trip, with honest snippets and a graceful keyword-only fallback when the embedder is down.
+**Depends on**: Phase 64 (the semantic leg returns nothing until `message_chunks` is populated by the worker)
+**Requirements**: SRCH-01, SRCH-02, SRCH-03, SRCH-04, SRCH-05, SRCH-06, SRCH-07, SRCH-08
+**Success Criteria** (what must be TRUE):
+  1. `GET /api/search/messages?q=…` returns ranked message hits for an authenticated, read-scoped caller; an unauthenticated or out-of-scope request is rejected.
+  2. Default (hybrid) mode fuses FTS and vector results via Reciprocal Rank Fusion in one CTE-based query; `mode=keyword` and `mode=semantic` return the single-leg variants.
+  3. Every hit belongs to the requesting user's active project, with `test=true` conversations excluded, and `EXPLAIN ANALYZE` shows the tenant filter applied inside/before the ANN scan (no post-filter recall collapse).
+  4. A lexical hit returns a `<mark>`-highlighted snippet; a semantic-only hit returns a plain ±window snippet (no misleading fake highlight), and each hit is tagged with its match type (lexical / semantic / both).
+  5. With the embedder unavailable, the endpoint returns keyword-mode results and signals the degraded state to the client instead of erroring.
+**Plans**: TBD
+**Research flag**: `/gsd:research-phase` recommended — (a) RRF `k`-value at chat-corpus scale (canonical 60 vs likely ~20; needs NDCG@10 measurement against a curated corpus); (b) `hnsw.iterative_scan` availability across PGlite + external-Postgres pgvector versions (feature-detect with two-stage fallback). New API surface ships with 100% unit + integration coverage, CI-gated per-file.
+
+### Phase 66: Sidebar Search
+**Goal**: Users can search the conversation sidebar in Hybrid, Keyword, or Semantic mode, with the chosen mode remembered across sessions, and jump straight to the matching message — all without losing any existing sidebar-search behavior.
+**Depends on**: Phase 65 (consumes the `/api/search/messages` contract). Parallelizable with Phase 67.
+**Requirements**: UI-01, UI-02, UI-03, UI-04
+**Success Criteria** (what must be TRUE):
+  1. The sidebar search offers a Hybrid / Keyword / Semantic toggle defaulting to Hybrid, and the selected mode persists across sessions via localStorage.
+  2. Selecting a result navigates to the conversation and scrolls to the matching message with a brief highlight pulse.
+  3. Existing sidebar-search behavior — debounce, minimum query length, title matching, project + user scoping — continues to work unchanged.
+  4. Lexical results keep their `<mark>` highlight rendering; semantic-only results render their plain ±window snippet in the same component without a fake highlight.
+**Plans**: TBD
+**Note**: User-visible surface — ships with 100% unit + integration + e2e (Playwright) coverage, CI-gated per-file on new paths.
+
+### Phase 67: Command Palette Search
+**Goal**: Cmd+K opens a global search palette from anywhere in the app — built by extending the existing command palette, not a parallel component — that deep-links to any matching message, is fully keyboard-accessible, and falls back gracefully on mobile.
+**Depends on**: Phase 65 (consumes the `/api/search/messages` contract). Parallelizable with Phase 66.
+**Requirements**: PAL-01, PAL-02, PAL-03, PAL-04, PAL-05, PAL-06, PAL-07
+**Success Criteria** (what must be TRUE):
+  1. Cmd+K (Ctrl+K) opens a global search palette from anywhere in the app via the existing `CommandPalette.svelte`, and the previous command-palette action is rebound to Cmd+Shift+P through the shortcut registry without breaking users' custom overrides.
+  2. With a conversation active, results are grouped into "In this conversation" and "Other conversations"; each result row shows a match-type icon plus a snippet.
+  3. Selecting a result deep-links to the matching message (scroll into view + highlight pulse).
+  4. The palette is fully keyboard-navigable (arrows / Enter / Esc) and accessible (ARIA dialog, focus trap, focus restore on close).
+  5. On mobile, the palette falls back to the existing `BottomSheet` pattern shipped in v1.4.
+**Plans**: TBD
+**Research flag**: `/gsd:research-phase` recommended — confirm the `CommandPalette.svelte` extension point (existing sub-view vs new sibling), the mobile `BottomSheet` adapter fit, and that the Cmd+K ↔ Cmd+Shift+P swap doesn't collide with extension-registered shortcuts. User-visible surface — ships with 100% unit + integration + e2e (Playwright) coverage, CI-gated per-file on new paths.
+
+### Phase 68: Backfill + Operations
+**Goal**: An operator can index an existing install's entire eligible message history with one resumable, idempotent script that yields to live traffic, keeps the query planner's statistics fresh, and exposes embedding progress.
+**Depends on**: Phase 64 (the running worker is what actually drains the backfill-enqueued jobs). Decoupled from Phases 66 and 67.
+**Requirements**: OPS-01, OPS-02, OPS-03, OPS-04
+**Success Criteria** (what must be TRUE):
+  1. Running the backfill script enqueues embedding jobs for all existing eligible (user/assistant) messages; re-running it is safe and adds no duplicates (`ON CONFLICT DO NOTHING`), and killing it mid-run then re-running resumes cleanly.
+  2. During a large backfill, the script throttles itself so live chat traffic is not starved — interactive chat latency stays unaffected.
+  3. `ANALYZE` runs after backfill batches so the planner has fresh statistics (PGlite has no autovacuum), and the HNSW index is actually used post-backfill.
+  4. An operator can observe embedding progress — outbox backlog depth and `message_chunks` coverage.
+**Plans**: TBD
+**Note**: Operator-facing surface — ships with unit + integration coverage on the script and progress-visibility paths.
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order. Phase 55 (B.1) MUST start ≥7 days before Phase 58 (B.2) to satisfy the seccomp soak window. Phase 54 (A) MUST land before Phase 59 (F) because CC1 changes `loadConversationOverride` error shape. Phases 56 (D) and 57 (E) parallelize with the security track — different files. Phase 60 (G) sequenced last so triage findings inform retro-claim invariants.
+Phases execute in numeric order with the unanimous research build order: 63 (foundation) → 64 (worker) → 65 (search SQL + API) → then 66, 67, 68 in parallel. Hard dependencies: 64→63 (worker drains the outbox), 65→64 (semantic leg empty until chunks exist), 66→65 and 67→65 (both consume the same endpoint contract), 68→64 (worker drains the backfill enqueue). Phases 66, 67, 68 are mutually independent once 65 lands. **Critical correction carried into every vector-touching phase: the index type is HNSW, NOT ivfflat (verified `src/db/migrate.ts:173,209`).** Phases 65 and 67 are flagged for `/gsd:research-phase` during planning.
 
-| Phase | Milestone | Plans Complete | Status | Completed |
-|-------|-----------|----------------|--------|-----------|
-| 54. Security Backbone Hardening | 3/3 | Complete    | 2026-05-11 | - |
-| 55. MCP Stage 1 (DNS + tmpfs + seccomp log) | 2/3 | Complete    | 2026-05-11 | - |
-| 56. Per-Capability TTL UI | 4/4 | Complete    | 2026-05-11 | - |
-| 57. Phase 49 Mobile UX Deferred | 7/7 | Complete   | 2026-05-12 | - |
-| 58. MCP Stage 2 (seccomp enforce + netns) | 3/3 | Complete    | 2026-05-12 | - |
-| 59. Test Debt Repair | 8/8 | Complete   | 2026-05-13 | - |
-| 60. Audit-Claim & Docs Polish | 4/4 | Complete    | 2026-05-13 | - |
-| 61. Test Debt Follow-up — Feature-Rework Specs | 5/4 | Complete    | 2026-05-13 | - |
-| 62. Test Debt Continuation — Agent-Personas Specs + Coverage | 9/9 | Complete    | 2026-05-13 | - |
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 63. Indexing Primitives | 0/TBD | Not started | - |
+| 64. Embed-on-Write Worker | 0/TBD | Not started | - |
+| 65. Hybrid Search SQL + API | 0/TBD | Not started | - |
+| 66. Sidebar Search | 0/TBD | Not started | - |
+| 67. Command Palette Search | 0/TBD | Not started | - |
+| 68. Backfill + Operations | 0/TBD | Not started | - |
 
 ---
 
-*Last updated: 2026-05-13 — v1.4 SHIPPED. All 9 phases (54-62) complete; milestone archived to `.planning/milestones/v1.4-ROADMAP.md`. v1.5 milestone not yet defined.*
+*Last updated: 2026-05-29 — v1.5 Hybrid Chat Search roadmap created. Phases 63-68 defined; 35/35 v1.5 requirements mapped (100% coverage). Next: `/gsd:plan-phase 63`.*

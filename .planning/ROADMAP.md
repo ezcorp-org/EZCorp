@@ -225,7 +225,7 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 63. Indexing Primitives | 3/3 | Complete    | 2026-05-29 |
-| 64. Embed-on-Write Worker | 2/2 | Complete   | 2026-05-29 |
+| 64. Embed-on-Write Worker | 2/2 | Complete    | 2026-05-29 |
 | 65. Hybrid Search SQL + API | 0/TBD | Not started | - |
 | 66. Sidebar Search | 0/TBD | Not started | - |
 | 67. Command Palette Search | 0/TBD | Not started | - |

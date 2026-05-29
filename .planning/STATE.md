@@ -5,7 +5,7 @@ milestone_name: Hybrid Chat Search
 current_plan: "— (Phase 63 done; next: Phase 64 Embed-on-Write Worker)"
 status: planning
 stopped_at: Completed 64-02-PLAN.md
-last_updated: "2026-05-29T16:09:30.606Z"
+last_updated: "2026-05-29T16:15:09.945Z"
 last_activity: "2026-05-29 — 63-03 landed: transactional createMessage + embed-outbox enqueue (IDX-04/05)"
 progress:
   total_phases: 6

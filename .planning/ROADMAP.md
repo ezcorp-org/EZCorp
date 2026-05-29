@@ -177,8 +177,13 @@ Plans:
   3. Every hit belongs to the requesting user's active project, with `test=true` conversations excluded, and `EXPLAIN ANALYZE` shows the tenant filter applied inside/before the ANN scan (no post-filter recall collapse).
   4. A lexical hit returns a `<mark>`-highlighted snippet; a semantic-only hit returns a plain ±window snippet (no misleading fake highlight), and each hit is tagged with its match type (lexical / semantic / both).
   5. With the embedder unavailable, the endpoint returns keyword-mode results and signals the degraded state to the client instead of erroring.
-**Plans**: TBD
-**Research flag**: `/gsd:research-phase` recommended — (a) RRF `k`-value at chat-corpus scale (canonical 60 vs likely ~20; needs NDCG@10 measurement against a curated corpus); (b) `hnsw.iterative_scan` availability across PGlite + external-Postgres pgvector versions (feature-detect with two-stage fallback). New API surface ships with 100% unit + integration coverage, CI-gated per-file.
+**Plans**: 2 plans (2 waves)
+
+Plans:
+- [ ] 65-01-PLAN.md — Message-grained RRF query builder (`src/db/queries/message-search.ts`): single-CTE FTS+vector fusion (k=60), in-CTE tenant scoping, snippet asymmetry, match-type tagging + EXPLAIN-ANALYZE filter-inside-HNSW proof (SRCH-02/03/04/05/06/07, wave 1)
+- [ ] 65-02-PLAN.md — `GET /api/search/messages` route (auth/read-scope, zod mode-enum + clamp, degraded envelope) + `searchMessages()` client helper & contract types in `web/src/lib/api.ts` + api-registry row (SRCH-01/03/08, wave 2)
+
+**Research flag (RESOLVED in 65-RESEARCH.md):** (a) RRF `k`-value — ship `k=60` as a named constant; NDCG@10 relevance tuning deferred to RANK-01 (v2, no labeled corpus exists). (b) `hnsw.iterative_scan` — live-probed PGlite bundles pgvector 0.8.0, which applies the tenant filter inside the HNSW Index Scan with NO GUC, so no feature-detection / two-stage fallback is needed; external Postgres pinned to pgvector ≥ 0.8.0 in docs. New API surface ships 100% unit + integration coverage, CI-gated per-file.
 
 ### Phase 66: Sidebar Search
 **Goal**: Users can search the conversation sidebar in Hybrid, Keyword, or Semantic mode, with the chosen mode remembered across sessions, and jump straight to the matching message — all without losing any existing sidebar-search behavior.
@@ -226,11 +231,11 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 |-------|----------------|--------|-----------|
 | 63. Indexing Primitives | 3/3 | Complete    | 2026-05-29 |
 | 64. Embed-on-Write Worker | 2/2 | Complete    | 2026-05-29 |
-| 65. Hybrid Search SQL + API | 0/TBD | Not started | - |
+| 65. Hybrid Search SQL + API | 0/2 | Planned     | - |
 | 66. Sidebar Search | 0/TBD | Not started | - |
 | 67. Command Palette Search | 0/TBD | Not started | - |
 | 68. Backfill + Operations | 0/TBD | Not started | - |
 
 ---
 
-*Last updated: 2026-05-29 — Phase 64 planned (2 plans, 2 waves). Next: `/gsd:execute-phase 64`.*
+*Last updated: 2026-05-29 — Phase 65 planned (2 plans, 2 waves; SRCH-01..08 covered). Next: `/gsd:execute-phase 65`.*

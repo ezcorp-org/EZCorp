@@ -1,13 +1,20 @@
 // Local embedding generation using Transformers.js (all-MiniLM-L6-v2)
 import { pipeline, type FeatureExtractionPipeline, type PreTrainedTokenizer } from "@huggingface/transformers";
 import { EMBEDDING_DIMENSIONS } from "./types";
+import { CHUNK_TOKENS } from "./message-chunker";
 
 /**
  * Single source of truth for embedder identity. Encodes both the model and
  * its 384-dim vector width so a future model/dim swap is a plain string
- * compare (IDX-03). Later plans import this — never re-literal the id.
+ * compare (IDX-03). Later plans import this — never re-literal the id. The
+ * bare model name passed to pipeline() is DERIVED from this constant
+ * (suffix stripped), so the loaded model can never drift from the id we
+ * record in the `embedding_model_id` column.
  */
 export const EMBEDDING_MODEL_ID = "Xenova/all-MiniLM-L6-v2@384";
+
+/** Model name (no `@dim` suffix) actually handed to pipeline(). */
+const EMBEDDING_MODEL_NAME = EMBEDDING_MODEL_ID.split("@")[0]!;
 
 let _extractor: FeatureExtractionPipeline | null = null;
 let _initPromise: Promise<FeatureExtractionPipeline> | null = null;
@@ -16,7 +23,7 @@ async function getExtractor(onProgress?: (message: string) => void): Promise<Fea
   if (_extractor) return _extractor;
   if (!_initPromise) {
     onProgress?.("Initializing embedding model...");
-    _initPromise = pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+    _initPromise = pipeline("feature-extraction", EMBEDDING_MODEL_NAME, {
       dtype: "fp32",
       progress_callback: (event: { status: string; progress?: number }) => {
         if (event.status === "download" && event.progress != null) {
@@ -32,12 +39,14 @@ async function getExtractor(onProgress?: (message: string) => void): Promise<Fea
         // as tokenizer(texts, { padding: true, truncation: true }), truncating
         // at the tokenizer's model_max_length. There is NO max_length/truncation
         // on the extractor call options in @huggingface/transformers v3, so the
-        // type-safe, input-only way to enforce the 256-token cap is to set
-        // model_max_length on the loaded tokenizer once, here. This repairs the
-        // prior silent over-length truncation that degraded both memories and
-        // knowledge_base_chunks. Input-only — we never touch model.maxTokens or
-        // char-slice the string (CLAUDE.md context-compaction invariant).
-        _extractor.tokenizer.model_max_length = 256;
+        // type-safe, input-only way to enforce the cap is to set
+        // model_max_length on the loaded tokenizer once, here. The cap is
+        // CHUNK_TOKENS — the SAME budget the chunker windows to — so a future
+        // tune to the chunk size moves both in lockstep and can't silently
+        // re-introduce the over-length truncation this fix repaired (which
+        // degraded both memories and knowledge_base_chunks). Input-only — we
+        // never touch model.maxTokens or char-slice (context-compaction invariant).
+        _extractor.tokenizer.model_max_length = CHUNK_TOKENS;
         return _extractor;
       },
       (err) => {

@@ -29,12 +29,12 @@ Requirements for the v1.5 milestone. Each maps to exactly one roadmap phase (63�
 ### Hybrid Search & API
 
 - [ ] **SRCH-01**: A single endpoint `GET /api/search/messages` returns ranked message-grained hits for a query (auth + read-scope gated)
-- [ ] **SRCH-02**: Hybrid mode fuses lexical (FTS) and semantic (vector) results via Reciprocal Rank Fusion in one SQL query
-- [ ] **SRCH-03**: The endpoint supports `mode=keyword` (FTS only) and `mode=semantic` (vector only) in addition to `mode=hybrid` (default)
-- [ ] **SRCH-04**: Results are scoped to the active project and the requesting user; `test=true` conversations are excluded
-- [ ] **SRCH-05**: Per-tenant filtering is applied inside the query (within/before the ANN scan), verified by `EXPLAIN ANALYZE` to avoid post-filter recall collapse
-- [ ] **SRCH-06**: Lexical hits return `<mark>`-highlighted snippets; semantic-only hits return plain ±window snippets (no misleading fake highlight)
-- [ ] **SRCH-07**: Each hit is tagged with its match type (lexical / semantic / both) for the UI to display
+- [x] **SRCH-02**: Hybrid mode fuses lexical (FTS) and semantic (vector) results via Reciprocal Rank Fusion in one SQL query
+- [x] **SRCH-03**: The endpoint supports `mode=keyword` (FTS only) and `mode=semantic` (vector only) in addition to `mode=hybrid` (default)
+- [x] **SRCH-04**: Results are scoped to the active project and the requesting user; `test=true` conversations are excluded
+- [x] **SRCH-05**: Per-tenant filtering is applied inside the query (within/before the ANN scan), verified by `EXPLAIN ANALYZE` to avoid post-filter recall collapse
+- [x] **SRCH-06**: Lexical hits return `<mark>`-highlighted snippets; semantic-only hits return plain ±window snippets (no misleading fake highlight)
+- [x] **SRCH-07**: Each hit is tagged with its match type (lexical / semantic / both) for the UI to display
 - [ ] **SRCH-08**: When the embedder is unavailable, the endpoint degrades to keyword mode and signals the degraded state to the client
 
 ### Sidebar Search
@@ -113,12 +113,12 @@ Which phases cover which requirements. Populated during roadmap creation (Phases
 | ING-04 | Phase 64 | Complete |
 | ING-05 | Phase 64 | Complete |
 | SRCH-01 | Phase 65 | Pending |
-| SRCH-02 | Phase 65 | Pending |
-| SRCH-03 | Phase 65 | Pending |
-| SRCH-04 | Phase 65 | Pending |
-| SRCH-05 | Phase 65 | Pending |
-| SRCH-06 | Phase 65 | Pending |
-| SRCH-07 | Phase 65 | Pending |
+| SRCH-02 | Phase 65 | Complete |
+| SRCH-03 | Phase 65 | Complete |
+| SRCH-04 | Phase 65 | Complete |
+| SRCH-05 | Phase 65 | Complete |
+| SRCH-06 | Phase 65 | Complete |
+| SRCH-07 | Phase 65 | Complete |
 | SRCH-08 | Phase 65 | Pending |
 | UI-01 | Phase 66 | Pending |
 | UI-02 | Phase 66 | Pending |

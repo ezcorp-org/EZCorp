@@ -4,6 +4,13 @@ import { setupTestDb, closeTestDb, mockDbConnection } from "./helpers/test-pglit
 import { EMBEDDING_DIMENSIONS } from "../memory/types";
 import type { MemoryProvenance } from "../memory/types";
 
+// Capture the opts the second arg passed to the extractor so tests can
+// assert max_length/truncation are forwarded. Reset between relevant tests.
+const extractorCalls: Array<{ text: string; opts: unknown }> = [];
+// A stable fake tokenizer object hung off the pipeline so getTokenizer()
+// can assert it reuses the already-loaded pipeline's tokenizer (no 2nd load).
+const fakeTokenizer = { __fake: "tokenizer" };
+
 // Mock db/connection and @huggingface/transformers (native libs unavailable on NixOS)
 mockDbConnection();
 mock.module("@huggingface/transformers", () => {
@@ -16,12 +23,26 @@ mock.module("@huggingface/transformers", () => {
     return { data };
   }
   return {
-    pipeline: async () => async (text: string) => fakeExtractor(text),
+    pipeline: async () => {
+      const extractor = async (text: string, opts?: unknown) => {
+        extractorCalls.push({ text, opts });
+        return fakeExtractor(text);
+      };
+      // The feature-extraction pipeline ALREADY holds the tokenizer; reuse it.
+      (extractor as unknown as { tokenizer: unknown }).tokenizer = fakeTokenizer;
+      return extractor;
+    },
     env: { backends: { onnx: {} } },
   };
 });
 
-import { generateEmbedding, generateEmbeddings, resetEmbeddingProvider } from "../memory/embeddings";
+import {
+  generateEmbedding,
+  generateEmbeddings,
+  resetEmbeddingProvider,
+  getTokenizer,
+  EMBEDDING_MODEL_ID,
+} from "../memory/embeddings";
 
 describe("schema", () => {
   let _db: Awaited<ReturnType<typeof setupTestDb>>["db"];
@@ -178,5 +199,33 @@ describe("embeddings", () => {
     const embedding = await generateEmbedding("normalization test");
     const norm = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
     expect(norm).toBeCloseTo(1.0, 1); // within 0.05
+  }, 30_000);
+
+  test("generateEmbedding passes {max_length:256, truncation:true} to the extractor", async () => {
+    extractorCalls.length = 0;
+    await generateEmbedding("opts capture");
+    expect(extractorCalls.length).toBeGreaterThanOrEqual(1);
+    const lastOpts = extractorCalls[extractorCalls.length - 1]!.opts as Record<string, unknown>;
+    expect(lastOpts).toMatchObject({
+      pooling: "mean",
+      normalize: true,
+      max_length: 256,
+      truncation: true,
+    });
+  }, 30_000);
+
+  test("a 10,000-character input returns a 384-dim vector without throwing", async () => {
+    const big = "a".repeat(10_000);
+    const embedding = await generateEmbedding(big);
+    expect(embedding).toHaveLength(EMBEDDING_DIMENSIONS);
+  }, 30_000);
+
+  test("EMBEDDING_MODEL_ID is the single source of truth", () => {
+    expect(EMBEDDING_MODEL_ID).toBe("Xenova/all-MiniLM-L6-v2@384");
+  });
+
+  test("getTokenizer() resolves to the pipeline's tokenizer (reuses loaded pipeline)", async () => {
+    const tokenizer = await getTokenizer();
+    expect(tokenizer).toBe(fakeTokenizer as never);
   }, 30_000);
 });

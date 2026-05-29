@@ -395,6 +395,47 @@ export interface SearchResult {
 	rank: number;
 }
 
+// Phase 65 — message-grained hybrid search contract. The single typed import
+// surface Phases 66 (sidebar) and 67 (Cmd+K palette) consume. `createdAt` is a
+// `string` here (JSON-serialized over the wire), mirroring SearchResult.updatedAt;
+// the server-side MessageSearchHit uses a Date.
+export type SearchMode = "hybrid" | "keyword" | "semantic";
+export type MatchType = "lexical" | "semantic" | "both";
+
+export interface MessageSearchHit {
+	conversationId: string;
+	conversationTitle: string;
+	messageId: string;
+	role: "user" | "assistant";
+	createdAt: string;
+	snippet: string;
+	matchType: MatchType;
+	rankLexical: number | null;
+	rankSemantic: number | null;
+	score: number;
+}
+
+export interface SearchMessagesResponse {
+	hits: MessageSearchHit[];
+	degraded: boolean;
+	requestedMode: SearchMode;
+	servedMode: SearchMode;
+}
+
+export async function searchMessages(
+	projectId: string,
+	query: string,
+	opts?: { mode?: SearchMode; limit?: number; offset?: number },
+): Promise<SearchMessagesResponse> {
+	const params = new URLSearchParams({ projectId, q: query });
+	if (opts?.mode) params.set("mode", opts.mode);
+	if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+	if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
+	const res = await fetch(`${BASE}/api/search/messages?${params.toString()}`);
+	await checkResponse(res);
+	return res.json();
+}
+
 export async function fetchConversation(id: string): Promise<Conversation> {
 	const res = await fetch(`${BASE}/api/conversations/${id}`);
 	await checkResponse(res);

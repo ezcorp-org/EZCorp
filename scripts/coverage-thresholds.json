@@ -30,5 +30,6 @@
   "web/src/lib/components/goal-row-logic.ts": 100,
   "web/src/routes/api/conversations/[id]/goal-state/+server.ts": 100,
   "web/src/routes/api/conversations/[id]/messages/+server.ts": 100,
+  "web/src/routes/api/search/messages/+server.ts": 100,
   "web/src/lib/**": 90
 }

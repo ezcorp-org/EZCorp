@@ -43,6 +43,7 @@ export const apiRegistry: ApiRouteEntry[] = [
   { method: "POST", path: "/api/conversations/:id/messages", description: "Send a message and trigger AI response", category: "conversations", schemaKey: "createMessageSchema" },
   { method: "GET", path: "/api/conversations/:id/export", description: "Export conversation as JSON/Markdown", category: "conversations" },
   { method: "POST", path: "/api/conversations/:id/active-run", description: "Cancel active run in conversation", category: "conversations" },
+  { method: "GET", path: "/api/search/messages", description: "Hybrid/keyword/semantic message search (RRF)", category: "conversations", responseDescription: "{ hits, degraded, requestedMode, servedMode }" },
 
   // Agent Configs
   { method: "GET", path: "/api/agent-configs", description: "List agent configurations", category: "agents" },

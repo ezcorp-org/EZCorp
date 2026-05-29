@@ -189,13 +189,14 @@ describe("mock-cleanup coverage (meta-test)", () => {
     }
   });
 
-  // IDX-07 regression pin: memory-embeddings.test.ts mock.module()s
-  // "../../memory/embeddings"; if a future refactor drops that path from
-  // MODULE_PATHS, restoreModuleMocks() silently stops re-registering it and
-  // the fake extractor leaks into subsequent test files. The walker above
-  // already catches that, but this explicit assertion names the path so the
-  // failure is unmistakable. (MODULE_PATHS is a private const in the helper,
-  // so we read it from source the same way loadModulePaths() does.)
+  // IDX-07 regression pin: several memory test files (e.g.
+  // memory-embeddings-state.test.ts, save-memory-integration.test.ts,
+  // memory-dedup.test.ts) mock.module() "../../memory/embeddings"; if a future
+  // refactor drops that path from MODULE_PATHS, restoreModuleMocks() silently
+  // stops re-registering it and the fake extractor leaks into subsequent test
+  // files. The walker above already catches that, but this explicit assertion
+  // names the path so the failure is unmistakable. (MODULE_PATHS is a private
+  // const in the helper, so we read it from source like loadModulePaths() does.)
   test("IDX-07: '../../memory/embeddings' stays registered in MODULE_PATHS", () => {
     const modulePaths = loadModulePaths();
     expect(modulePaths.has("../../memory/embeddings")).toBe(true);

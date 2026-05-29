@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: "—"
-status: defining_requirements
-stopped_at: "v1.5 milestone opened 2026-05-20 — defining requirements"
-last_updated: "2026-05-20T00:00:00.000Z"
-last_activity: 2026-05-20
+current_plan: —
+status: planning
+stopped_at: Completed 63-02-PLAN.md
+last_updated: "2026-05-29T14:27:41.437Z"
+last_activity: 2026-05-29 — v1.5 roadmap created (Phases 63-68, 35/35 requirements mapped)
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 3
+  completed_plans: 1
   percent: 0
 ---
 
@@ -19,18 +19,32 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-20)
+See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Phases 63-68, 2026-05-29) · .planning/REQUIREMENTS.md
 
 **Core value:** Anyone can sit down, chat with persistent memory, find agent apps others built, and create their own — the full loop from user to builder in one product, with full visibility and control over what every extension can do.
-**Current focus:** v1.5 Hybrid Chat Search — milestone opened 2026-05-20. Defining requirements. Scope: sidebar mode toggle (Hybrid/Keyword/Semantic) + Cmd+K palette, backed by pgvector chunked embeddings + Postgres FTS via RRF, reusing the existing `all-MiniLM-L6-v2` Transformers.js embedder.
+**Current focus:** v1.5 Hybrid Chat Search — roadmap created 2026-05-29. Six phases (63-68), 35 requirements mapped 100%. Build order: 63 Indexing Primitives (schema + outbox + chunker + embedder truncation fix + test-harness widening) → 64 Embed-on-Write Worker → 65 Hybrid Search SQL + API → then 66 Sidebar / 67 Cmd+K Palette / 68 Backfill in parallel. Index type is HNSW (NOT ivfflat). Reuses the existing `all-MiniLM-L6-v2` Transformers.js embedder + pgvector already wired for memories + knowledge_base_chunks. Next: `/gsd:plan-phase 63`.
 
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: Not started (defining requirements)
+Phase: 63 — Indexing Primitives (not started)
 Current Plan: —
-Status: Defining requirements
-Last activity: 2026-05-20 — v1.5 Hybrid Chat Search milestone opened
+Status: Roadmap complete — ready to plan Phase 63
+Last activity: 2026-05-29 — v1.5 roadmap created (Phases 63-68, 35/35 requirements mapped)
+
+Progress: [          ] v1.5 0% — 0/6 phases complete
+
+**v1.5 phase map (35/35 requirements, 100% coverage):**
+| Phase | Goal | Requirements | Depends on |
+|-------|------|--------------|-----------|
+| 63 — Indexing Primitives | Durable chunk+outbox foundation on HNSW; embedder truncation fix; test-harness widening | IDX-01..07 | — |
+| 64 — Embed-on-Write Worker | Background outbox drainer; degraded gate, retry/backoff, boot recovery, kill-switch | ING-01..05 | 63 |
+| 65 — Hybrid Search SQL + API | Single-CTE RRF query + `/api/search/messages` (hybrid/keyword/semantic), in-CTE scoping, degraded fallback | SRCH-01..08 | 64 |
+| 66 — Sidebar Search | Mode toggle + localStorage + deep-link on `ConversationList.svelte` | UI-01..04 | 65 |
+| 67 — Command Palette Search | Cmd+K palette extending `CommandPalette.svelte`; Cmd+Shift+P rebind; a11y; mobile BottomSheet | PAL-01..07 | 65 |
+| 68 — Backfill + Operations | Resumable idempotent backfill; throttle; post-batch ANALYZE; progress visibility | OPS-01..04 | 64 |
+
+**Research flags:** Phase 65 (RRF k-value measurement + `hnsw.iterative_scan` cross-backend availability) and Phase 67 (palette extension point + mobile adapter + shortcut collision) recommended for `/gsd:research-phase` during planning.
 
 <details>
 <summary>Previous milestone closeout — v1.4 Phase 62 final state (archived 2026-05-20)</summary>
@@ -529,6 +543,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 62 P07 | 1min | 2 tasks | 1 files |
 | Phase 62 P09 | 3min | 2 tasks | 1 files |
 | Phase 62 P06 | 8min | 3 tasks | 2 files |
+| Phase 63 P02 | 15m | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -706,6 +721,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-13T16:10:05.922Z
-Stopped at: Completed 62-06-PLAN.md (a3b6ad2: web/src/__tests__/api-agent-configs-generate.server.test.ts +33-line malformed-JSON arm + web/src/__tests__/MetaAgentChat.component.test.ts new 180-line component test with 2 cases on onconfig wiring; 10/10 vitest pass; TEST-ADD disposition; sacred-12 preserved; Phase 62 fully complete 9 of 9 plans)
+Last session: 2026-05-29T14:27:41.433Z
+Stopped at: Completed 63-02-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

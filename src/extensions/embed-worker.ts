@@ -164,7 +164,7 @@ export interface EmbedWorkerOptions {
  * Returns the number of rows reset.
  */
 export async function runBacklogRecovery(db: DrainDb): Promise<number> {
-  const result = await db.execute<{ message_id: string }>(sql`
+  const result = await db.execute(sql`
     UPDATE message_embed_outbox
     SET status = 'pending', updated_at = NOW()
     WHERE status = 'in_progress'
@@ -316,7 +316,7 @@ export class EmbedWorker {
       for (const row of rows) {
         try {
           // Fetch message from messages table
-          const msgResult = await db.execute<{ id: string; role: string; content: string }>(sql`
+          const msgResult = await db.execute(sql`
             SELECT id, role, content FROM messages WHERE id = ${row.messageId}
           `);
           const msgRows = (msgResult as { rows: { id: string; role: string; content: string }[] }).rows

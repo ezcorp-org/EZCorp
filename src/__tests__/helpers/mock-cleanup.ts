@@ -89,6 +89,9 @@ const MODULE_PATHS = [
   "../../memory/retrieval",
   "../../memory/embeddings",
   "../../memory/lifecycle",
+  // Phase 64: embed-worker.test.ts mocks message-chunker to return predictable
+  // single-chunk output without needing the real tokenizer loaded.
+  "../../memory/message-chunker",
   "../../runtime/lessons/distiller",
   "../../runtime/lessons/triggers",
   "../../memory/compaction",
@@ -116,6 +119,11 @@ const MODULE_PATHS = [
   "../../extensions/runtime/seccomp-loader",
   "../../extensions/schedule-daemon",
   "../../extensions/host-maintenance-daemon",
+  // Phase 64: embed-worker.test.ts uses mock.module to control isEmbeddingReady
+  // and generateEmbedding. Snapshot so restoreModuleMocks() re-registers the
+  // real module in afterAll and the fake extractor never leaks into subsequent
+  // test files.
+  "../../extensions/embed-worker",
   "../../extensions/mcp-sandbox",
   "../../extensions/permission-engine",
   "../../db/queries/sdk-capability-calls",

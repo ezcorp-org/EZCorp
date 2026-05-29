@@ -36,8 +36,8 @@ mock.module("../db/queries/message-embed-outbox", () => {
   // to the same module under Bun's normalization. The throw seam is gated
   // behind `shouldThrowOnEnqueue`; the body otherwise mirrors the real
   // helper one-for-one.
-  const { sql } = require("drizzle-orm");
-  const { messageEmbedOutbox: tbl } = require("../db/schema");
+  const { sql, eq } = require("drizzle-orm");
+  const { messageEmbedOutbox: tbl, messageChunks: chunks } = require("../db/schema");
   return {
     async enqueueEmbedJob(tx: any, messageId: string, conversationId: string) {
       if (shouldThrowOnEnqueue) throw new Error("injected enqueue failure");
@@ -48,6 +48,13 @@ mock.module("../db/queries/message-embed-outbox", () => {
           target: tbl.messageId,
           set: { status: "pending", attempts: 0, updatedAt: sql`NOW()` },
         });
+    },
+    async clearMessageEmbedState(tx: any, messageId: string) {
+      // Mirrors the real helper: drop the outbox job and any chunks for the
+      // message. (The real-helper behavior is covered without this mock in
+      // message-embed-outbox-real.test.ts.)
+      await tx.delete(tbl).where(eq(tbl.messageId, messageId));
+      await tx.delete(chunks).where(eq(chunks.messageId, messageId));
     },
   };
 });

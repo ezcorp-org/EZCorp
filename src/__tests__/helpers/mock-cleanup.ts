@@ -33,6 +33,11 @@ const MODULE_PATHS = [
   "../../auth/oauth-callback-server",
   "../../db/queries/settings",
   "../../db/queries/conversations",
+  // Phase 63 Plan 03: message-embed-outbox.test.ts mocks this to inject a
+  // throw seam into createMessage's transaction (atomicity test). Snapshot
+  // so restoreModuleMocks() re-registers the real upsert helper in afterAll
+  // and the throwing stub never leaks into subsequent test files.
+  "../../db/queries/message-embed-outbox",
   "../../db/queries/runs",
   "../../db/queries/projects",
   "../../db/queries/extensions",

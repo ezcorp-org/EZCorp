@@ -1,6 +1,13 @@
 // Local embedding generation using Transformers.js (all-MiniLM-L6-v2)
-import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
+import { pipeline, type FeatureExtractionPipeline, type PreTrainedTokenizer } from "@huggingface/transformers";
 import { EMBEDDING_DIMENSIONS } from "./types";
+
+/**
+ * Single source of truth for embedder identity. Encodes both the model and
+ * its 384-dim vector width so a future model/dim swap is a plain string
+ * compare (IDX-03). Later plans import this — never re-literal the id.
+ */
+export const EMBEDDING_MODEL_ID = "Xenova/all-MiniLM-L6-v2@384";
 
 let _extractor: FeatureExtractionPipeline | null = null;
 let _initPromise: Promise<FeatureExtractionPipeline> | null = null;
@@ -34,7 +41,11 @@ async function getExtractor(onProgress?: (message: string) => void): Promise<Fea
 
 export async function generateEmbedding(text: string, onProgress?: (message: string) => void): Promise<number[]> {
   const extractor = await getExtractor(onProgress);
-  const output = await extractor(text, { pooling: "mean", normalize: true });
+  // Truncate INPUT only via extractor opts (IDX-06 fix). Do NOT shrink any
+  // maxTokens or char-slice the string — see CLAUDE.md context-compaction
+  // invariant. This repairs the prior silent truncation that degraded both
+  // memories and knowledge_base_chunks.
+  const output = await extractor(text, { pooling: "mean", normalize: true, max_length: 256, truncation: true });
   const raw = Array.from(output.data as Float32Array);
 
   if (raw.length !== EMBEDDING_DIMENSIONS) {
@@ -54,6 +65,16 @@ export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
     results.push(await generateEmbedding(text));
   }
   return results;
+}
+
+/**
+ * Accessor for the tokenizer held by the already-loaded feature-extraction
+ * pipeline. Reuses the singleton — does NOT load a second tokenizer via
+ * AutoTokenizer. Consumed by the message-chunker.
+ */
+export async function getTokenizer(): Promise<PreTrainedTokenizer> {
+  const extractor = await getExtractor();
+  return extractor.tokenizer;
 }
 
 /** Check if the embedding model is initialized (ready to generate embeddings) */

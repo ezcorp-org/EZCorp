@@ -2,17 +2,17 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: 66-04 (e2e — next; consumes the /api/search/messages mock + the 66-03 deep-link journey)
+current_plan: "Phase 66 COMPLETE (66-01..04). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
 status: completed
-stopped_at: Completed 66-03-PLAN.md
-last_updated: "2026-05-29T21:48:34.019Z"
-last_activity: "2026-05-29 — 66-03 landed: ?m= deep-link plumbed end-to-end (handleSelect appends, ChatThread consumes/strips + resolveDeepLink branch-switch/window-grow scroll + reduced-motion-guarded pulse)"
+stopped_at: Completed 66-04-PLAN.md
+last_updated: "2026-05-29T22:19:40.457Z"
+last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 11
   completed_plans: 11
-  percent: 50
+  percent: 67
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 66 — Sidebar Search (IN PROGRESS — Wave-0 infra + 66-02 sidebar + 66-03 deep-link landed)
-Current Plan: 66-04 (e2e — next; consumes the /api/search/messages mock + the 66-03 deep-link journey)
-Status: 66-03 complete — `?m=<messageId>` deep-link plumbed end-to-end (UI-03): chat route handleSelect(id, messageId?) appends `?m=` and both onselect callsites forward it; ChatThread consumes+strips `?m=` on mount (goto replaceState+noScroll, preserving other params), resolves the target via the pure resolveDeepLink helper (branch-switch if off-branch, grow visibleMessageCount if paginated out, NEVER re-fetch), scrolls to it (retry-once on DOM-mount race + startAnchorReapplyWatch), and fires a reduced-motion-guarded ~1.8s `.message-pulse` on the target bubble then clears it. Net-new @keyframes message-pulse in app.css; ChatMessage `pulse` prop on both data-message-id bubbles. 23/23 ChatThread component tests green (+3 new wiring cases); 68 adjacent green; zero regression. UI-01/02/03/04 all satisfied at code level. Next: 66-04 e2e (consume the 66-01 /api/search/messages mock + assert the click→?m=→scroll+pulse journey).
-Last activity: 2026-05-29 — 66-03 landed: ?m= deep-link plumbed end-to-end (handleSelect appends, ChatThread consumes/strips + resolveDeepLink branch-switch/window-grow scroll + reduced-motion-guarded pulse)
+Phase: 66 — Sidebar Search (COMPLETE — 66-01 infra + 66-02 sidebar + 66-03 deep-link + 66-04 e2e all landed)
+Current Plan: Phase 66 COMPLETE (66-01..04). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66.
+Status: 66-04 complete — full-phase end-to-end coverage (UI-01/02/03/04) across chromium + mobile-chromium. Extended `web/e2e/conversation-search.spec.ts` (viewport-aware helpers + toggle/default, reload-persist, two-section results, <2-char guard, degraded-no-mutate, generic empty) and created `web/e2e/sidebar-search-deeplink.spec.ts` (recent / strip-on-reload / paginated-out window-grow / off-branch branch-switch / unknown-id no-op / group-header-not-deep-link). 42/42 e2e green on both projects (21 cases × 2). Reuses the 66-01 /api/search/messages mock + makeSearchHit; clicks real 66-02 message-hit rows. One Rule-1 SUT fix in `ChatThread.svelte`: the `?m=` deep-link only fired on COLD MOUNT, so the sidebar click-journey (client `goto(...?m=)` on the persistent, non-remounting component) never pulsed and never stripped `?m=`. Moved the `?m=` consume into a reactive `$effect` (fires on cold load AND client nav) and made `resolveDeepLink found:false` non-terminal until `initialLoadDone` (so it retries once the target conv's tree loads instead of giving up against the previous conv's messages). 23/23 ChatThread.component + 84 adjacent ChatThread/deep-link vitest tests stay green; svelte-check clean on all owned files. Sacred-12-stash held (12→12); explicit-path adds only.
+Last activity: 2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m=
 
-Progress: [█████     ] v1.5 50% — 3/6 phases complete (63 + 64 + 65); 66/67/68 unblocked
+Progress: [███████   ] v1.5 67% — 4/6 phases complete (63 + 64 + 65 + 66); 67/68 unblocked (depend on 65)
 
 **v1.5 phase map (35/35 requirements, 100% coverage):**
 | Phase | Goal | Requirements | Depends on |
@@ -553,6 +553,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 66 P01 | 6min | 3 tasks | 8 files |
 | Phase 66 P02 | 5min | 2 tasks | 3 files |
 | Phase 66 P03 | 6min | 3 tasks | 5 files |
+| Phase 66 P04 | 35min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -721,6 +722,7 @@ Plan 54-03 execution decisions:
 - [Phase 65]: 65-02: degraded gate is server-owned — hybrid/semantic fall back to keyword (degraded:true, servedMode:keyword) on embedder-down or throw; clients always get a 200 envelope
 - [Phase 66]: 66-01: deep-link test runs under vitest (.unit.test.ts) not bun test — resolveDeepLink transitively imports Svelte-rune inline-tool-store via load-messages.ts
 - [Phase 66]: 66-01: window-grow policy grows directly to distanceFromTail (minimal covering window); distanceFromTail = path.length - idx (pathToRoot is root->leaf, tail=1)
+- [Phase 66]: 66-04: deep-link must consume ?m= reactively (not onMount-only) because the chat route is a persistent non-remounting ChatThread — the sidebar click-journey is a client goto, not a fresh mount
 
 ### Pending Todos
 
@@ -746,6 +748,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T21:48:34.016Z
-Stopped at: Completed 66-03-PLAN.md
+Last session: 2026-05-29T22:18:41.995Z
+Stopped at: Completed 66-04-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

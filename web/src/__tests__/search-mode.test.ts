@@ -88,6 +88,21 @@ describe("loadSearchMode", () => {
 		setLS(makeStorageStub({ [SEARCH_MODE_LS_KEY]: "{}" }));
 		expect(loadSearchMode()).toBe("hybrid");
 	});
+
+	test("Test 3b: getItem throwing (private mode / quota) falls back to hybrid", () => {
+		const throwing = {
+			getItem: () => {
+				throw new Error("SecurityError");
+			},
+			setItem: () => {},
+			removeItem: () => {},
+			clear: () => {},
+			key: () => null,
+			length: 0,
+		};
+		(globalThis as { localStorage?: unknown }).localStorage = throwing as unknown as Storage;
+		expect(loadSearchMode()).toBe("hybrid");
+	});
 });
 
 describe("persistSearchMode", () => {
@@ -110,6 +125,21 @@ describe("persistSearchMode", () => {
 	test("undefined localStorage is a silent no-op (no throw)", () => {
 		setLS(undefined);
 		expect(() => persistSearchMode("semantic")).not.toThrow();
+	});
+
+	test("setItem throwing (quota / private mode) is swallowed", () => {
+		const throwing = {
+			getItem: () => null,
+			setItem: () => {
+				throw new Error("QuotaExceededError");
+			},
+			removeItem: () => {},
+			clear: () => {},
+			key: () => null,
+			length: 0,
+		};
+		(globalThis as { localStorage?: unknown }).localStorage = throwing as unknown as Storage;
+		expect(() => persistSearchMode("keyword")).not.toThrow();
 	});
 });
 

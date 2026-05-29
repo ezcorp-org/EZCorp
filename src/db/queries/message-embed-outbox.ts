@@ -98,9 +98,9 @@ export async function clearMessageEmbedState(tx: ClearEmbedTx, messageId: string
  * as their first parameter so callers control the connection.
  */
 export type DrainDb = {
-  execute: <T = Record<string, unknown>>(
+  execute: (
     query: SQL<unknown>,
-  ) => Promise<{ rows: T[] } | T[]>;
+  ) => Promise<{ rows: Record<string, unknown>[] } | Record<string, unknown>[]>;
   delete: (table: typeof messageEmbedOutbox) => {
     where: (cond: SQL<unknown> | undefined) => Promise<unknown>;
   };
@@ -119,11 +119,7 @@ export async function claimBatch(
   db: DrainDb,
   batchSize: number,
 ): Promise<Array<{ messageId: string; conversationId: string; attempts: number }>> {
-  const result = await db.execute<{
-    message_id: string;
-    conversation_id: string;
-    attempts: number;
-  }>(sql`
+  const result = await db.execute(sql`
     UPDATE message_embed_outbox
     SET status = 'in_progress', updated_at = NOW()
     WHERE message_id IN (
@@ -197,7 +193,7 @@ export async function markFailed(
  * Returns the count of rows reset.
  */
 export async function resetAttemptsForPending(db: DrainDb): Promise<number> {
-  const result = await db.execute<{ message_id: string }>(sql`
+  const result = await db.execute(sql`
     UPDATE message_embed_outbox
     SET attempts = 0, next_attempt_after = NULL, updated_at = NOW()
     WHERE status = 'pending'

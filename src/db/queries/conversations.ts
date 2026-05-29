@@ -4,7 +4,7 @@ import { conversations, messages, toolCalls, runs, conversationExtensions } from
 import { listAttachmentsForMessages } from "./attachments";
 import { getSetting } from "./settings";
 import { isEmbedEligible } from "../../memory/message-chunker";
-import { enqueueEmbedJob } from "./message-embed-outbox";
+import { enqueueEmbedJob, clearMessageEmbedState } from "./message-embed-outbox";
 import { logger } from "../../logger";
 
 const log = logger.child("db.queries.conversations");
@@ -381,12 +381,13 @@ export async function createMessage(
 ): Promise<Message> {
   // Phase 63 IDX-04: the message insert, the conversation touch, AND the
   // embed-outbox enqueue MUST be one atomic unit — no message without its
-  // embed job, no embed job without its message. This is the codebase's
-  // first db.transaction(). EVERYTHING inside the callback runs on `tx`;
-  // referencing the outer db/getDb() here would escape the transaction and
-  // silently break atomicity (research Pitfall 1). The enqueue is a single
-  // cheap upsert — fine in-tx. NEVER generate embeddings here; that is the
-  // Phase 64 worker's job, off the SSE finalize hot path.
+  // embed job, no embed job without its message. EVERYTHING inside the
+  // callback runs on `tx`; referencing the outer db/getDb() here would escape
+  // the transaction and silently break atomicity (research Pitfall 1). The
+  // enqueue is a single cheap upsert — fine in-tx. NEVER generate embeddings
+  // here; that is the Phase 64 worker's job, off the SSE finalize hot path.
+  // (`tx` is `any` by the deliberate repo-wide `Database = any` design in
+  // connection.ts; enqueueEmbedJob's EmbedJobTx documents the handle shape.)
   return getDb().transaction(async (tx: any) => {
     const rows = await tx
       .insert(messages)
@@ -678,6 +679,13 @@ export async function updateMessageContent(
 
     if (isEmbedEligible(msg.role, content)) {
       await enqueueEmbedJob(tx, messageId, conversationId);
+    } else {
+      // The edit made this message embed-INELIGIBLE (e.g. cleared to
+      // whitespace, or a role that never indexes). Drop any outbox job and
+      // chunks left over from when it WAS eligible, so the Phase 64 worker
+      // never embeds now-empty text and search never returns stale chunks.
+      // Idempotent — a no-op when nothing was ever enqueued.
+      await clearMessageEmbedState(tx, messageId);
     }
 
     return msg;
@@ -689,6 +697,12 @@ export async function updateMessageContent(
  * from the array sent to pi-ai on subsequent turns (the transcript still
  * shows it, struck-through). Returns null when no row matches the
  * (conversationId, messageId) pair so the route can map to a 404.
+ *
+ * Embed-index policy (Phase 63 decision): context-exclusion and search-index
+ * eligibility are INDEPENDENT. Excluding a message from the LLM context does
+ * NOT cancel its embed outbox row or chunks — an excluded message stays
+ * searchable. So this is intentionally NOT an embed write boundary (no
+ * enqueue/clear here); it only toggles the context flag.
  */
 export async function setMessageExcluded(
   conversationId: string,

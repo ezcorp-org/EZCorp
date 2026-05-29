@@ -15,7 +15,7 @@
 
 **Milestone Goal:** Make every past chat findable instantly — add semantic (pgvector/HNSW) recall alongside the existing lexical (Postgres FTS) precision, surfaced through the sidebar search box and a new Cmd+K palette. Additive only; build order is unanimous across all four research streams: schema → embed-on-write worker → hybrid SQL + API → (sidebar ∥ palette ∥ backfill).
 
-- [ ] **Phase 63: Indexing Primitives** — schema (`message_chunks` HNSW + `message_embed_outbox`), chunker, transactional outbox enqueue, embedder truncation fix, test-harness widening (IDX-01..07)
+- [x] **Phase 63: Indexing Primitives** — schema (`message_chunks` HNSW + `message_embed_outbox`), chunker, transactional outbox enqueue, embedder truncation fix, test-harness widening (IDX-01..07) (completed 2026-05-29)
 - [ ] **Phase 64: Embed-on-Write Worker** — background outbox drainer on the HostMaintenanceDaemon pattern with degraded-mode gate, retry/backoff, boot recovery, kill-switch (ING-01..05)
 - [ ] **Phase 65: Hybrid Search SQL + API** — single-CTE RRF query builder + `/api/search/messages` endpoint with hybrid/keyword/semantic modes, in-CTE tenant scoping, snippet asymmetry, match-type tagging, degraded fallback (SRCH-01..08)
 - [ ] **Phase 66: Sidebar Search** — Hybrid/Keyword/Semantic mode toggle on `ConversationList.svelte` with localStorage persistence + deep-link to matching message (UI-01..04)
@@ -220,7 +220,7 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 63. Indexing Primitives | 2/3 | In Progress|  |
+| 63. Indexing Primitives | 3/3 | Complete   | 2026-05-29 |
 | 64. Embed-on-Write Worker | 0/TBD | Not started | - |
 | 65. Hybrid Search SQL + API | 0/TBD | Not started | - |
 | 66. Sidebar Search | 0/TBD | Not started | - |

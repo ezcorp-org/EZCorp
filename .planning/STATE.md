@@ -4,14 +4,14 @@ milestone: v1.5
 milestone_name: Hybrid Chat Search
 current_plan: —
 status: planning
-stopped_at: Completed 63-01-PLAN.md
-last_updated: "2026-05-29T14:29:21.801Z"
+stopped_at: Completed 63-03-PLAN.md
+last_updated: "2026-05-29T14:47:21.453Z"
 last_activity: 2026-05-29 — v1.5 roadmap created (Phases 63-68, 35/35 requirements mapped)
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 63 — Indexing Primitives (not started)
-Current Plan: —
-Status: Roadmap complete — ready to plan Phase 63
-Last activity: 2026-05-29 — v1.5 roadmap created (Phases 63-68, 35/35 requirements mapped)
+Phase: 63 — Indexing Primitives (COMPLETE — 3/3 plans landed)
+Current Plan: — (Phase 63 done; next: Phase 64 Embed-on-Write Worker)
+Status: Phase 63 complete — IDX-01..07 satisfied; ready to plan Phase 64
+Last activity: 2026-05-29 — 63-03 landed: transactional createMessage + embed-outbox enqueue (IDX-04/05)
 
-Progress: [          ] v1.5 0% — 0/6 phases complete
+Progress: [██        ] v1.5 17% — 1/6 phases complete
 
 **v1.5 phase map (35/35 requirements, 100% coverage):**
 | Phase | Goal | Requirements | Depends on |
@@ -545,6 +545,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 62 P06 | 8min | 3 tasks | 2 files |
 | Phase 63 P02 | 15m | 2 tasks | 3 files |
 | Phase 63-indexing-primitives P01 | 20min | 3 tasks | 5 files |
+| Phase 63 P03 | 17min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -699,6 +700,7 @@ Plan 54-03 execution decisions:
 - [Phase 62]: Plan 62-06: Stub the full /api/models + /api/models/capabilities + /api/modes + /api/agent-configs/generate quartet (with most-specific-first if-ladder ordering since /api/models is a substring prefix of /api/models/capabilities) + __resetCapabilityCacheForTests in beforeEach + wait for button[aria-label='Send message']:not(:disabled) before fireEvent.keyDown to drive any ChatInput-based component test past its model-autoselect submit gate; pattern reusable for future MetaAgentChat / ChatInput-derived coverage plans
 - [Phase 63-indexing-primitives]: 63-01: EMBEDDING_MODEL_ID is the single source of truth for model+dim identity; later plans import it, never re-literal
 - [Phase 63-indexing-primitives]: 63-01: token-aware chat chunker (256/32-overlap, stride 224) is separate from char-based chunking.ts (KB files); IDX-06 truncation is input-only via extractor opts
+- [Phase 63]: 63-03: First db.transaction() in the codebase wraps createMessage (insert + conversation touch + eligibility-gated outbox enqueue) atomically; updateMessageContent re-enqueues edits via message_id-PK upsert. enqueueEmbedJob never calls getDb() (runs on the passed-in tx).
 
 ### Pending Todos
 
@@ -724,6 +726,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T14:29:21.798Z
-Stopped at: Completed 63-01-PLAN.md
+Last session: 2026-05-29T14:47:16.906Z
+Stopped at: Completed 63-03-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

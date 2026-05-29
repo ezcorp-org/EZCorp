@@ -90,6 +90,7 @@
 		computeAnchor,
 		scrollTopForAnchor,
 	} from "$lib/chat-scroll-restore.js";
+	import { resolveDeepLink } from "$lib/search/deep-link-resolve.js";
 	import {
 		shouldStickToBottom,
 		bottomSlack,
@@ -942,12 +943,41 @@
 		pendingInitial = null;
 		handleSend(text);
 	});
+	// ── Deep-link (`?m=`) consume + strip ─────────────────────────────
+	// Mirrors the `?initial` pattern: read the param on mount, stash it,
+	// then strip it from the URL so a reload doesn't re-pulse. The actual
+	// branch-switch/window-grow/scroll/pulse action is gated below behind
+	// initialScrollDone + a populated tree (see the deep-link effect).
+	let pendingDeepLink = $state<string | null>(null);
+	let pulseMessageId = $state<string | null>(null);
+	let pulseTimer: ReturnType<typeof setTimeout> | null = null;
+	let deepLinkApplied = false;
+
 	onMount(() => {
 		const initialParam = page.url.searchParams.get("initial");
-		if (initialParam && initialParam.length > 0) {
+		const mParam = page.url.searchParams.get("m");
+		const hasInitial = !!initialParam && initialParam.length > 0;
+		const hasDeepLink = !!mParam && mParam.length > 0;
+		if (hasInitial) {
 			pendingInitial = initialParam;
-			// Strip the param so a refresh doesn't re-send it.
-			goto(page.url.pathname, { replaceState: true, noScroll: true });
+		}
+		if (hasDeepLink) {
+			pendingDeepLink = mParam;
+		}
+		// Strip the consumed param(s) so a refresh doesn't re-send `?initial`
+		// or re-pulse `?m=`. `noScroll: true` is REQUIRED — without it the
+		// replace-nav fights the deep-link scroll. Preserve any OTHER params
+		// (e.g. `?initial` when only `m` is consumed, panel-state params) by
+		// rebuilding the querystring minus the keys we consumed.
+		if (hasInitial || hasDeepLink) {
+			const params = new URLSearchParams(page.url.searchParams);
+			if (hasInitial) params.delete("initial");
+			if (hasDeepLink) params.delete("m");
+			const qs = params.toString();
+			goto(page.url.pathname + (qs ? `?${qs}` : ""), {
+				replaceState: true,
+				noScroll: true,
+			});
 		}
 	});
 
@@ -1106,6 +1136,10 @@
 		return () => {
 			observer?.disconnect();
 			stickObserver?.disconnect();
+			if (pulseTimer) {
+				clearTimeout(pulseTimer);
+				pulseTimer = null;
+			}
 			cleanupOAuth();
 			window.removeEventListener("ez:turn_saved", handleTurnSaved);
 			window.removeEventListener(
@@ -1272,6 +1306,82 @@
 		stopAnchorWatch = null;
 		const cached = getCachedScrollState(conversationId);
 		visibleMessageCount = cached?.windowSize ?? INITIAL_MESSAGE_WINDOW;
+		// A conversation switch invalidates any in-flight deep-link: the
+		// `?m=` was relative to the conversation we just left. Clear the
+		// applied-guard and any active pulse so we don't pulse a stale id in
+		// the new thread.
+		deepLinkApplied = false;
+		if (pulseTimer) {
+			clearTimeout(pulseTimer);
+			pulseTimer = null;
+		}
+		pulseMessageId = null;
+	});
+
+	// ── Deep-link action — apply the resolved branch-switch/window-grow,
+	//    scroll to the target, and pulse it. Gated behind the same
+	//    initialScrollDone + populated-tree readiness as the `?initial`
+	//    apply, so it runs AFTER open-scroll-restore has decided (Pitfall 1:
+	//    otherwise the stick-to-bottom observer fights us) and once the DOM
+	//    has messages to scroll to.
+	const DEEP_LINK_SCROLL_OFFSET = 80;
+	$effect(() => {
+		if (!pendingDeepLink || deepLinkApplied) return;
+		if (!initialScrollDone) return;
+		if (allMessages.length === 0) return;
+		if (!container) return;
+		const target = pendingDeepLink;
+		deepLinkApplied = true;
+		const el = container;
+		const r = resolveDeepLink(
+			target,
+			allMessages,
+			activeLeafId,
+			visibleMessageCount,
+		);
+		if (!r.found) {
+			// Deleted / wrong-conversation id — silent no-op, mirroring
+			// `?initial` and `@[file:…]` for missing targets.
+			pendingDeepLink = null;
+			return;
+		}
+		void (async () => {
+			if (r.needsBranchSwitch && r.newLeafId) {
+				activeLeafId = r.newLeafId;
+				await tick();
+			}
+			if (r.needsWindowGrow) {
+				visibleMessageCount = r.newVisibleCount;
+				await tick();
+			}
+			// Don't let the stick-to-bottom ResizeObserver yank us to the
+			// bottom after we scroll to the (likely older) target. Mirrors the
+			// restore-branch trio at the open-scroll effect.
+			stuck = false;
+			userScrolledUp = true;
+			let top = scrollTopForAnchor(el, target, DEEP_LINK_SCROLL_OFFSET);
+			if (top === null) {
+				// DOM mount race (Pitfall 2): the target row may not be in the
+				// DOM yet right after a branch switch / window grow. Retry once
+				// after another tick.
+				await tick();
+				top = scrollTopForAnchor(el, target, DEEP_LINK_SCROLL_OFFSET);
+			}
+			if (top !== null) {
+				el.scrollTop = top;
+				// Re-apply against late-mounting tool-card / image heights.
+				startAnchorReapplyWatch(el, target, DEEP_LINK_SCROLL_OFFSET);
+			}
+			// Trigger the highlight pulse on the target bubble, then clear it
+			// after the animation window (~1.8s, matching the keyframe).
+			pulseMessageId = target;
+			if (pulseTimer) clearTimeout(pulseTimer);
+			pulseTimer = setTimeout(() => {
+				pulseMessageId = null;
+				pulseTimer = null;
+			}, 1800);
+			pendingDeepLink = null;
+		})();
 	});
 
 	async function loadOlderMessages(): Promise<void> {
@@ -1738,6 +1848,7 @@
 							? handleEditText
 							: undefined}
 						onexclude={handleToggleExclude}
+						pulse={msg.id === pulseMessageId}
 					/>
 				{/if}
 

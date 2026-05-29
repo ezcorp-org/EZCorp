@@ -2,17 +2,17 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: —
+current_plan: "— (Phase 63 done; next: Phase 64 Embed-on-Write Worker)"
 status: planning
 stopped_at: Completed 63-03-PLAN.md
-last_updated: "2026-05-29T14:47:21.453Z"
-last_activity: 2026-05-29 — v1.5 roadmap created (Phases 63-68, 35/35 requirements mapped)
+last_updated: "2026-05-29T14:52:31.366Z"
+last_activity: "2026-05-29 — 63-03 landed: transactional createMessage + embed-outbox enqueue (IDX-04/05)"
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 3
   completed_plans: 3
-  percent: 0
+  percent: 17
 ---
 
 # Project State

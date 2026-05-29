@@ -153,6 +153,8 @@ vi.mock("$app/state", () => ({
 }));
 
 import ChatThread from "./ChatThread.svelte";
+import { goto } from "$app/navigation";
+import { page } from "$app/state";
 
 function msg(id: string, o: Partial<Message> = {}): Message {
 	return {
@@ -229,6 +231,10 @@ beforeEach(() => {
 	fetchAllMessagesMock.mockResolvedValue([]);
 	seedBox.tree = [];
 	seedBox.byConv = {};
+	// Each test gets a clean URL (no `?m=` / `?initial`) + a fresh goto spy so
+	// the deep-link consume/strip assertions don't bleed across tests.
+	(goto as unknown as { mockClear: () => void }).mockClear();
+	(page as { url: URL }).url = new URL("http://x/");
 	// attachment-client memoises capability promises per (provider,
 	// model); flush so each render re-hits the stubbed capabilities.
 	__resetCapabilityCacheForTests();
@@ -699,5 +705,96 @@ describe("ChatThread model persistence injection", () => {
 		// Auto-select is now a no-op (a model is set) — never re-persists.
 		api.__test.handleModelAutoSelect("google", "gemini-2.5-pro");
 		expect(persistModel).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("ChatThread ?m= deep-link wiring", () => {
+	// These assert the WIRING (consume / strip / pulse-trigger), not the
+	// branch/window math — that math is covered deterministically by the pure
+	// `deep-link-resolve.unit.test.ts` (66-01).
+
+	test("mounting with ?m=<id> consumes the param and strips it from the URL", async () => {
+		(page as { url: URL }).url = new URL("http://x/?m=a1");
+		const { component } = mountThread(linearTree());
+		await vi.waitFor(() => {
+			expect(
+				(
+					component as unknown as {
+						getThreadState: () => { messages: Message[] };
+					}
+				).getThreadState().messages.length,
+			).toBe(4);
+		});
+		// The consume/strip onMount fires once on mount: goto is called with a
+		// path that no longer carries `m`.
+		await vi.waitFor(() => {
+			expect(goto).toHaveBeenCalled();
+		});
+		const stripped = (goto as unknown as { mock: { calls: unknown[][] } })
+			.mock.calls.map((c) => String(c[0]));
+		// At least one strip nav, and NONE of the strip navs re-add `m=`.
+		expect(stripped.some((u) => !u.includes("m="))).toBe(true);
+		expect(stripped.every((u) => !/[?&]m=/.test(u))).toBe(true);
+	});
+
+	test("?m=<id> applies the pulse class to the target bubble, then clears it", async () => {
+		vi.useFakeTimers();
+		try {
+			(page as { url: URL }).url = new URL("http://x/?m=a1");
+			const { container, component } = mountThread(linearTree());
+			// Drain the async load + deep-link effect under fake timers.
+			await vi.waitFor(
+				() =>
+					expect(
+						(
+							component as unknown as {
+								getThreadState: () => { messages: Message[] };
+							}
+						).getThreadState().messages.length,
+					).toBe(4),
+				{ interval: 10 },
+			);
+			// The pulse lands on the bubble carrying data-message-id="a1".
+			await vi.waitFor(
+				() => {
+					const el = container.querySelector(
+						'[data-message-id="a1"]',
+					);
+					expect(el).not.toBeNull();
+					expect(el!.classList.contains("message-pulse")).toBe(true);
+				},
+				{ interval: 10 },
+			);
+			// After the ~1.8s timer the pulse self-clears (prop flips false).
+			await vi.advanceTimersByTimeAsync(1900);
+			const after = container.querySelector('[data-message-id="a1"]');
+			expect(after!.classList.contains("message-pulse")).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("?m=<unknownId> is a silent no-op: param stripped, no pulse, no throw", async () => {
+		(page as { url: URL }).url = new URL("http://x/?m=does-not-exist");
+		const { container, component } = mountThread(linearTree());
+		await vi.waitFor(() => {
+			expect(
+				(
+					component as unknown as {
+						getThreadState: () => { messages: Message[] };
+					}
+				).getThreadState().messages.length,
+			).toBe(4);
+		});
+		// Param is still stripped (consume/strip runs regardless of whether the
+		// target resolves).
+		await vi.waitFor(() => expect(goto).toHaveBeenCalled());
+		const navs = (goto as unknown as { mock: { calls: unknown[][] } })
+			.mock.calls.map((c) => String(c[0]));
+		expect(navs.every((u) => !/[?&]m=/.test(u))).toBe(true);
+		// No bubble ever receives the pulse class (unknown id → r.found false).
+		await Promise.resolve();
+		const pulsed = container.querySelector(".message-pulse");
+		expect(pulsed).toBeNull();
 	});
 });

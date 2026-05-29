@@ -190,4 +190,23 @@ describe("message_chunks + message_embed_outbox schema", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.n).toBe(0);
   });
+
+  test("message_embed_outbox row is cascaded away with its conversation", async () => {
+    const db = getTestDb();
+    const projectId = crypto.randomUUID();
+    const conversationId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
+    await db.execute(sql`INSERT INTO projects (id, name, path) VALUES (${projectId}, 'p', '/p')`);
+    await db.execute(sql`INSERT INTO conversations (id, project_id, title) VALUES (${conversationId}, ${projectId}, 'c')`);
+    await db.execute(sql`INSERT INTO messages (id, conversation_id, role, content) VALUES (${messageId}, ${conversationId}, 'user', 'x')`);
+    await db.execute(sql`INSERT INTO message_embed_outbox (message_id, conversation_id) VALUES (${messageId}, ${conversationId})`);
+
+    // Deleting the conversation must cascade through BOTH FKs (message_id and
+    // conversation_id are each ON DELETE CASCADE); a regression flipping the
+    // conversation FK to SET NULL / NO ACTION would leave an orphan row.
+    await db.execute(sql`DELETE FROM conversations WHERE id = ${conversationId}`);
+    const rows = (await db.execute(sql`SELECT count(*)::int AS n FROM message_embed_outbox WHERE message_id = ${messageId}`)).rows as Array<{ n: number }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.n).toBe(0);
+  });
 });

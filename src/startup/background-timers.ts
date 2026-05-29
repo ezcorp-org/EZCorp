@@ -6,6 +6,7 @@ import { cleanupOldSdkCapabilityCalls, clampDays } from "../db/queries/sdk-capab
 import { getSetting } from "../db/queries/settings";
 import { ScheduleDaemon } from "../extensions/schedule-daemon";
 import { HostMaintenanceDaemon } from "../extensions/host-maintenance-daemon";
+import { EmbedWorker } from "../extensions/embed-worker";
 import { logger } from "../logger";
 
 const log = logger.child("startup.timers");
@@ -13,6 +14,7 @@ const log = logger.child("startup.timers");
 let started = false;
 let scheduleDaemon: ScheduleDaemon | undefined;
 let permSweepDaemon: HostMaintenanceDaemon | undefined;
+let embedWorker: EmbedWorker | undefined;
 
 /**
  * Intervals + disposers registered by `startBackgroundTimers()`. Tracked
@@ -38,6 +40,12 @@ export function _getScheduleDaemonForTests(): ScheduleDaemon | undefined {
  *  Mirror of `_getScheduleDaemonForTests`. */
 export function _getPermSweepDaemonForTests(): HostMaintenanceDaemon | undefined {
   return permSweepDaemon;
+}
+
+/** Test-only handle to the embed-worker singleton — mirrors
+ *  `_getPermSweepDaemonForTests`. */
+export function _getEmbedWorkerForTests(): EmbedWorker | undefined {
+  return embedWorker;
 }
 
 /**
@@ -173,6 +181,23 @@ export async function startBackgroundTimers(): Promise<void> {
     permSweepDaemon = undefined;
   }
 
+  // Phase 64: EmbedWorker — background outbox drainer for message embeddings.
+  // Gated by EZCORP_DISABLE_EMBED_WORKER=1 (handled inside start()). Same
+  // fail-safe contract as HostMaintenanceDaemon: if it fails to start, log +
+  // drop the handle; do NOT block the rest of boot.
+  try {
+    embedWorker = new EmbedWorker();
+    const ok = await embedWorker.start();
+    if (ok) {
+      log.info("EmbedWorker started");
+    } else {
+      embedWorker = undefined;
+    }
+  } catch (e) {
+    log.warn("Failed to start EmbedWorker", { error: String(e) });
+    embedWorker = undefined;
+  }
+
   // Surface coverage audit (opt-in via global:auditIntervalHours,
   // default 0 = disabled — audits make LLM calls so we don't surprise
   // users with cost. On-demand runs via the surface-audit agent always
@@ -252,6 +277,10 @@ export async function stopBackgroundTimers(): Promise<void> {
     }
     permSweepDaemon = undefined;
   }
+  if (embedWorker) {
+    try { embedWorker.stop(); } catch (e) { log.warn("EmbedWorker.stop() failed", { error: String(e) }); }
+    embedWorker = undefined;
+  }
 
   // Clear every recurring timer. clearInterval is idempotent — calling it
   // on a fired/cleared timer is a no-op, so we don't need to guard.
@@ -284,6 +313,10 @@ export function _resetForTests(): void {
   if (permSweepDaemon) {
     permSweepDaemon.stop();
     permSweepDaemon = undefined;
+  }
+  if (embedWorker) {
+    embedWorker.stop();
+    embedWorker = undefined;
   }
   for (const handle of intervals) clearInterval(handle);
   intervals.length = 0;

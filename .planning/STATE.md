@@ -4,14 +4,14 @@ milestone: v1.5
 milestone_name: Hybrid Chat Search
 current_plan: "— (Phase 63 done; next: Phase 64 Embed-on-Write Worker)"
 status: planning
-stopped_at: Completed 64-01-PLAN.md
-last_updated: "2026-05-29T15:54:56.526Z"
+stopped_at: Completed 64-02-PLAN.md
+last_updated: "2026-05-29T16:09:30.606Z"
 last_activity: "2026-05-29 — 63-03 landed: transactional createMessage + embed-outbox enqueue (IDX-04/05)"
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
-  completed_plans: 4
+  completed_plans: 5
   percent: 17
 ---
 
@@ -547,6 +547,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 63-indexing-primitives P01 | 20min | 3 tasks | 5 files |
 | Phase 63 P03 | 17min | 2 tasks | 4 files |
 | Phase 64-embed-on-write-worker P01 | 15 | 2 tasks | 4 files |
+| Phase 64-embed-on-write-worker P02 | 10 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -705,6 +706,9 @@ Plan 54-03 execution decisions:
 - [Phase 64-embed-on-write-worker]: NULL sentinel for next_attempt_after (no DEFAULT) — NULL = never backed off; presence = backoff timestamp
 - [Phase 64-embed-on-write-worker]: DrainDb structural type mirrors EmbedJobTx pattern — module never calls getDb() internally
 - [Phase 64-embed-on-write-worker]: claimBatch uses subquery UPDATE (SELECT...LIMIT inside WHERE IN) — PGlite does not support UPDATE...LIMIT
+- [Phase 64-embed-on-write-worker]: runBacklogRecovery is a standalone exported function — allows tests to call it without a worker instance
+- [Phase 64-embed-on-write-worker]: Sequential embed loop enforced (no Promise.all) to honor Transformers.js singleton constraint
+- [Phase 64-embed-on-write-worker]: mock.module paths in test file use '../memory/...' (one level up from src/__tests__/), not '../../memory/...' which overshoots src/
 
 ### Pending Todos
 
@@ -730,6 +734,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T15:54:56.522Z
-Stopped at: Completed 64-01-PLAN.md
+Last session: 2026-05-29T16:09:30.602Z
+Stopped at: Completed 64-02-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

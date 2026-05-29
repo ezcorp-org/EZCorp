@@ -20,11 +20,11 @@ Requirements for the v1.5 milestone. Each maps to exactly one roadmap phase (63â
 
 ### Ingestion Worker
 
-- [ ] **ING-01**: A background worker drains the embedding outbox without ever blocking the chat streaming/finalize path
-- [ ] **ING-02**: The worker pauses gracefully when the embedder is not ready (degraded mode) and resumes automatically when it becomes ready
+- [x] **ING-01**: A background worker drains the embedding outbox without ever blocking the chat streaming/finalize path
+- [x] **ING-02**: The worker pauses gracefully when the embedder is not ready (degraded mode) and resumes automatically when it becomes ready
 - [x] **ING-03**: Failed embed jobs retry with backoff and stop after a capped number of attempts (poison pills do not loop forever)
 - [x] **ING-04**: On boot, the worker recovers stale in-flight jobs (clears expired locks) so no message is permanently stuck unembedded
-- [ ] **ING-05**: A kill-switch environment variable disables the worker entirely for operators who don't want it
+- [x] **ING-05**: A kill-switch environment variable disables the worker entirely for operators who don't want it
 
 ### Hybrid Search & API
 
@@ -107,11 +107,11 @@ Which phases cover which requirements. Populated during roadmap creation (Phases
 | IDX-05 | Phase 63 | Complete |
 | IDX-06 | Phase 63 | Complete |
 | IDX-07 | Phase 63 | Complete |
-| ING-01 | Phase 64 | Pending |
-| ING-02 | Phase 64 | Pending |
+| ING-01 | Phase 64 | Complete |
+| ING-02 | Phase 64 | Complete |
 | ING-03 | Phase 64 | Complete |
 | ING-04 | Phase 64 | Complete |
-| ING-05 | Phase 64 | Pending |
+| ING-05 | Phase 64 | Complete |
 | SRCH-01 | Phase 65 | Pending |
 | SRCH-02 | Phase 65 | Pending |
 | SRCH-03 | Phase 65 | Pending |

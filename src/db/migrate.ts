@@ -250,6 +250,15 @@ export async function migrate(db: any): Promise<void> {
     )
   `);
 
+  // ── Phase 64: Embed-on-Write Worker — backoff column ─────────────
+  // NULL = never backed off (fresh row); claim query filters
+  // next_attempt_after IS NULL OR next_attempt_after <= NOW().
+  // No DEFAULT — NULL is the sentinel, not a timestamp.
+  await db.execute(sql`
+    ALTER TABLE message_embed_outbox
+      ADD COLUMN IF NOT EXISTS next_attempt_after TIMESTAMP WITH TIME ZONE
+  `);
+
   // ── Phase 6: Agent Personas ─────────────────────────────────────
   await db.execute(sql`ALTER TABLE agent_configs ADD COLUMN IF NOT EXISTS category TEXT`);
   await db.execute(sql`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS agent_config_id TEXT REFERENCES agent_configs(id) ON DELETE SET NULL`);

@@ -161,7 +161,11 @@ Full details: `.planning/milestones/v1.4-ROADMAP.md` and `.planning/milestones/v
   3. A job that repeatedly fails retries with backoff and stops after a capped number of attempts, leaving the failed row inspectable rather than looping forever.
   4. After a crash mid-embed, the next boot clears stale in-flight locks (`runBacklogRecovery`) so every previously-claimed-but-unfinished message gets re-drained — no message is permanently stuck.
   5. Setting the kill-switch environment variable disables the worker entirely; chat continues to function and the outbox simply accumulates until the worker is re-enabled.
-**Plans**: TBD
+**Plans**: 2 plans (2 waves)
+
+Plans:
+- [ ] 64-01-PLAN.md — DB layer: migration + claimBatch/markDone/markFailed/resetAttemptsForPending outbox helpers (ING-03, ING-04, wave 1)
+- [ ] 64-02-PLAN.md — EmbedWorker class + background-timers wiring + test suite covering ING-01..05 (wave 2)
 
 ### Phase 65: Hybrid Search SQL + API
 **Goal**: A single authenticated endpoint returns ranked, tenant-scoped, message-grained search hits that fuse lexical and semantic signal in one SQL round-trip, with honest snippets and a graceful keyword-only fallback when the embedder is down.
@@ -221,7 +225,7 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 63. Indexing Primitives | 3/3 | Complete    | 2026-05-29 |
-| 64. Embed-on-Write Worker | 0/TBD | Not started | - |
+| 64. Embed-on-Write Worker | 0/2 | Planned | - |
 | 65. Hybrid Search SQL + API | 0/TBD | Not started | - |
 | 66. Sidebar Search | 0/TBD | Not started | - |
 | 67. Command Palette Search | 0/TBD | Not started | - |
@@ -229,4 +233,4 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 
 ---
 
-*Last updated: 2026-05-29 — v1.5 Hybrid Chat Search roadmap created. Phases 63-68 defined; 35/35 v1.5 requirements mapped (100% coverage). Next: `/gsd:plan-phase 63`.*
+*Last updated: 2026-05-29 — Phase 64 planned (2 plans, 2 waves). Next: `/gsd:execute-phase 64`.*

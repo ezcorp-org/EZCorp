@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: 66-02 (sidebar wiring — next; consumes 66-01 helpers)
-status: completed
-stopped_at: Completed 66-01-PLAN.md
-last_updated: "2026-05-29T21:36:48.450Z"
-last_activity: "2026-05-29 — 66-01 landed: 3 pure search helpers + their unit tests + /api/search/messages e2e fixture mock (unblocks 66-02/03/04)"
+current_plan: 66-03 (deep-link — next; consumes 66-02 onselect(messageId) + 66-01 resolveDeepLink)
+status: in_progress
+stopped_at: Completed 66-02-PLAN.md
+last_updated: "2026-05-29T21:47:06.576Z"
+last_activity: "2026-05-29 — 66-02 landed: ConversationList sidebar wiring — Hybrid/Keyword/Semantic toggle + global-LS persistence + two-section grouped message results (sanitized snippets) + degraded notice + widened onselect(id, messageId?). 56 tests green (45 bun logic + 11 vitest component)."
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 11
-  completed_plans: 8
+  completed_plans: 9
   percent: 50
 ---
 
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 66 — Sidebar Search (IN PROGRESS — Wave-0 infra landed)
-Current Plan: 66-02 (sidebar wiring — next; consumes 66-01 helpers)
-Status: 66-01 complete — Wave-0 pure helpers + e2e mock landed (UI-01..04 helper-level): resolveDeepLink (window/branch decision), sanitizeSnippet (DOMPurify <mark>-only), search-mode (global LS + groupHitsByConversation), and the /api/search/messages Playwright mock + makeSearchHit. 21/21 tests green. Next: 66-02 sidebar + 66-03 deep-link (consume these helpers) + 66-04 e2e (consume the mock).
-Last activity: 2026-05-29 — 66-01 landed: 3 pure search helpers + their unit tests + /api/search/messages e2e fixture mock (unblocks 66-02/03/04)
+Phase: 66 — Sidebar Search (IN PROGRESS — Wave-0 infra + 66-02 sidebar landed)
+Current Plan: 66-03 (deep-link — next; consumes 66-02 onselect(messageId) + 66-01 resolveDeepLink)
+Status: 66-02 complete — ConversationList wired: Hybrid/Keyword/Semantic toggle (default Hybrid) + global-LS persistence (chatSearch.mode) + two-section grouped message results (sanitized <mark> snippets, role badge, match-type glyph, relative time) + non-blocking degraded notice + generic empty state; widened onselect(id, messageId?) for deep-link. UI-01/UI-02/UI-04 satisfied. 56 tests green (45 bun logic incl. isSemanticDegraded + groupHitsByConversation wiring; 11 vitest component). Conversations section reduced to TITLE-ONLY (Messages section owns content matches). Next: 66-03 deep-link (consume onselect messageId + resolveDeepLink) + 66-04 e2e (consume the mock).
+Last activity: 2026-05-29 — 66-02 landed: ConversationList sidebar wiring (toggle + global LS + two-section grouped results + degraded notice + widened onselect)
 
 Progress: [█████     ] v1.5 50% — 3/6 phases complete (63 + 64 + 65); 66/67/68 unblocked
 
@@ -551,6 +551,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 65 P01 | 50min | 3 tasks | 4 files |
 | Phase 65 P02 | ~5min | 3 tasks | 6 files |
 | Phase 66 P01 | 6min | 3 tasks | 8 files |
+| Phase 66 P02 | 5min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -744,6 +745,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T21:36:20.458Z
-Stopped at: Completed 66-01-PLAN.md
+Last session: 2026-05-29T21:47:06.572Z
+Stopped at: Completed 66-02-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

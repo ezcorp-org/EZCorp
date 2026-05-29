@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: 66-03 (deep-link — next; consumes 66-02 onselect(messageId) + 66-01 resolveDeepLink)
-status: in_progress
-stopped_at: Completed 66-02-PLAN.md
-last_updated: "2026-05-29T21:47:06.576Z"
-last_activity: "2026-05-29 — 66-02 landed: ConversationList sidebar wiring — Hybrid/Keyword/Semantic toggle + global-LS persistence + two-section grouped message results (sanitized snippets) + degraded notice + widened onselect(id, messageId?). 56 tests green (45 bun logic + 11 vitest component)."
+current_plan: 66-04 (e2e — next; consumes the /api/search/messages mock + the 66-03 deep-link journey)
+status: completed
+stopped_at: Completed 66-03-PLAN.md
+last_updated: "2026-05-29T21:48:34.019Z"
+last_activity: "2026-05-29 — 66-03 landed: ?m= deep-link plumbed end-to-end (handleSelect appends, ChatThread consumes/strips + resolveDeepLink branch-switch/window-grow scroll + reduced-motion-guarded pulse)"
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 11
   percent: 50
 ---
 
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 66 — Sidebar Search (IN PROGRESS — Wave-0 infra + 66-02 sidebar landed)
-Current Plan: 66-03 (deep-link — next; consumes 66-02 onselect(messageId) + 66-01 resolveDeepLink)
-Status: 66-02 complete — ConversationList wired: Hybrid/Keyword/Semantic toggle (default Hybrid) + global-LS persistence (chatSearch.mode) + two-section grouped message results (sanitized <mark> snippets, role badge, match-type glyph, relative time) + non-blocking degraded notice + generic empty state; widened onselect(id, messageId?) for deep-link. UI-01/UI-02/UI-04 satisfied. 56 tests green (45 bun logic incl. isSemanticDegraded + groupHitsByConversation wiring; 11 vitest component). Conversations section reduced to TITLE-ONLY (Messages section owns content matches). Next: 66-03 deep-link (consume onselect messageId + resolveDeepLink) + 66-04 e2e (consume the mock).
-Last activity: 2026-05-29 — 66-02 landed: ConversationList sidebar wiring (toggle + global LS + two-section grouped results + degraded notice + widened onselect)
+Phase: 66 — Sidebar Search (IN PROGRESS — Wave-0 infra + 66-02 sidebar + 66-03 deep-link landed)
+Current Plan: 66-04 (e2e — next; consumes the /api/search/messages mock + the 66-03 deep-link journey)
+Status: 66-03 complete — `?m=<messageId>` deep-link plumbed end-to-end (UI-03): chat route handleSelect(id, messageId?) appends `?m=` and both onselect callsites forward it; ChatThread consumes+strips `?m=` on mount (goto replaceState+noScroll, preserving other params), resolves the target via the pure resolveDeepLink helper (branch-switch if off-branch, grow visibleMessageCount if paginated out, NEVER re-fetch), scrolls to it (retry-once on DOM-mount race + startAnchorReapplyWatch), and fires a reduced-motion-guarded ~1.8s `.message-pulse` on the target bubble then clears it. Net-new @keyframes message-pulse in app.css; ChatMessage `pulse` prop on both data-message-id bubbles. 23/23 ChatThread component tests green (+3 new wiring cases); 68 adjacent green; zero regression. UI-01/02/03/04 all satisfied at code level. Next: 66-04 e2e (consume the 66-01 /api/search/messages mock + assert the click→?m=→scroll+pulse journey).
+Last activity: 2026-05-29 — 66-03 landed: ?m= deep-link plumbed end-to-end (handleSelect appends, ChatThread consumes/strips + resolveDeepLink branch-switch/window-grow scroll + reduced-motion-guarded pulse)
 
 Progress: [█████     ] v1.5 50% — 3/6 phases complete (63 + 64 + 65); 66/67/68 unblocked
 
@@ -552,6 +552,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 65 P02 | ~5min | 3 tasks | 6 files |
 | Phase 66 P01 | 6min | 3 tasks | 8 files |
 | Phase 66 P02 | 5min | 2 tasks | 3 files |
+| Phase 66 P03 | 6min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -745,6 +746,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-29T21:47:06.572Z
-Stopped at: Completed 66-02-PLAN.md
+Last session: 2026-05-29T21:48:34.016Z
+Stopped at: Completed 66-03-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

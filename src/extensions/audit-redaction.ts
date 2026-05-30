@@ -62,6 +62,12 @@ export interface RedactionResult {
 export interface RedactionOptions {
   /** Default 8192 (8 KB). */
   maxBytes?: number;
+  /** When `false`, skip size accounting and truncation entirely: only
+   *  credential redaction is applied and the (possibly large) result is
+   *  returned untruncated, without the serialize-to-measure-bytes pass.
+   *  Used at the `tool_calls` write boundary, whose output is rendered in
+   *  the UI and must not be capped. Default `true`. */
+  truncate?: boolean;
 }
 
 const REDACTED = "[REDACTED]";
@@ -267,6 +273,13 @@ export function redactForAudit(
     const visited = new WeakSet<object>();
     const redacted = walk(payload, "", fields, visited);
 
+    // Credential-redaction-only mode: no size cap, no truncation, and
+    // crucially no serialize-to-measure pass (the input may be a multi-MB
+    // tool output rendered in the UI).
+    if (opts.truncate === false) {
+      return { redacted, redactedFields: fields, truncated: false };
+    }
+
     let serialized: string;
     try {
       serialized = safeStringify(redacted);
@@ -301,4 +314,16 @@ export function redactForAudit(
     log.error("audit-redaction failed", { error: String(e) });
     return { redacted: FAILURE_MARKER, redactedFields: [], truncated: false };
   }
+}
+
+/**
+ * Scrub credential-shaped strings from a `tool_calls.output` content payload
+ * at the DB write boundary. Unlike the `audit_log` path this NEVER truncates
+ * — tool outputs are rendered in the UI (terminal dumps, diffs, images) and
+ * must keep their full structure — so only secret redaction is applied. This
+ * closes the gap where an extension echoing a Bearer header into its tool
+ * output would otherwise persist that secret in plaintext.
+ */
+export function redactToolCallOutputContent(content: unknown): unknown {
+  return redactForAudit(content, { truncate: false }).redacted;
 }

@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { getDb } from "../connection";
 import { toolCalls } from "../schema";
+import { redactToolCallOutputContent } from "../../extensions/audit-redaction";
 import type { ToolCallResult } from "../../extensions/types";
 
 /**
@@ -127,7 +128,9 @@ export async function persistToolCall(row: ToolCallRow): Promise<void> {
       extensionId: row.extensionId,
       toolName: row.toolName,
       input: row.input,
-      output: { content: "content" in row.output ? row.output.content : [] } as Record<string, unknown>,
+      output: {
+        content: redactToolCallOutputContent("content" in row.output ? row.output.content : []),
+      } as Record<string, unknown>,
       success: row.success,
       durationMs: row.durationMs,
       cardType: row.cardType ?? null,

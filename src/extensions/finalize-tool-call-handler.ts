@@ -31,6 +31,7 @@ import { getDb } from "../db/connection";
 import { toolCalls } from "../db/schema";
 import { createRateLimiter } from "./rate-limit";
 import { capabilityToolsDisabled } from "./capability-flags";
+import { redactToolCallOutputContent } from "./audit-redaction";
 import { rpcError, rpcResult } from "./json-rpc";
 
 const MAX_OPS_PER_SECOND = 50;
@@ -149,17 +150,17 @@ export async function handleFinalizeToolCallRpc(
   const output = coerceFinalizedOutput(params.output);
   const success = status === "complete";
 
-  // TODO(audit-redaction-phase-2): apply redactForAudit at tool_calls write boundary.
-  // tool_calls.input/output are explicitly OUT of Phase 50 scope (only audit_log
-  // is wrapped). When Phase 2 lands, route `output.content` through redactForAudit
-  // here and at the persistToolCall write site so credential-shaped strings in
-  // tool outputs (e.g. an extension echoing a Bearer header) don't escape.
+  // Scrub credential-shaped strings from the finalized output before it
+  // lands in tool_calls — mirrors the persistToolCall insert boundary so an
+  // extension echoing e.g. a Bearer header into its output can't persist the
+  // secret in plaintext. `redactToolCallOutputContent` never truncates, so
+  // large UI-rendered outputs keep their shape.
   await getDb()
     .update(toolCalls)
     .set({
       // Persist as the same `{ content }` envelope used by persistToolCall
       // so the read path in toolCallRowToSummary stays stable.
-      output: { content: output.content } as Record<string, unknown>,
+      output: { content: redactToolCallOutputContent(output.content) } as Record<string, unknown>,
       success,
     })
     .where(eq(toolCalls.id, toolCallId));

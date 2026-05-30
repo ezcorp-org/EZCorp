@@ -4,8 +4,8 @@ milestone: v1.5
 milestone_name: Hybrid Chat Search
 current_plan: Phase 67 COMPLETE — all 7 plans (67-01..07) have SUMMARYs.
 status: unknown
-stopped_at: Completed 67-07-PLAN.md
-last_updated: "2026-05-30T21:55:04.472Z"
+stopped_at: Phase 68 context gathered
+last_updated: "2026-05-30T22:37:17.175Z"
 last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
@@ -773,6 +773,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-30T21:54:20.650Z
-Stopped at: Completed 67-07-PLAN.md
+Last session: 2026-05-30T22:37:17.171Z
+Stopped at: Phase 68 context gathered
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

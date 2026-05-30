@@ -20,6 +20,8 @@
 	import { sanitizeSnippet } from "$lib/search/snippet-sanitize.js";
 	import { openEzPanel } from "$lib/ez/panel-store.svelte.js";
 	import { createFocusTrap } from "$lib/focus-trap.js";
+	import BottomSheet from "./BottomSheet.svelte";
+	import { useBreakpoint } from "$lib/use-breakpoint.svelte.js";
 
 	let {
 		open,
@@ -45,6 +47,12 @@
 	let highlightedIndex = $state(0);
 	let activeChildren = $state<Command[] | null>(null);
 	let inputEl = $state<HTMLInputElement | null>(null);
+
+	// At <lg the palette renders inside a BottomSheet (which owns its OWN
+	// focus-trap + Escape); the desktop centered modal owns those itself. Gating
+	// avoids a double focus-trap / double-Escape (67-RESEARCH Pitfall 3).
+	const breakpoint = useBreakpoint("lg");
+	let isMobile = $derived(breakpoint.below);
 
 	// Cross-project message search state (driven purely by query length ≥2).
 	let hits = $state<MessageSearchHit[]>([]);
@@ -294,17 +302,14 @@
 		}
 	}
 
-	// Focus trap + auto-focus input when opened; reset when closed
+	// Focus trap + Escape — DESKTOP ONLY. On mobile, BottomSheet owns both
+	// (Pitfall 3 — never double-trap / double-Escape).
 	let cleanupTrap: (() => void) | null = null;
 	let dialogEl = $state<HTMLElement | null>(null);
 
 	$effect(() => {
-		if (open && inputEl) {
-			requestAnimationFrame(() => inputEl?.focus());
-			// Set up focus trap after dialog renders
-			if (dialogEl) {
-				cleanupTrap = createFocusTrap(dialogEl);
-			}
+		if (open && !isMobile && dialogEl) {
+			cleanupTrap = createFocusTrap(dialogEl);
 			// Document-level Escape listener. Using capture phase so we reliably
 			// close the modal even if a nested handler (focus trap, input, etc.)
 			// would otherwise swallow the event on bubble.
@@ -317,12 +322,26 @@
 				}
 			};
 			document.addEventListener("keydown", onDocKeydown, true);
-			return () => document.removeEventListener("keydown", onDocKeydown, true);
+			return () => {
+				cleanupTrap?.();
+				cleanupTrap = null;
+				document.removeEventListener("keydown", onDocKeydown, true);
+			};
 		}
-		if (!open) {
-			cleanupTrap?.();
-			cleanupTrap = null;
-			resetState();
+	});
+
+	// Reset palette state when it closes (both desktop + mobile).
+	$effect(() => {
+		if (!open) resetState();
+	});
+
+	// Auto-focus the search input whenever the palette opens — in BOTH the
+	// desktop modal and the mobile sheet (per CONTEXT). For initialView
+	// "commands" the input is still focused (typing flows straight in), it just
+	// begins on the command list since no query has been typed yet.
+	$effect(() => {
+		if (open && inputEl) {
+			requestAnimationFrame(() => inputEl?.focus());
 		}
 	});
 
@@ -332,31 +351,12 @@
 	function flatIndex(item: Command | MessageSearchHit): number {
 		return flatItems.indexOf(item);
 	}
-
-	// Auto-focus the search input whenever the palette opens. For initialView
-	// "commands" the input is still focused (so typing flows straight in), it
-	// just begins on the command list since no query has been typed yet.
-	$effect(() => {
-		if (open && inputEl && initialView) {
-			requestAnimationFrame(() => inputEl?.focus());
-		}
-	});
 </script>
 
-{#if open}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div
-		class="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh]"
-		onclick={handleBackdropClick}
-		onkeydown={handleKeydown}
-	>
-		<div
-			bind:this={dialogEl}
-			class="mx-4 w-full max-w-lg overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-secondary)] shadow-2xl"
-			role="dialog"
-			aria-modal="true"
-			aria-label="Command palette"
-		>
+<!-- Palette body — rendered IDENTICALLY inside the desktop modal AND the
+     mobile BottomSheet so the section nesting (commands + project/conversation
+     groups) is never flattened on mobile (Pitfall 4). -->
+{#snippet body()}
 			<!-- Input bar -->
 			<div class="flex items-center gap-3 border-b border-[var(--color-border)] px-4 py-3">
 				{#if activeChildren}
@@ -543,6 +543,35 @@
 			<div class="border-t border-[var(--color-border)] px-4 py-2 text-center text-[10px] text-[var(--color-text-muted)]">
 				Type to filter &middot; Enter to select &middot; Esc to close
 			</div>
+{/snippet}
+
+{#if open}
+	{#if isMobile}
+		<!-- Mobile: BottomSheet owns backdrop + focus-trap + Escape. Keydown
+		     (arrows / Enter / ez:) still flows through the palette handler. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div onkeydown={handleKeydown}>
+			<BottomSheet open {onclose} ariaLabel="Search">
+				{@render body()}
+			</BottomSheet>
 		</div>
-	</div>
+	{:else}
+		<!-- Desktop: centered modal with its own a11y + focus-restore-on-close. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh]"
+			onclick={handleBackdropClick}
+			onkeydown={handleKeydown}
+		>
+			<div
+				bind:this={dialogEl}
+				class="mx-4 w-full max-w-lg overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-secondary)] shadow-2xl"
+				role="dialog"
+				aria-modal="true"
+				aria-label="Command palette"
+			>
+				{@render body()}
+			</div>
+		</div>
+	{/if}
 {/if}

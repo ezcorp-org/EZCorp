@@ -303,3 +303,103 @@ test.describe("Command palette search — desktop (PAL-01/02/06/05)", () => {
 		await mockApi({ projects: [homeProj, otherProj], conversations: [activeConv] });
 	});
 });
+
+/**
+ * Mobile BottomSheet fallback (PAL-07). These cases assert the `<lg`
+ * adaptation: Plan 06 wraps the same palette content in the shared
+ * `BottomSheet` (`data-testid="bottom-sheet"`) instead of the centered desktop
+ * modal. They are RED until Plan 06 lands the adapter.
+ *
+ * The block skips on desktop-width viewports so a single `bunx playwright test`
+ * run that includes `chromium` does not fail these on the wrong viewport;
+ * `--project=mobile-chromium` (Pixel 5, width 393 < lg) is where they actually
+ * exercise. This mirrors the viewport-aware guarding in
+ * `conversation-search.spec.ts`.
+ */
+test.describe("Command palette search — mobile BottomSheet (PAL-07)", () => {
+	test.skip(({ viewport }) => (viewport?.width ?? 0) >= LG, "mobile-only: <lg BottomSheet fallback");
+
+	const mobileMsgs = chain("other-conv", 5, "m");
+
+	async function mountMobilePalette(page: Page, mockApi: (overrides?: unknown) => Promise<void>) {
+		await (mockApi as (o?: unknown) => Promise<void>)({
+			projects: [homeProj, otherProj],
+			conversations: [
+				activeConv,
+				makeConversation({ id: "other-conv", projectId: "proj-other", title: "Other Conversation" }),
+			],
+			messages: [activeMsg, ...mobileMsgs],
+			searchMessages: {
+				hits: [
+					makeCrossProjectHit({
+						projectId: "proj-home",
+						projectName: "Home Project",
+						conversationId: "active",
+						conversationTitle: "Active Conversation",
+						messageId: "active-hit",
+						snippet: "an in-conversation <mark>match</mark>",
+					}),
+					makeCrossProjectHit({
+						projectId: "proj-other",
+						projectName: "Other Project",
+						conversationId: "other-conv",
+						conversationTitle: "Other Conversation",
+						messageId: "m-2",
+						snippet: "a cross-project <mark>match</mark>",
+					}),
+				],
+			},
+		});
+		await page.goto(`/project/proj-home/chat/active`);
+		await expect(page.getByText("active landing message")).toBeVisible({ timeout: 8000 });
+		await openWithCmdK(page);
+	}
+
+	test("on <lg the palette renders inside the BottomSheet, not the centered desktop modal", async ({ page, mockApi }) => {
+		await mountMobilePalette(page, mockApi as unknown as (o?: unknown) => Promise<void>);
+
+		const sheet = page.getByTestId("bottom-sheet");
+		await expect(sheet).toBeVisible({ timeout: 3000 });
+		// The palette content lives INSIDE the sheet (the dialog is the sheet,
+		// not a separately-centered modal). Assert the palette dialog and the
+		// sheet are the same surface by checking the input lives within it.
+		await expect(sheet.getByRole("textbox")).toBeVisible({ timeout: 3000 });
+	});
+
+	test("same section structure inside the sheet — Commands / In this conversation / Other by project→conversation, NOT flattened", async ({ page, mockApi }) => {
+		await mountMobilePalette(page, mockApi as unknown as (o?: unknown) => Promise<void>);
+
+		const sheet = page.getByTestId("bottom-sheet");
+		await expect(sheet).toBeVisible({ timeout: 3000 });
+		await sheet.getByRole("textbox").fill("match");
+
+		// Section nesting is preserved inside the sheet (not flattened into one
+		// list): the command list, the in-conversation group, and the
+		// other-conversations group each render with their headers.
+		await expect(sheet.getByTestId("palette-command")).not.toHaveCount(0, { timeout: 3000 });
+		await expect(sheet.getByText("In this conversation")).toBeVisible();
+		await expect(sheet.getByText("Other conversations")).toBeVisible();
+		// Other group nests by project → conversation (project name header present).
+		await expect(sheet.getByText("Other Project")).toBeVisible();
+		await expect(sheet.getByTestId("message-hit")).toHaveCount(2);
+	});
+
+	test("the search input is auto-focused on open even on mobile", async ({ page, mockApi }) => {
+		await mountMobilePalette(page, mockApi as unknown as (o?: unknown) => Promise<void>);
+
+		// Cmd+K leans search on mobile too — the sheet's input is focused on open.
+		await expect(page.getByTestId("bottom-sheet").getByRole("textbox")).toBeFocused({ timeout: 3000 });
+	});
+
+	test("a single Escape closes the sheet — no double-close / double-trap", async ({ page, mockApi }) => {
+		await mountMobilePalette(page, mockApi as unknown as (o?: unknown) => Promise<void>);
+
+		const sheet = page.getByTestId("bottom-sheet");
+		await expect(sheet).toBeVisible({ timeout: 3000 });
+
+		// ONE Escape closes the whole sheet (the palette's Escape handler and the
+		// BottomSheet's must not both fire / must coordinate to a single close).
+		await page.keyboard.press("Escape");
+		await expect(sheet).not.toBeVisible({ timeout: 2000 });
+	});
+});

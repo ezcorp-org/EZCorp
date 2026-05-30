@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: Phase 67 in flight — 67-01 (test scaffolds), 67-02, 67-03, 67-04 have SUMMARYs; 67-05/06/07 remaining.
-status: verifying
-stopped_at: Completed 67-03-PLAN.md
-last_updated: "2026-05-30T20:52:30.119Z"
-last_activity: "2026-05-30 — 67-03 landed: cross-project search scope (scope=all over the user's project set) + projectId/projectName on every MessageSearchHit (PAL-01/PAL-05); multi-project EXPLAIN keeps the HNSW Index Scan, no Seq Scan"
+current_plan: Phase 67 in flight — 67-01/02/03/04/05 have SUMMARYs; 67-06/07 remaining.
+status: unknown
+stopped_at: Completed 67-05-PLAN.md
+last_updated: "2026-05-30T20:56:54.865Z"
+last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 19
-  completed_plans: 16
+  completed_plans: 17
   percent: 67
 ---
 
@@ -28,7 +28,8 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 
 Milestone: v1.5 Hybrid Chat Search
 Phase: 67 — Command Palette Search (in progress; 67-01 RED test scaffolds landed; 67-02 + 67-03 + 67-04 also landed via parallel sessions)
-Current Plan: Phase 67 in flight — 67-01 (test scaffolds), 67-02, 67-03, 67-04 have SUMMARYs; 67-05/06/07 remaining.
+Current Plan: Phase 67 in flight — 67-01/02/03/04/05 have SUMMARYs; 67-06/07 remaining.
+Status (67-05): pure cross-project palette grouper landed (PAL-03/PAL-04). Created `web/src/lib/search/palette-results.ts` implementing `buildPaletteResults(matchingCommands, hits, activeConversationId) → { sections, flatItems }` to the Plan-01 `<interfaces>` contract. Locked section order honored both ways: `[commands, in-this-conversation, other]` with an active conversation, `[commands, messages]` with none; empty sections omitted by construction. `other`/`messages` grouped project→conversation via an internal `groupHitsByProjectConversation` that buckets hits by `projectId` (first-seen) then expands each bucket through the REUSED `groupHitsByConversation` (search-mode.ts — DRY, never re-derived), emitting one `PaletteGroup` per (project, conversation) carrying projectId/projectName/conversationId/conversationTitle + hit rows. `flatItems` built from the SAME section→group→row tree (single `pushSectionRows` accumulator) so `flatItems[i]` is identity-equal to the rendered row at position i — that identity drives ArrowDown/Up nav (pinned: `indexOf(otherBHit) === length-1`); headers never enter flatItems. Verified: `cd web && bun test ./src/lib/search/__tests__/palette-results.test.ts` 14/14 (42 expect()), svelte-check clean on the new file (filtered: zero palette-results errors). ZERO deviations — implementation matched the locked contract on first green; test never touched (Plan-01 ordering agreed with the CONTEXT-locked section order). This plan's TDD RED phase was already landed by 67-01, so Plan 05 is the GREEN-only implementation — no refactor commit needed (clean on first green). 1 atomic commit `05c31323` (feat). Sacred-12-stash held (12→12); explicit-path `git add web/src/lib/search/palette-results.ts` only — zero touches to the pre-existing dirty `manifest.lock.json` or any parallel-session files. Exports `PaletteRow`/`PaletteGroup`/`PaletteSection`/`PaletteResults` + `buildPaletteResults` ready for Plan 06 (CommandPalette.svelte) to render + drive deep-links `/project/<p>/chat/<c>?m=<id>`; file is 100%-coverable by the Plan-01 suite (machine-pin lands in Plan 07).
 Status (67-03): cross-project search backend — the foundational change every palette deep-link depends on (PAL-01 + PAL-05). Generalized `scopedConvArray()` to a `tenantPredicate()` helper: scope=project keeps `c.project_id = projectId`, scope=all swaps to `c.user_id = userId` across EVERY project, both driving the SAME single-table denormalized `conversation_id = ANY(...)` ANN scan (no project→conversation join inside the HNSW node — Pitfall 5). Added `projectId`/`projectName` to every hit via `JOIN projects p` on all 3 display SELECTs (keyword/semantic/hybrid) + `toHit()` + both server (`message-search.ts`) and client (`api.ts`) `MessageSearchHit` types. Endpoint: zod `scope` enum (project|all, default project); scope=all skips the projectId-required 400 + resolves tenant by userId; scope=project keeps the 400; auth/read-scope gate + limit/offset clamp + degraded envelope unchanged. Client `searchMessages(projectId, q, {…, scope})` forwards scope. Verified: `bun test message-search*.test.ts` 21/21 (net +5: cross-project hits, cross-user leak guard, test/role exclusion under scope=all, projectId/projectName population, multi-project EXPLAIN showing `Index Scan using idx_message_chunks_embedding` + `Filter: conversation_id` + user_id tenant + NO `Seq Scan on message_chunks`); `cd web && bunx vitest run api-search-messages.{server,client.unit}.test.ts` 28/28. 2 deviations auto-fixed: (a) Rule-1 — making projectId/projectName REQUIRED broke 3 Phase-66 MessageSearchHit fixture factories (conversation-list-logic / conversation-list-search-mode.component / search-mode), backfilled defaults (svelte-check errors 40→37, all 3 caused-by-me cleared; the 37 remaining are pre-existing baseline + parallel-session palette-results/CommandPalette artifacts, logged in deferred-items.md); (b) Rule-3 — client test named `.unit.test.ts` (web vitest include glob only matches .component/.server/.unit) + parseUrl base for the relative BASE='' fetch URLs. Zero SUT logic beyond the plan; commits `dde7a142` (Task 1) + `52f97504` (Task 2). Sacred-12-stash held (12→12→12); explicit-path adds only; zero touches to parallel-session dirty files.
 Status (67-01): three frontend test files landed test-first. (1) `web/src/lib/search/__tests__/palette-results.test.ts` (283L) — TRUE-RED unit contract for `buildPaletteResults` (Plan 05 import target): pins section order [commands, in-this-conversation, other] + the null-active-conversation single `messages` branch + project→conversation grouping + flatItems=actionable-rows-only render order + flat-index ArrowDown mapping + empty-section omission + first-seen-order parity with groupHitsByConversation. (2) `web/src/__tests__/CommandPalette.component.test.ts` (329L) — PARTIAL-RED component contract driving the palette via mocked searchMessages+goto (extended projectId/projectName hit shape, ≥2 projects + active conv): 7 message-search assertions RED until Plan 06 (sections-with-commands, snippet sanitize, role badge + glyph ≈/⊕/“, arrow-skip-headers, row-type Enter deep-link /project/<p>/chat/<c>?m=<id>, generic empty, degraded notice + no-mode-mutation); 5 guard assertions already GREEN (dialog ARIA, focus-restore, ez-prefix-no-search, <2-char-no-search, command-Enter-no-deeplink). (3) `web/src/__tests__/app-layout-palette-shortcut.test.ts` (52L) — source-read suite mirroring app-layout-agents-nav.test.ts, pinning both case "palette"/case "palette-commands" arms + initialView={…} pass-through. 2 deviations auto-fixed: (a) Rule-1 — moved goto+searchMessages spies into vi.hoisted() (vi.mock factories hoist above imports → "Cannot access before initialization"); (b) Rule-3 — Plan 04 routing already shipped (commit 098545c1), so Task 3 landed GREEN (3/3) as an honest regression guard rather than a fabricated RED. Zero production source touched by 67-01's three commits (61cb2ca3 + 6a47df3c + 059f1d63). Sacred-12-stash held (12→12); explicit-path adds only (left parallel-session dirty files untouched). Commits: 61cb2ca3 (Task1 unit RED), 6a47df3c (Task2 component RED), 059f1d63 (Task3 routing guard).
 Status (66-05, prior): 66-05 complete — gap-closure plan that machine-gates the three Phase 66 search helpers at 100% per-file. Extended `scripts/test-coverage.sh` to measure web/src/lib: widened the per-file loop to the two search-helper bun:test suites (snippet-sanitize + search-mode) and added a NEW node-run vitest --coverage leg (coverage-v8 fails under Bun) for the vitest-only deep-link-resolve + the two latent component pins, with SF:src/→SF:web/src/ re-rooting + VITEST_EXIT propagated to the gate. Added exact 100% pins for the three search modules in `scripts/coverage-thresholds.json` and reconciled the two pre-existing latent vitest-only pins (goal-row-logic.ts, GoalPill.svelte) — all five now satisfied by real lcov (14/14, 3/3, 31/31, 7/7, 45/45). Task-3 decision checkpoint resolved **add-to-ci**: added a node-22-provisioned `coverage` job to `.github/workflows/ci.yml` so the gate runs on every PR (not just release-sdk.yml). One Rule-3 deviation (plan-authorized): narrowed the web bun shard set to the two target files (not the whole web/src/__tests__ dir) to avoid pulling unrelated lib/SDK/example modules into the gate as new violations. Verified in isolation: ZERO new violations vs baseline, fixed 2. Sacred-12-stash held (12→12); explicit-path adds only. NOTE: full-tree `bun run test:coverage` stays RED on the current dirty working tree due to ~68 PRE-EXISTING baseline violations from uncommitted parallel-session changes to 100%-pinned files — out of 66-05 scope (logged in deferred-items.md); the gate goes green once that parallel work is committed/cleaned.
@@ -562,6 +563,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 67 P04 | 3min | 2 tasks | 4 files |
 | Phase 67 P01 | 5 | 3 tasks | 3 files |
 | Phase 67 P03 | 25 | 2 tasks | 10 files |
+| Phase 67 P05 | 2min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -737,6 +739,8 @@ Plan 54-03 execution decisions:
 - [Phase 67]: 67-04: palette-commands (Cmd+Shift+P) added; both palette + palette-commands toggle but set paletteInitialView first; merge-by-action keeps custom overrides for both
 - [Phase 67]: 67-04: declared optional initialView prop on CommandPalette (inert until Plan 06) to keep layout svelte-check clean; verified Task 2 via source-grep because Plan 01 RED routing test is not yet on disk
 - [Phase 67]: 67-01: Plan 04 routing (palette/palette-commands + initialView) already shipped (commit 098545c1); Task 3 source-read test landed as GREEN regression guard, not RED
+- [Phase 67]: 67-05: built flatItems from the same section→group→row tree (single pushSectionRows pass) so flatItems[i] is identity-equal to the rendered row — drives palette arrow-nav via indexOf
+- [Phase 67]: 67-05: reused groupHitsByConversation (search-mode.ts) per first-seen project bucket rather than re-deriving conversation grouping (DRY); one PaletteGroup per (project, conversation)
 
 ### Pending Todos
 
@@ -763,6 +767,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-30T20:52:30.115Z
-Stopped at: Completed 67-03-PLAN.md
+Last session: 2026-05-30T20:56:13.858Z
+Stopped at: Completed 67-05-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

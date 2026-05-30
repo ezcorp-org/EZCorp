@@ -4,13 +4,13 @@ milestone: v1.5
 milestone_name: Hybrid Chat Search
 current_plan: "Phase 66 COMPLETE (66-01..04). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
 status: completed
-stopped_at: Completed 66-04-PLAN.md
-last_updated: "2026-05-29T22:19:40.457Z"
+stopped_at: "66-05 paused at Task 3 decision checkpoint (Tasks 1-2 done: commits 4950dbf1 + 49c3bbc1). Awaiting gate-location decision (release-sdk.yml only vs also ci.yml)."
+last_updated: "2026-05-30T12:05:47.317Z"
 last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
-  completed_phases: 4
-  total_plans: 11
+  completed_phases: 3
+  total_plans: 12
   completed_plans: 11
   percent: 67
 ---
@@ -745,9 +745,10 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 - ✓ ~8 pre-existing test failures — covered by TEST-04 in Phase 59.
 - ✓ Capability expiry v1.5 (per-cap TTL banner) — covered by TTL-01 in Phase 56.
 - ✓ Phase 49 mobile UX deferred items — covered by UX-01..04 in Phase 57.
+- 66-05: per-file coverage gate is RED on dirty working tree due to ~68 PRE-EXISTING baseline violations from uncommitted parallel-session changes to 100%-pinned files. NOT caused by 66-05 — verified zero new violations, fixes 2 (GoalPill.svelte, goal-row-logic.ts). See .planning/phases/66-sidebar-search/deferred-items.md.
 
 ## Session Continuity
 
-Last session: 2026-05-29T22:18:41.995Z
-Stopped at: Completed 66-04-PLAN.md
+Last session: 2026-05-30T12:05:39.525Z
+Stopped at: 66-05 paused at Task 3 decision checkpoint (Tasks 1-2 done: commits 4950dbf1 + 49c3bbc1). Awaiting gate-location decision (release-sdk.yml only vs also ci.yml).
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

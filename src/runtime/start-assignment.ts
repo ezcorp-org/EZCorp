@@ -26,6 +26,12 @@ import { CURRENT_MODEL_SENTINEL } from "../types";
 import { createSubConversation, getSubConversations } from "../db/queries/conversations";
 import { getSetting } from "../db/queries/settings";
 import { dequeue } from "./pending-messages";
+import {
+  TASK_DONE_RE,
+  TASK_BLOCKED_RE,
+  TASK_DONE_RE_G,
+  TASK_BLOCKED_RE_G,
+} from "./sentinels";
 import { logger } from "../logger";
 import type {
   TaskAssignment,
@@ -43,11 +49,6 @@ const log = logger.child("start-assignment");
 // output sentinel; the cycle cap is the hard backstop if it never does.
 
 const DEFAULT_MAX_AUTONOMOUS_CYCLES = 8;
-
-const TASK_DONE_RE = /<<\s*TASK_DONE\s*>>/;
-const TASK_BLOCKED_RE = /<<\s*TASK_BLOCKED\s*:?\s*([^>]*)>>/;
-const TASK_DONE_RE_G = /<<\s*TASK_DONE\s*>>/g;
-const TASK_BLOCKED_RE_G = /<<\s*TASK_BLOCKED\s*:?\s*[^>]*>>/g;
 
 const CONTINUATION_PROMPT =
   "Continue working toward the Pinned Objective in your system prompt. " +

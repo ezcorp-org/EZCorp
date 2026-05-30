@@ -3,6 +3,7 @@ import { findSimilarMemory, insertMemory, deleteMemory, getMemoryById } from "..
 import { searchMemories } from "../db/queries/memories";
 import { getSetting, upsertSetting } from "../db/queries/settings";
 import type { MemoryProvenance } from "./types";
+import { CHEAP_MODEL_BY_PROVIDER } from "../lib/cheap-models";
 import { logger } from "../logger";
 const log = logger.child("memory");
 
@@ -15,21 +16,22 @@ async function generateEmbedding(text: string): Promise<number[]> {
 const COMPACTION_SIMILARITY_THRESHOLD = 0.90;
 const LOCK_KEY = "compaction:lastRun";
 
-// Cheapest-model lookup per provider family for the compaction merge
-// LLM call. Inlined here in Phase 53 Stage 2 — previously imported as
-// `getExtractionModel` from the now-deleted `src/memory/extraction.ts`.
-// The bundled `memory-extractor` extension owns its own copy of this
-// map; the compaction merge is host-internal so it carries its own.
+// Cheapest-model lookup per provider family for the compaction merge LLM
+// call. Model IDs come from the shared host-internal registry
+// (`../lib/cheap-models`) so a model deprecation is a single edit. The
+// compaction merge intentionally supports only the cloud trio + falls back
+// to google for anything else (including ollama), so it carries its own
+// provider subset rather than using the registry's ollama entry.
 const COMPACTION_MODELS: Record<string, string> = {
-  anthropic: "claude-haiku-4-5-20250514",
-  openai: "gpt-4o-mini",
-  google: "gemini-2.0-flash-lite",
+  anthropic: CHEAP_MODEL_BY_PROVIDER.anthropic,
+  openai: CHEAP_MODEL_BY_PROVIDER.openai,
+  google: CHEAP_MODEL_BY_PROVIDER.google,
 };
 
 function pickCompactionModel(activeProvider: string): { provider: string; model: string } {
   const model = COMPACTION_MODELS[activeProvider];
   if (model) return { provider: activeProvider, model };
-  return { provider: "google", model: "gemini-2.0-flash-lite" };
+  return { provider: "google", model: CHEAP_MODEL_BY_PROVIDER.google };
 }
 
 /**

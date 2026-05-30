@@ -56,6 +56,9 @@ import { sql } from "drizzle-orm";
 import { resolveModel as defaultResolveModel } from "../providers/router";
 import { getCredential as defaultGetCredential } from "../providers/credentials";
 import { dequeue as dequeuePendingDefault } from "./pending-messages";
+import { TASK_DONE_RE, TASK_BLOCKED_RE } from "./sentinels";
+import { piComplete, type PiCompleteFn } from "../lib/pi-complete";
+import { CHEAP_MODEL_BY_PROVIDER } from "../lib/cheap-models";
 import type { EzActionResult } from "./ez-actions/types";
 
 const log = logger.child("goal-host");
@@ -83,15 +86,12 @@ export const EVALUATOR_MAX_OUTPUT_TOKENS = 512;
 /** Pause trigger — FR-8 (anti-garbage-loop). */
 export const EVALUATOR_FAILURE_THRESHOLD = 3;
 
-/** Pinned Haiku/flash-lite triple — D5, same set as `memory-extractor`
- *  (`bundled.ts:681-686`). Indexed by provider; values pass to
- *  `resolveModel(provider, model)` verbatim. */
-export const CHEAP_MODEL_BY_PROVIDER: Readonly<Record<string, string>> = {
-  anthropic: "claude-haiku-4-5-20250514",
-  google: "gemini-2.0-flash-lite",
-  openai: "gpt-4o-mini",
-  ollama: "gemma4:e2b",
-};
+/** Pinned Haiku/flash-lite triple — D5. The canonical host-internal cheap
+ *  model registry lives in `../lib/cheap-models` (shared with the memory
+ *  compaction merge); re-exported here under its historical name so existing
+ *  importers (and tests) keep their path. Indexed by provider; values pass
+ *  to `resolveModel(provider, model)` verbatim. */
+export { CHEAP_MODEL_BY_PROVIDER };
 
 /** Credential fallback chain (FR-6): conv provider → anthropic → any. */
 export const FALLBACK_PROVIDERS: readonly string[] = [
@@ -101,11 +101,9 @@ export const FALLBACK_PROVIDERS: readonly string[] = [
   "ollama",
 ];
 
-/** Sentinel detection — D11 (cooperative main model can end a goal in
- *  zero evaluator calls). Lifted verbatim from `start-assignment.ts`'s
- *  shipped autonomous loop. */
-const TASK_DONE_RE = /<<\s*TASK_DONE\s*>>/;
-const TASK_BLOCKED_RE = /<<\s*TASK_BLOCKED\s*:?\s*([^>]*)>>/;
+// Sentinel detection — D11 (cooperative main model can end a goal in
+// zero evaluator calls). Shared with `start-assignment.ts`'s autonomous
+// loop via `./sentinels` so the two detectors can never drift apart.
 
 /** Clear-subcommand aliases (PRD §5.3, FR-2). Case-insensitive,
  *  trimmed. The `/goal` token followed by EOS or whitespace, then EXACTLY
@@ -528,55 +526,14 @@ export const EVALUATOR_SYSTEM_PROMPT = [
   "- DO NOT wrap the JSON in code fences. DO NOT add any commentary.",
 ].join("\n");
 
-// ── pi-ai complete wrapper (host-side, mirrors llm-handler.ts:97-125) ─
+// ── pi-ai complete wrapper (host-side) ───────────────────────────────
+//
+// The evaluator's cheap-model call goes through the shared `piComplete`
+// wrapper (`../lib/pi-complete`), which the extension `llm-handler` also
+// uses. `CompleteFn` is re-exported under its historical name so the
+// host-injectable `complete` swap-in keeps the same type identity.
 
-export type CompleteFn = (
-  piModel: unknown,
-  body: {
-    systemPrompt?: string;
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string; timestamp: number }>;
-  },
-  opts: { apiKey: string; maxTokens?: number; temperature?: number; timeoutMs?: number },
-) => Promise<{
-  content: Array<{ type: string; text?: string }>;
-  usage?: { input?: number; output?: number; cost?: number };
-  stopReason?: string;
-  model?: string;
-}>;
-
-async function defaultPiComplete(
-  piModel: unknown,
-  body: {
-    systemPrompt?: string;
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string; timestamp: number }>;
-  },
-  opts: { apiKey: string; maxTokens?: number; temperature?: number; timeoutMs?: number },
-): Promise<{
-  content: Array<{ type: string; text?: string }>;
-  usage?: { input?: number; output?: number; cost?: number };
-  stopReason?: string;
-  model?: string;
-}> {
-  // Dynamic import so a host without pi-ai keys at boot doesn't crash
-  // on goal-host module load — same pattern as
-  // `src/extensions/llm-handler.ts:97-125`.
-  const piAi = (await import("@mariozechner/pi-ai")) as {
-    complete: (...args: unknown[]) => Promise<unknown>;
-  };
-  const piOpts: Record<string, unknown> = { apiKey: opts.apiKey };
-  if (opts.maxTokens !== undefined) piOpts.maxTokens = opts.maxTokens;
-  if (opts.temperature !== undefined) piOpts.temperature = opts.temperature;
-  if (opts.timeoutMs !== undefined && typeof AbortSignal?.timeout === "function") {
-    piOpts.signal = AbortSignal.timeout(opts.timeoutMs);
-  }
-  const result = await piAi.complete(piModel, body, piOpts);
-  return result as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input?: number; output?: number; cost?: number };
-    stopReason?: string;
-    model?: string;
-  };
-}
+export type CompleteFn = PiCompleteFn;
 
 // ── Transcript shaping (FR-7) ───────────────────────────────────────
 
@@ -635,7 +592,7 @@ export async function invokeEvaluator(
     complete?: CompleteFn;
   } = {},
 ): Promise<EvaluatorInvokeResult> {
-  const completeFn = opts.complete ?? defaultPiComplete;
+  const completeFn = opts.complete ?? piComplete;
   const userTurn = {
     role: "user" as const,
     content:
@@ -946,7 +903,7 @@ export class GoalHost {
     this.maxGoalTurns = opts.maxGoalTurns ?? DEFAULT_MAX_GOAL_TURNS;
     this.resolveModelFn = opts.resolveModel ?? defaultResolveModel;
     this.getCredentialFn = opts.getCredential ?? defaultGetCredential;
-    this.completeFn = opts.complete ?? defaultPiComplete;
+    this.completeFn = opts.complete ?? piComplete;
     this.getMessagesFn = opts.getMessages ?? convQueries.getMessages;
     this.createMessageFn = opts.createMessage ?? convQueries.createMessage;
     this.computeTokenSpendFn = opts.computeTokenSpend ?? computeTokenSpendSinceArmed;

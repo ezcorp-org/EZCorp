@@ -63,6 +63,7 @@ function href(opts: {
 	projectId?: string | null;
 	q?: string | null;
 	mode?: string;
+	scope?: string;
 	limit?: string;
 	offset?: string;
 } = {}): string {
@@ -71,6 +72,7 @@ function href(opts: {
 		p.set("projectId", opts.projectId ?? PROJECT_ID);
 	if (opts.q !== null) p.set("q", opts.q ?? "hello world");
 	if (opts.mode !== undefined) p.set("mode", opts.mode);
+	if (opts.scope !== undefined) p.set("scope", opts.scope);
 	if (opts.limit !== undefined) p.set("limit", opts.limit);
 	if (opts.offset !== undefined) p.set("offset", opts.offset);
 	return `http://localhost/api/search/messages?${p.toString()}`;
@@ -147,6 +149,84 @@ describe("GET /api/search/messages — SRCH-01 auth/scope/validation", () => {
 			userId: user.id,
 		});
 		expect(arg.queryEmbedding).toEqual([0.1, 0.2, 0.3]);
+	});
+});
+
+describe("GET /api/search/messages — PAL-01 scope=all (cross-project)", () => {
+	test("scope=all WITHOUT projectId → 200 (no 400), threads scope:'all' + userId", async () => {
+		const res = await GET(
+			makeEvent({
+				href: href({ projectId: null, scope: "all" }),
+				locals: { user },
+			}),
+		);
+		expect(res.status).toBe(200);
+		expect(vi.mocked(searchMessages)).toHaveBeenCalledTimes(1);
+		const arg = vi.mocked(searchMessages).mock.calls[0]![0];
+		expect(arg.scope).toBe("all");
+		expect(arg.userId).toBe(user.id);
+		// projectId is NOT required / passed under scope=all.
+		expect(arg.projectId).toBeUndefined();
+	});
+
+	test("scope=project (or omitted) WITHOUT projectId → still 400", async () => {
+		const res = await GET(
+			makeEvent({
+				href: href({ projectId: null, scope: "project" }),
+				locals: { user },
+			}),
+		);
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error?: string };
+		expect(typeof body.error).toBe("string");
+
+		// omitted scope defaults to 'project' → 400 too (unchanged Phase 65 contract).
+		const res2 = await GET(
+			makeEvent({ href: href({ projectId: null }), locals: { user } }),
+		);
+		expect(res2.status).toBe(400);
+	});
+
+	test("scope=garbage → 400 (zod enum)", async () => {
+		const res = await GET(
+			makeEvent({ href: href({ scope: "everything" }), locals: { user } }),
+		);
+		expect(res.status).toBe(400);
+	});
+
+	test("returned hits carry projectId + projectName (cross-project deep-link)", async () => {
+		const hit = {
+			conversationId: "c1",
+			conversationTitle: "First",
+			messageId: "m1",
+			role: "user",
+			createdAt: new Date().toISOString(),
+			snippet: "<mark>hello</mark>",
+			matchType: "both",
+			rankLexical: 1,
+			rankSemantic: 1,
+			score: 0.5,
+			projectId: "p-99",
+			projectName: "Other Project",
+		};
+		vi.mocked(searchMessages).mockResolvedValue([hit] as any);
+		const res = await GET(
+			makeEvent({
+				href: href({ projectId: null, scope: "all" }),
+				locals: { user },
+			}),
+		);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { hits: Array<Record<string, unknown>> };
+		expect(body.hits[0]!.projectId).toBe("p-99");
+		expect(body.hits[0]!.projectName).toBe("Other Project");
+	});
+
+	test("scope=project (default) still passes the projectId through unchanged", async () => {
+		await GET(makeEvent({ href: href(), locals: { user } }));
+		const arg = vi.mocked(searchMessages).mock.calls[0]![0];
+		expect(arg.scope).toBe("project");
+		expect(arg.projectId).toBe(PROJECT_ID);
 	});
 });
 

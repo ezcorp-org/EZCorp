@@ -23,16 +23,20 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (scopeErr) return scopeErr;
 	const user = requireAuth(locals);
 
-	const projectId = url.searchParams.get("projectId");
-	if (!projectId) return errorJson(400, "projectId required");
-
 	const q = url.searchParams.get("q") ?? "";
 
 	const parsed = searchMessagesQuerySchema.safeParse({
 		mode: url.searchParams.get("mode") ?? undefined,
+		scope: url.searchParams.get("scope") ?? undefined,
 	});
 	if (!parsed.success) return validationError(parsed.error);
 	const mode = parsed.data.mode;
+	const scope = parsed.data.scope;
+
+	// scope=all resolves the tenant by userId across every project, so projectId
+	// is NOT required. scope=project keeps the Phase 65 hard 400.
+	const projectId = url.searchParams.get("projectId");
+	if (scope === "project" && !projectId) return errorJson(400, "projectId required");
 
 	const limitParam = url.searchParams.get("limit");
 	const offsetParam = url.searchParams.get("offset");
@@ -64,7 +68,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	}
 
 	const hits = await searchMessages({
-		projectId,
+		// scope=all ignores projectId (tenant resolved by userId); scope=project
+		// passes the validated projectId through.
+		projectId: scope === "all" ? undefined : projectId!,
+		scope,
 		query: q,
 		mode: servedMode,
 		queryEmbedding,

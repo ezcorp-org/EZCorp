@@ -59,6 +59,8 @@ function hit(overrides: Partial<MessageSearchHit> = {}): MessageSearchHit {
 		rankLexical: 1,
 		rankSemantic: null,
 		score: 0.5,
+		projectId: "p1",
+		projectName: "Proj One",
 		...overrides,
 	};
 }

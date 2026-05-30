@@ -6,7 +6,7 @@ current_plan: "Phase 66 COMPLETE (66-01..05). 66-05 closed the search-helper cov
 status: completed
 stopped_at: Completed 66-05-PLAN.md (add-to-ci checkpoint resolved). Phase 66 fully complete (66-01..05).
 last_updated: "2026-05-30T14:53:07.824Z"
-last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
+last_activity: "2026-05-30 — Phase 66 validated by a 6-agent team (functional/unit/e2e/harness/traceability + adversarial). Verdict: feature complete + full coverage, but adversarial check caught a blocker — 66-05's threshold commit (49c3bbc1) had pinned 6 NON-Phase-66 files (4 untracked parallel-session sources) at 100%, which would fail-loud on a clean CI checkout. Fixed in b8ba5e2f (de-scoped the 6 stray pins; 66-05 now owns only its 3 search + 2 reconciled component pins). ROADMAP footer synced in 17cd0c40."
 progress:
   total_phases: 6
   completed_phases: 4

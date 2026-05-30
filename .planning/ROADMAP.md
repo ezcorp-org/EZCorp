@@ -212,7 +212,15 @@ Plans:
   3. Selecting a result deep-links to the matching message (scroll into view + highlight pulse).
   4. The palette is fully keyboard-navigable (arrows / Enter / Esc) and accessible (ARIA dialog, focus trap, focus restore on close).
   5. On mobile, the palette falls back to the existing `BottomSheet` pattern shipped in v1.4.
-**Plans**: TBD
+**Plans**: 7 plans (5 waves)
+Plans:
+- [ ] 67-01-PLAN.md — Wave 0 frontend test scaffolds (palette-results, CommandPalette.component, layout-shortcut routing) [RED]
+- [ ] 67-02-PLAN.md — Wave 0 Playwright e2e scaffold (Cmd+K/Cmd+Shift+P, cross-project deep-link, mobile BottomSheet) [RED]
+- [ ] 67-03-PLAN.md — Backend cross-project scope=all + projectId/projectName on MessageSearchHit (query + endpoint + client + tests)
+- [ ] 67-04-PLAN.md — Cmd+Shift+P palette-commands rebind + layout initialView routing
+- [ ] 67-05-PLAN.md — Pure cross-project grouping helper palette-results.ts (project→conversation→message)
+- [ ] 67-06-PLAN.md — Extend CommandPalette.svelte: unified flatItems, cross-project deep-link, BottomSheet at <lg; remove search-conversations
+- [ ] 67-07-PLAN.md — e2e GREEN on both projects + 100% per-file coverage pins + human-verify Cmd+Shift+P
 **Research flag**: `/gsd:research-phase` recommended — confirm the `CommandPalette.svelte` extension point (existing sub-view vs new sibling), the mobile `BottomSheet` adapter fit, and that the Cmd+K ↔ Cmd+Shift+P swap doesn't collide with extension-registered shortcuts. User-visible surface — ships with 100% unit + integration + e2e (Playwright) coverage, CI-gated per-file on new paths.
 
 ### Phase 68: Backfill + Operations

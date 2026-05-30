@@ -19,10 +19,16 @@
 		open,
 		onclose,
 		activeProjectId,
+		// Which view the palette opens in. Wired by the layout (Plan 04) so
+		// Cmd+K lands search-first and Cmd+Shift+P lands command-first.
+		// Declared optional here so the layout can pass it type-cleanly; the
+		// palette begins *consuming* it in Plan 06 (currently inert).
+		initialView = "search",
 	}: {
 		open: boolean;
 		onclose: () => void;
 		activeProjectId: string;
+		initialView?: "search" | "commands";
 	} = $props();
 
 	let query = $state("");

@@ -23,6 +23,11 @@
 
 	let { children } = $props();
 	let commandPaletteOpen = $state(false);
+	// Which view the palette lands in when opened via a shortcut:
+	//   "search"   — Cmd+K (action "palette"), search-first
+	//   "commands" — Cmd+Shift+P (action "palette-commands"), command-first
+	// Consumed by CommandPalette in Plan 06; passed through here.
+	let paletteInitialView = $state<"search" | "commands">("search");
 	let shortcutHelpOpen = $state(false);
 	let shortcuts = $state<ShortcutBinding[]>([]);
 	let isAdmin = $state(false);
@@ -89,6 +94,11 @@
 
 			switch (action) {
 				case "palette":
+					paletteInitialView = "search";
+					commandPaletteOpen = !commandPaletteOpen;
+					break;
+				case "palette-commands":
+					paletteInitialView = "commands";
 					commandPaletteOpen = !commandPaletteOpen;
 					break;
 				case "new-chat":
@@ -458,6 +468,7 @@
 
 <CommandPalette
 	open={commandPaletteOpen}
+	initialView={paletteInitialView}
 	activeProjectId={store.activeProjectId}
 	onclose={() => (commandPaletteOpen = false)}
 />

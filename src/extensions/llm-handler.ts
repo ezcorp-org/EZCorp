@@ -30,6 +30,7 @@ import { denyAndDisable } from "./security";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS, type ExtensionAuditMetadata } from "./audit-actions";
 import { getLlmQuota, type LlmQuota } from "./llm-quota";
+import { piComplete, type PiCompleteFn } from "../lib/pi-complete";
 import type { ExtensionPermissions, JsonRpcRequest, JsonRpcResponse } from "./types";
 
 const log = logger.child("ext.llm-handler");
@@ -92,37 +93,9 @@ interface LlmCompleteParams {
   op?: "complete" | "budget" | "stream";
 }
 
-// ── Inline pi-ai dynamic import (mirrors distiller.ts pattern) ──
-
-async function callPiAiComplete(
-  resolvedPiModel: unknown,
-  body: {
-    systemPrompt?: string;
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string; timestamp: number }>;
-  },
-  opts: { apiKey: string; maxTokens?: number; temperature?: number; timeoutMs?: number },
-): Promise<{ content: Array<{ type: string; text?: string }>; usage?: { input?: number; output?: number; cost?: number }; stopReason?: string; model?: string }> {
-  // Dynamic import so an environment without API keys never trips on
-  // module load — keeps this file safe to import everywhere.
-  const piAi = await import("@mariozechner/pi-ai");
-  // The pi-ai signature is `complete(piModel, body, opts)`. We thread
-  // `timeoutMs` via `signal: AbortSignal.timeout(...)` if available
-  // and clamp; pi-ai itself respects abort.
-  const completeFn = (piAi as unknown as { complete: (...args: unknown[]) => Promise<unknown> }).complete;
-  const piOpts: Record<string, unknown> = { apiKey: opts.apiKey };
-  if (opts.maxTokens !== undefined) piOpts.maxTokens = opts.maxTokens;
-  if (opts.temperature !== undefined) piOpts.temperature = opts.temperature;
-  if (opts.timeoutMs !== undefined && typeof AbortSignal?.timeout === "function") {
-    piOpts.signal = AbortSignal.timeout(opts.timeoutMs);
-  }
-  const result = await completeFn(resolvedPiModel, body, piOpts);
-  return result as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input?: number; output?: number; cost?: number };
-    stopReason?: string;
-    model?: string;
-  };
-}
+// pi-ai's `complete()` is reached through the shared `piComplete` wrapper
+// (`../lib/pi-complete`) — same dynamic-import-and-thread-options logic the
+// goal-host evaluator uses.
 
 // ── Result shape returned to subprocess ────────────────────────
 
@@ -152,7 +125,7 @@ export interface LlmHandlerContext {
   getCredentialFn?: (provider: string, conversationId?: string) => Promise<{ type: string; token: string }>;
   /** Optional pi-ai complete swap-in for tests. Defaults to dynamic
    *  import of `@mariozechner/pi-ai`. */
-  completeFn?: typeof callPiAiComplete;
+  completeFn?: PiCompleteFn;
 }
 
 // ── Main entrypoint ─────────────────────────────────────────────
@@ -342,8 +315,8 @@ export async function handlePiLlmComplete(
   }
 
   // ── Issue the upstream call ─────────────────────────────────
-  const completeFn = ctx.completeFn ?? callPiAiComplete;
-  let upstream: Awaited<ReturnType<typeof callPiAiComplete>>;
+  const completeFn = ctx.completeFn ?? piComplete;
+  let upstream: Awaited<ReturnType<PiCompleteFn>>;
   try {
     upstream = await completeFn(
       resolved.piModel,

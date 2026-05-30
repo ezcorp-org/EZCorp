@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from "$app/stores";
 	import { goto } from "$app/navigation";
+	import MentionText from "./MentionText.svelte";
 	import {
 		type Command,
 		buildCommands,
@@ -10,6 +11,13 @@
 		getRecentCommands,
 		tryParseEzPrefix,
 	} from "$lib/command-registry.js";
+	import {
+		searchMessages,
+		type MessageSearchHit,
+		type SearchMessagesResponse,
+	} from "$lib/api.js";
+	import { buildPaletteResults } from "$lib/search/palette-results.js";
+	import { sanitizeSnippet } from "$lib/search/snippet-sanitize.js";
 	import { openEzPanel } from "$lib/ez/panel-store.svelte.js";
 	import { createFocusTrap } from "$lib/focus-trap.js";
 
@@ -18,15 +26,19 @@
 		onclose,
 		activeProjectId,
 		// Which view the palette opens in. Wired by the layout (Plan 04) so
-		// Cmd+K lands search-first and Cmd+Shift+P lands command-first.
-		// Declared optional here so the layout can pass it type-cleanly; the
-		// palette begins *consuming* it in Plan 06 (currently inert).
+		// Cmd+K lands search-first and Cmd+Shift+P lands command-first. When
+		// "commands" the input still opens focused, but no message search runs
+		// until the user types ≥2 chars (commands-first browsing).
 		initialView = "search",
+		// The conversation the user is currently viewing (if any). Drives the
+		// "In this conversation" grouping in buildPaletteResults.
+		activeConversationId = null,
 	}: {
 		open: boolean;
 		onclose: () => void;
 		activeProjectId: string;
 		initialView?: "search" | "commands";
+		activeConversationId?: string | null;
 	} = $props();
 
 	let query = $state("");
@@ -34,35 +46,36 @@
 	let activeChildren = $state<Command[] | null>(null);
 	let inputEl = $state<HTMLInputElement | null>(null);
 
-	// Message search sub-view state
-	let searchMode = $state(false);
+	// Cross-project message search state (driven purely by query length ≥2).
+	let hits = $state<MessageSearchHit[]>([]);
 	let searchLoading = $state(false);
+	let degraded = $state(false);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	// Token guards against an out-of-order debounced response clobbering a newer
+	// one (last-write-wins on the latest query).
+	let searchToken = 0;
+
+	// `ez:` prefix wins — it must NEVER trigger a message search.
+	let ezPrefill = $derived(tryParseEzPrefix(query));
+	// We're "searching" once the query is ≥2 chars and not an `ez:` command.
+	let isSearching = $derived(ezPrefill === null && query.trim().length >= 2);
 
 	// Derive commands from current state
 	let allCommands = $derived(buildCommands(activeProjectId));
 	let contextCommands = $derived(resolveCommands(allCommands, $page.url.pathname));
 	let recentIds = $derived(getRecentCommands());
 
-	// Compute visible items (flat list for keyboard navigation)
-	let visibleItems = $derived.by(() => {
-		if (searchMode) return []; // search mode uses searchResults instead
-		if (activeChildren) return activeChildren;
+	// Commands matching the current query (used both for the empty-query grouped
+	// list and as the "Commands" section of the unified search results).
+	let matchingCommands = $derived(
+		query ? fuzzyMatch(query, contextCommands) : contextCommands,
+	);
 
-		const cmds = query
-			? fuzzyMatch(query, contextCommands)
-			: contextCommands;
-
-		return cmds;
-	});
-
-	// Group commands by their group field for rendering
+	// Group commands by their group field for the empty-query / non-searching view.
 	let groupedItems = $derived.by(() => {
-		if (searchMode || activeChildren) return null;
+		if (isSearching || activeChildren) return null;
 
-		const cmds = query
-			? fuzzyMatch(query, contextCommands)
-			: contextCommands;
+		const cmds = matchingCommands;
 
 		// Build recent section (only when no query)
 		const recentSection: Command[] = [];
@@ -85,10 +98,19 @@
 		return { recent: recentSection, groups };
 	});
 
-	// Flat ordered list for keyboard navigation indexing
-	let flatItems = $derived.by((): Command[] => {
-		if (searchMode) return [];
+	// Unified search results: matching commands + cross-project message hits in
+	// ONE keyboard-navigable list (Plan 05 helper). Only computed while searching.
+	let paletteResults = $derived(
+		isSearching
+			? buildPaletteResults(matchingCommands, hits, activeConversationId)
+			: null,
+	);
+
+	// Flat ordered list for keyboard navigation indexing. Heterogeneous while
+	// searching (commands + hits, headers excluded); commands-only otherwise.
+	let flatItems = $derived.by((): (Command | MessageSearchHit)[] => {
 		if (activeChildren) return activeChildren;
+		if (paletteResults) return paletteResults.flatItems;
 		if (!groupedItems) return [];
 
 		const flat: Command[] = [];
@@ -101,12 +123,38 @@
 		return flat;
 	});
 
+	// Discriminant: message hits carry a `messageId`, commands do not.
+	function isHit(item: Command | MessageSearchHit): item is MessageSearchHit {
+		return "messageId" in item;
+	}
+
+	// Match-type glyph — Phase 66 parity (ConversationList.svelte matchTypeGlyph).
+	function matchTypeGlyph(t: MessageSearchHit["matchType"]): string {
+		if (t === "semantic") return "≈"; // approximate / vector match
+		if (t === "both") return "⊕"; // lexical + semantic
+		return "“"; // lexical / keyword match
+	}
+
+	// Relative-time formatter — Phase 66 parity (ConversationList.svelte).
+	function relativeTime(dateStr: string): string {
+		const diff = Date.now() - new Date(dateStr).getTime();
+		const mins = Math.floor(diff / 60_000);
+		if (mins < 1) return "just now";
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		const days = Math.floor(hrs / 24);
+		return `${days}d ago`;
+	}
+
 	function resetState() {
 		query = "";
 		highlightedIndex = 0;
 		activeChildren = null;
-		searchMode = false;
+		hits = [];
 		searchLoading = false;
+		degraded = false;
+		searchToken++; // invalidate any in-flight debounced search
 		clearTimeout(debounceTimer);
 	}
 
@@ -130,19 +178,63 @@
 		onclose();
 	}
 
+	// Cross-project message-hit deep-link. Mirrors the chat page's `?m=` consume
+	// shape so ChatThread pulses + strips the param on arrival.
+	function selectHit(hit: MessageSearchHit) {
+		goto(
+			`/project/${hit.projectId}/chat/${hit.conversationId}?m=${encodeURIComponent(hit.messageId)}`,
+		);
+		resetState();
+		onclose();
+	}
+
 	function goBack() {
-		if (searchMode) {
-			searchMode = false;
-			searchLoading = false;
-		} else {
+		if (activeChildren) {
 			activeChildren = null;
 		}
 		query = "";
 		highlightedIndex = 0;
 	}
 
+	// Debounced cross-project search. Fires only for ≥2-char, non-`ez:` queries.
+	function runSearch() {
+		clearTimeout(debounceTimer);
+		if (!isSearching) {
+			hits = [];
+			degraded = false;
+			searchLoading = false;
+			return;
+		}
+		searchLoading = true;
+		const token = ++searchToken;
+		const q = query;
+		debounceTimer = setTimeout(async () => {
+			let resp: SearchMessagesResponse | null = null;
+			try {
+				resp = await searchMessages(activeProjectId, q, { scope: "all" });
+			} catch {
+				resp = null;
+			}
+			// Drop stale responses (a newer keystroke superseded this one).
+			if (token !== searchToken) return;
+			if (resp) {
+				hits = resp.hits;
+				// NEVER persist mode on a degraded response (Phase 66 Pitfall 4) —
+				// we only surface a non-blocking notice; the stored preference is
+				// owned by the sidebar and untouched here.
+				degraded = resp.degraded === true;
+			} else {
+				hits = [];
+				degraded = false;
+			}
+			searchLoading = false;
+			highlightedIndex = 0;
+		}, 300);
+	}
+
 	function handleInput() {
 		highlightedIndex = 0;
+		runSearch();
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -153,7 +245,7 @@
 			return;
 		}
 
-		if (e.key === "Backspace" && query === "" && (searchMode || activeChildren)) {
+		if (e.key === "Backspace" && query === "" && activeChildren) {
 			e.stopPropagation();
 			goBack();
 			return;
@@ -191,7 +283,12 @@
 				e.preventDefault();
 				const item = flatItems[highlightedIndex];
 				if (item) {
-					executeCommand(item as Command);
+					// Row-type-aware: command → action; hit → cross-project deep-link.
+					if (isHit(item)) {
+						selectHit(item);
+					} else {
+						executeCommand(item);
+					}
 				}
 			}
 		}
@@ -229,10 +326,21 @@
 		}
 	});
 
-	// Helper: check if a command is in the flat list at a given index
-	function flatIndex(cmd: Command): number {
-		return (flatItems as Command[]).indexOf(cmd);
+	// Helper: index of a row (command OR hit) in the flat nav list. Identity
+	// match — buildPaletteResults emits the SAME object references it renders, so
+	// indexOf maps a rendered row to its keyboard-nav position (headers excluded).
+	function flatIndex(item: Command | MessageSearchHit): number {
+		return flatItems.indexOf(item);
 	}
+
+	// Auto-focus the search input whenever the palette opens. For initialView
+	// "commands" the input is still focused (so typing flows straight in), it
+	// just begins on the command list since no query has been typed yet.
+	$effect(() => {
+		if (open && inputEl && initialView) {
+			requestAnimationFrame(() => inputEl?.focus());
+		}
+	});
 </script>
 
 {#if open}
@@ -251,7 +359,7 @@
 		>
 			<!-- Input bar -->
 			<div class="flex items-center gap-3 border-b border-[var(--color-border)] px-4 py-3">
-				{#if searchMode || activeChildren}
+				{#if activeChildren}
 					<button
 						class="shrink-0 rounded p-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
 						onclick={goBack}
@@ -272,7 +380,7 @@
 					bind:value={query}
 					oninput={handleInput}
 					type="text"
-					placeholder="Type a command..."
+					placeholder="Search messages or type a command..."
 					aria-label="Command palette input"
 					class="flex-1 bg-transparent text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] outline-none"
 				/>
@@ -281,9 +389,87 @@
 
 			<!-- Results area -->
 			<div class="max-h-[50vh] overflow-y-auto">
-				{#if searchMode}
-					<!-- Message search sub-view (replaced in Task 2) -->
-					<div class="px-4 py-6 text-center text-sm text-[var(--color-text-muted)]">No matching messages.</div>
+				{#if paletteResults}
+					<!-- Unified search: matching commands + cross-project message
+					     hits in ONE keyboard-navigable list. Project / conversation
+					     headers are render-only (never enter flatItems / nav). -->
+					{#if degraded}
+						<div
+							class="border-b border-[var(--color-border)] bg-[var(--color-surface-tertiary)]/40 px-4 py-2 text-xs text-[var(--color-text-muted)]"
+							role="status"
+						>
+							Semantic search unavailable — showing keyword (degraded) results.
+						</div>
+					{/if}
+
+					{@const hasCommands = paletteResults.sections.some((s) => s.id === "commands")}
+					{@const hasHits = hits.length > 0}
+					<!-- Commands header is always present while searching so the
+					     palette stays "commands + hits together" even when the
+					     query matches no command (test contract / must-have).
+					     Suppressed only in the truly-empty state (no commands AND
+					     no hits) so a single "No matching messages." shows. -->
+					{#if !hasCommands && hasHits}
+						<div class="px-2 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]" data-row-kind="header">
+							Commands
+						</div>
+						<div class="px-4 py-1.5 text-xs text-[var(--color-text-muted)]">No matching commands</div>
+					{/if}
+
+					{#each paletteResults.sections as section (section.id)}
+						<div class="px-2 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]" data-row-kind="header">
+							{section.label}
+						</div>
+						{#each section.groups as group, gi (group.conversationId ?? `cmd-${gi}`)}
+							{#if group.conversationTitle}
+								<div class="flex items-baseline gap-1.5 px-4 pt-1.5 pb-0.5" data-row-kind="header">
+									<span class="truncate text-[11px] font-medium text-[var(--color-text-secondary)]">
+										<MentionText text={group.conversationTitle} />
+									</span>
+									{#if group.projectName}
+										<span class="shrink-0 text-[10px] text-[var(--color-text-muted)]">· {group.projectName}</span>
+									{/if}
+								</div>
+							{/if}
+							{#each group.rows as row (row.kind === "command" ? row.command.id : row.hit.messageId)}
+								{#if row.kind === "command"}
+									{@const idx = flatIndex(row.command)}
+									<button
+										data-row-kind="command"
+										data-active={idx === highlightedIndex}
+										class="flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition-colors {idx === highlightedIndex ? 'bg-[var(--color-surface-tertiary)]' : 'hover:bg-[var(--color-surface-tertiary)]/50'}"
+										onclick={() => executeCommand(row.command)}
+									>
+										<span class="flex-1 text-[var(--color-text-primary)]">{row.command.label}</span>
+										{#if row.command.shortcut}
+											<kbd class="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">{row.command.shortcut}</kbd>
+										{/if}
+									</button>
+								{:else}
+									{@const idx = flatIndex(row.hit)}
+									<button
+										data-row-kind="hit"
+										data-active={idx === highlightedIndex}
+										class="flex w-full flex-col gap-0.5 px-4 py-1.5 text-left transition-colors {idx === highlightedIndex ? 'bg-[var(--color-surface-tertiary)]' : 'hover:bg-[var(--color-surface-tertiary)]/50'}"
+										onclick={() => selectHit(row.hit)}
+									>
+										<span class="flex items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+											<span class="shrink-0 rounded bg-[var(--color-surface-tertiary)] px-1 py-0.5 text-[9px] font-medium uppercase leading-none">{row.hit.role}</span>
+											<span class="shrink-0" title="{row.hit.matchType} match" aria-hidden="true">{matchTypeGlyph(row.hit.matchType)}</span>
+											<span class="ml-auto shrink-0">{relativeTime(row.hit.createdAt)}</span>
+										</span>
+										<span class="line-clamp-2 text-[11px] text-[var(--color-text-secondary)] [&_mark]:bg-yellow-500/30 [&_mark]:text-yellow-200 [&_mark]:rounded-sm">
+											{@html sanitizeSnippet(row.hit.snippet)}
+										</span>
+									</button>
+								{/if}
+							{/each}
+						{/each}
+					{/each}
+
+					{#if paletteResults.sections.length === 0 && !searchLoading}
+						<div class="px-4 py-6 text-center text-sm text-[var(--color-text-muted)]">No matching messages.</div>
+					{/if}
 
 				{:else if activeChildren}
 					<!-- Nested sub-list -->

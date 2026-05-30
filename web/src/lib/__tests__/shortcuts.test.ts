@@ -68,6 +68,21 @@ describe("shortcuts", () => {
 			expect(DEFAULT_SHORTCUTS.find((s) => s.action === "sidebar-toggle")).toBeTruthy();
 		});
 
+		test("contains palette-commands action bound to Cmd+Shift+P", () => {
+			const pc = DEFAULT_SHORTCUTS.find((s) => s.action === "palette-commands");
+			expect(pc).toBeTruthy();
+			expect(pc?.key).toBe("p");
+			expect(pc?.meta).toBe(true);
+			expect(pc?.shift).toBe(true);
+		});
+
+		test("palette action (Cmd+K) is unchanged by the palette-commands addition", () => {
+			const palette = DEFAULT_SHORTCUTS.find((s) => s.action === "palette");
+			expect(palette?.key).toBe("k");
+			expect(palette?.meta).toBe(true);
+			expect(palette?.shift).toBeUndefined();
+		});
+
 		test("all entries have required fields", () => {
 			for (const s of DEFAULT_SHORTCUTS) {
 				expect(typeof s.key).toBe("string");
@@ -180,6 +195,24 @@ describe("shortcuts", () => {
 			const e = makeKeyEvent({ key: "\\", ctrlKey: true });
 			expect(matchShortcut(e, DEFAULT_SHORTCUTS)).toBe("sidebar-toggle");
 		});
+
+		test("Cmd+Shift+P resolves to palette-commands (not palette, not plain Cmd+P)", () => {
+			// Cmd+Shift+P -> palette-commands
+			const eCmdShiftP = makeKeyEvent({ key: "p", metaKey: true, shiftKey: true });
+			expect(matchShortcut(eCmdShiftP, DEFAULT_SHORTCUTS)).toBe("palette-commands");
+
+			// Ctrl+Shift+P (non-Mac) -> palette-commands
+			const eCtrlShiftP = makeKeyEvent({ key: "p", ctrlKey: true, shiftKey: true });
+			expect(matchShortcut(eCtrlShiftP, DEFAULT_SHORTCUTS)).toBe("palette-commands");
+
+			// Plain Cmd+P (no shift) is NOT palette-commands
+			const eCmdP = makeKeyEvent({ key: "p", metaKey: true, shiftKey: false });
+			expect(matchShortcut(eCmdP, DEFAULT_SHORTCUTS)).toBeNull();
+
+			// Cmd+K is still palette, never palette-commands
+			const eCmdK = makeKeyEvent({ key: "k", metaKey: true });
+			expect(matchShortcut(eCmdK, DEFAULT_SHORTCUTS)).toBe("palette");
+		});
 	});
 
 	describe("formatShortcut", () => {
@@ -268,6 +301,36 @@ describe("shortcuts", () => {
 			expect(palette?.label).toBe("Custom palette");
 
 			// other defaults should remain
+			const newChat = result.find((s) => s.action === "new-chat");
+			expect(newChat?.key).toBe("n");
+		});
+
+		test("merge-by-action preserves overrides for BOTH palette and palette-commands", () => {
+			const custom: ShortcutBinding[] = [
+				{ key: "j", meta: true, action: "palette", label: "Custom palette" },
+				{
+					key: "o",
+					meta: true,
+					shift: true,
+					action: "palette-commands",
+					label: "Custom palette-commands",
+				},
+			];
+			storage.set("pi-shortcuts", JSON.stringify(custom));
+			const result = loadCustomShortcuts();
+
+			// palette override survives (keyed by action)
+			const palette = result.find((s) => s.action === "palette");
+			expect(palette?.key).toBe("j");
+			expect(palette?.label).toBe("Custom palette");
+
+			// palette-commands override survives (keyed by action)
+			const paletteCommands = result.find((s) => s.action === "palette-commands");
+			expect(paletteCommands?.key).toBe("o");
+			expect(paletteCommands?.shift).toBe(true);
+			expect(paletteCommands?.label).toBe("Custom palette-commands");
+
+			// untouched default still present
 			const newChat = result.find((s) => s.action === "new-chat");
 			expect(newChat?.key).toBe("n");
 		});

@@ -1,5 +1,6 @@
 import { eq, and, sql, lt } from "drizzle-orm";
 import { getDb } from "../connection";
+import { nowMinusInterval } from "./sql-interval";
 import { activeRuns } from "../schema";
 
 export async function createActiveRun(id: string, conversationId: string) {
@@ -54,7 +55,7 @@ export async function cleanupOrphanedRuns(timeoutMinutes: number): Promise<numbe
     .set({ status: "interrupted" })
     .where(and(
       eq(activeRuns.status, "running"),
-      lt(activeRuns.lastHeartbeat, sql`NOW() - INTERVAL '${sql.raw(String(timeoutMinutes))} minutes'`),
+      lt(activeRuns.lastHeartbeat, nowMinusInterval(timeoutMinutes, "minutes")),
     ))
     .returning();
   return result.length;

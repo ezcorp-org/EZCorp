@@ -22,6 +22,7 @@
  */
 import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { getDb } from "../connection";
+import { nowMinusInterval } from "./sql-interval";
 import { sdkCapabilityCalls } from "../schema";
 import type { SdkCapabilityCall, NewSdkCapabilityCall } from "../schema";
 
@@ -202,11 +203,11 @@ export async function cleanupOldSdkCapabilityCalls(
       WHERE id IN (
         SELECT id FROM sdk_capability_calls
         WHERE
-          (capability = 'llm'      AND ${useZeroLLM     ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(llm))} days'`})
-       OR (capability = 'memory'   AND ${useZeroMemory  ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(memory))} days'`})
-       OR (capability = 'lessons'  AND ${useZeroLessons ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(lessons))} days'`})
-       OR (capability = 'schedule' AND ${useZeroSchedule ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(schedule))} days'`})
-       OR (capability = 'events'   AND ${useZeroEvents  ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(events))} days'`})
+          (capability = 'llm'      AND ${useZeroLLM     ? sql`TRUE` : sql`created_at < ${nowMinusInterval(llm, "days")}`})
+       OR (capability = 'memory'   AND ${useZeroMemory  ? sql`TRUE` : sql`created_at < ${nowMinusInterval(memory, "days")}`})
+       OR (capability = 'lessons'  AND ${useZeroLessons ? sql`TRUE` : sql`created_at < ${nowMinusInterval(lessons, "days")}`})
+       OR (capability = 'schedule' AND ${useZeroSchedule ? sql`TRUE` : sql`created_at < ${nowMinusInterval(schedule, "days")}`})
+       OR (capability = 'events'   AND ${useZeroEvents  ? sql`TRUE` : sql`created_at < ${nowMinusInterval(events, "days")}`})
         LIMIT ${CLEANUP_BATCH_LIMIT}
       )
     `);
@@ -226,11 +227,11 @@ export async function cleanupOldSdkCapabilityCalls(
         .select({ id: sdkCapabilityCalls.id })
         .from(sdkCapabilityCalls)
         .where(sql`
-          (capability = 'llm'      AND ${useZeroLLM     ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(llm))} days'`})
-       OR (capability = 'memory'   AND ${useZeroMemory  ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(memory))} days'`})
-       OR (capability = 'lessons'  AND ${useZeroLessons ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(lessons))} days'`})
-       OR (capability = 'schedule' AND ${useZeroSchedule ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(schedule))} days'`})
-       OR (capability = 'events'   AND ${useZeroEvents  ? sql`TRUE` : sql`created_at < NOW() - INTERVAL '${sql.raw(String(events))} days'`})
+          (capability = 'llm'      AND ${useZeroLLM     ? sql`TRUE` : sql`created_at < ${nowMinusInterval(llm, "days")}`})
+       OR (capability = 'memory'   AND ${useZeroMemory  ? sql`TRUE` : sql`created_at < ${nowMinusInterval(memory, "days")}`})
+       OR (capability = 'lessons'  AND ${useZeroLessons ? sql`TRUE` : sql`created_at < ${nowMinusInterval(lessons, "days")}`})
+       OR (capability = 'schedule' AND ${useZeroSchedule ? sql`TRUE` : sql`created_at < ${nowMinusInterval(schedule, "days")}`})
+       OR (capability = 'events'   AND ${useZeroEvents  ? sql`TRUE` : sql`created_at < ${nowMinusInterval(events, "days")}`})
         `)
         .limit(1);
       if (remaining.length === 0) break;

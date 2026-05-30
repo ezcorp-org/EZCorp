@@ -12,6 +12,7 @@ import {
   toolCalls,
 } from "../schema";
 import { listErrors } from "./error-logs";
+import { nowMinusInterval } from "./sql-interval";
 
 // Top-N cap for each tool-usage ranking. Keeps the admin analytics payload
 // bounded even on installations with thousands of distinct tool names.
@@ -28,7 +29,7 @@ export async function getChatActivity(days = 30) {
       conversationCount: countDistinct(messages.conversationId).as("conversation_count"),
     })
     .from(messages)
-    .where(gte(messages.createdAt, sql`NOW() - INTERVAL '${sql.raw(String(days))} days'`))
+    .where(gte(messages.createdAt, nowMinusInterval(days, "days")))
     .groupBy(sql`DATE(${messages.createdAt})`)
     .orderBy(sql`DATE(${messages.createdAt})`);
 
@@ -54,7 +55,7 @@ export async function getModelUsage(days = 30) {
       and(
         eq(messages.role, "assistant"),
         isNotNull(messages.model),
-        gte(messages.createdAt, sql`NOW() - INTERVAL '${sql.raw(String(days))} days'`),
+        gte(messages.createdAt, nowMinusInterval(days, "days")),
       ),
     )
     .groupBy(messages.model, messages.provider)
@@ -224,7 +225,7 @@ export async function getErrorSummary(days = 7) {
       count: count(errorLogs.id).as("count"),
     })
     .from(errorLogs)
-    .where(gte(errorLogs.createdAt, sql`NOW() - INTERVAL '${sql.raw(String(days))} days'`))
+    .where(gte(errorLogs.createdAt, nowMinusInterval(days, "days")))
     .groupBy(sql`DATE(${errorLogs.createdAt})`)
     .orderBy(sql`DATE(${errorLogs.createdAt})`);
 
@@ -291,12 +292,11 @@ export type ToolUsageByModel = {
 };
 
 function sinceDays(days: number) {
-  // Defend against non-finite input (NaN / Infinity). Upstream callers clamp
-  // the API query-param to [1, 365], but this helper is reachable from the
-  // query module surface and `Math.max(1, NaN) === NaN` would otherwise
-  // produce `INTERVAL 'NaN days'` and throw. Fall back to the 30-day default.
-  const n = Number.isFinite(days) ? Math.max(1, Math.floor(days)) : 30;
-  return gte(toolCalls.createdAt, sql`NOW() - INTERVAL '${sql.raw(String(n))} days'`);
+  // `nowMinusInterval` clamps `days` to a non-negative integer (non-finite
+  // input falls back to 30), so a NaN/Infinity reaching this query-module
+  // surface can never produce an `INTERVAL 'NaN days'` that throws. Upstream
+  // API callers additionally clamp the query-param to [1, 365].
+  return gte(toolCalls.createdAt, nowMinusInterval(days, "days"));
 }
 
 export async function getToolUsageByTool(days = 30): Promise<ToolUsageByTool[]> {

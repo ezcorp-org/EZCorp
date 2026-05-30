@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: "Phase 66 COMPLETE (66-01..05). 66-05 closed the search-helper coverage gate (gap-closure, add-to-ci). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
-status: completed
-stopped_at: Completed 66-05-PLAN.md (add-to-ci checkpoint resolved). Phase 66 fully complete (66-01..05).
-last_updated: "2026-05-30T14:53:07.824Z"
-last_activity: "2026-05-30 — Phase 66 fully closed out. (1) 6-agent validation team: feature complete + full coverage (UI-01..04 wired, 3 helpers 100%, e2e maps all reqs on both projects, no skips). (2) Adversarial check found 66-05's threshold commit had pinned 6 NON-Phase-66 files (4 untracked) → de-scoped (b8ba5e2f). (3) Landed the blocking parallel-session WIP coherently after isolated verify (506/506 tests, typecheck clean): 5 commits 10003479/0639fcac/3d675dc0/bf16cfdb/cdb66f25 (sql-interval, tool_calls redaction, auth fail-closed, pi-complete/cheap-models/sentinels, test catch-up) + restored the 6 pins now that sources+tests are committed (604a2580). (4) Resolved the 2 human-verification items via Playwright screenshots + computed-style assertions → 66-VERIFICATION flipped to passed (857d2972 tracks the phase records). KEY FINDING: full-tree `bun run test:coverage` stays RED locally but NOT due to Phase 66 or the WIP — it's ~82 real-subprocess E2E integration tests (real ExtensionProcess / JSON-RPC) that cannot spawn in this sandbox (5s timeouts + a listModels module-resolution error), starving 68 unrelated files (SDK, examples, security/*, web/src/lib/*) of lcov. Pre-existing + environmental; the executor's 'goes green once WIP committed' claim was wrong about the cause. Needs CI (where subprocesses run) to evaluate; the new ci.yml coverage job will exercise it there. Only manifest.lock.json left uncommitted (ambiguous regen — flagged for user)."
+current_plan: "Phase 66 COMPLETE (66-01..05). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
+status: verifying
+stopped_at: Completed 67-04-PLAN.md
+last_updated: "2026-05-30T20:46:29.185Z"
+last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 12
-  completed_plans: 12
+  total_plans: 19
+  completed_plans: 14
   percent: 67
 ---
 
@@ -556,6 +556,8 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 66 P03 | 6min | 3 tasks | 5 files |
 | Phase 66 P04 | 35min | 2 tasks | 3 files |
 | Phase 66 P05 | 40 | 3 tasks | 3 files |
+| Phase 67-command-palette-search P02 | 2min | 2 tasks | 1 files |
+| Phase 67 P04 | 3min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -727,6 +729,9 @@ Plan 54-03 execution decisions:
 - [Phase 66]: 66-04: deep-link must consume ?m= reactively (not onMount-only) because the chat route is a persistent non-remounting ChatThread — the sidebar click-journey is a client goto, not a fresh mount
 - [Phase 66]: 66-05: per-file coverage gate now runs on every PR (add-to-ci) via a node-22-provisioned coverage job in ci.yml, in addition to release-sdk.yml
 - [Phase 66]: 66-05: three Phase 66 search helpers pinned at 100% per-file, satisfied by real lcov (bun shards for snippet-sanitize/search-mode + node-vitest leg for deep-link-resolve); vitest coverage MUST run under node (coverage-v8 fails under Bun)
+- [Phase 67-command-palette-search]: 67-02: local makeCrossProjectHit extends makeSearchHit with projectId/projectName via cast — keeps the RED palette e2e self-contained without touching the production MessageSearchHit type (Plan 04 widens it)
+- [Phase 67]: 67-04: palette-commands (Cmd+Shift+P) added; both palette + palette-commands toggle but set paletteInitialView first; merge-by-action keeps custom overrides for both
+- [Phase 67]: 67-04: declared optional initialView prop on CommandPalette (inert until Plan 06) to keep layout svelte-check clean; verified Task 2 via source-grep because Plan 01 RED routing test is not yet on disk
 
 ### Pending Todos
 
@@ -753,6 +758,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-30T14:53:07.820Z
-Stopped at: Completed 66-05-PLAN.md (add-to-ci checkpoint resolved). Phase 66 fully complete (66-01..05).
+Last session: 2026-05-30T20:46:29.182Z
+Stopped at: Completed 67-04-PLAN.md
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

@@ -401,6 +401,9 @@ export interface SearchResult {
 // the server-side MessageSearchHit uses a Date.
 export type SearchMode = "hybrid" | "keyword" | "semantic";
 export type MatchType = "lexical" | "semantic" | "both";
+// Phase 67 — search scope: "project" (single project, default) | "all" (every
+// project of the requesting user — the cross-project Cmd+K palette path).
+export type SearchScope = "project" | "all";
 
 export interface MessageSearchHit {
 	conversationId: string;
@@ -413,6 +416,9 @@ export interface MessageSearchHit {
 	rankLexical: number | null;
 	rankSemantic: number | null;
 	score: number;
+	// Phase 67 — owning project of the hit (cross-project deep-link + grouping).
+	projectId: string;
+	projectName: string;
 }
 
 export interface SearchMessagesResponse {
@@ -425,10 +431,11 @@ export interface SearchMessagesResponse {
 export async function searchMessages(
 	projectId: string,
 	query: string,
-	opts?: { mode?: SearchMode; limit?: number; offset?: number },
+	opts?: { mode?: SearchMode; limit?: number; offset?: number; scope?: SearchScope },
 ): Promise<SearchMessagesResponse> {
 	const params = new URLSearchParams({ projectId, q: query });
 	if (opts?.mode) params.set("mode", opts.mode);
+	if (opts?.scope) params.set("scope", opts.scope);
 	if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
 	if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
 	const res = await fetch(`${BASE}/api/search/messages?${params.toString()}`);

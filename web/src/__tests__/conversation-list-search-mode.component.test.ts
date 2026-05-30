@@ -72,6 +72,8 @@ function makeHit(overrides: Partial<MessageSearchHit> & { messageId: string }): 
 		rankLexical: 1,
 		rankSemantic: null,
 		score: 0.5,
+		projectId: "proj-1",
+		projectName: "Project One",
 		...overrides,
 	};
 }

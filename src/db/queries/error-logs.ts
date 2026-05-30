@@ -1,5 +1,6 @@
 import { sql, desc, lt } from "drizzle-orm";
 import { getDb } from "../connection";
+import { nowMinusInterval } from "./sql-interval";
 import { errorLogs } from "../schema";
 import type { ErrorLog } from "../schema";
 
@@ -65,7 +66,7 @@ export async function listErrors(opts?: {
 export async function cleanupOldErrors(retentionDays = 30): Promise<number> {
   const rows = await getDb()
     .delete(errorLogs)
-    .where(lt(errorLogs.createdAt, sql`NOW() - INTERVAL '${sql.raw(String(retentionDays))} days'`))
+    .where(lt(errorLogs.createdAt, nowMinusInterval(retentionDays, "days")))
     .returning({ id: errorLogs.id });
   return rows.length;
 }

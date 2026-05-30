@@ -51,8 +51,8 @@ Requirements for the v1.5 milestone. Each maps to exactly one roadmap phase (63â
 - [x] **PAL-03**: When a conversation is active, palette results are grouped into "In this conversation" and "Other conversations"
 - [x] **PAL-04**: Each palette result shows a match-type icon plus a snippet
 - [x] **PAL-05**: Selecting a palette result deep-links to the matching message (scroll into view + highlight)
-- [ ] **PAL-06**: The palette is keyboard-navigable (arrows / Enter / Esc) and accessible (ARIA dialog, focus trap, focus restore on close)
-- [ ] **PAL-07**: On mobile, the palette falls back to the existing `BottomSheet` pattern (shipped v1.4 UX-01)
+- [x] **PAL-06**: The palette is keyboard-navigable (arrows / Enter / Esc) and accessible (ARIA dialog, focus trap, focus restore on close)
+- [x] **PAL-07**: On mobile, the palette falls back to the existing `BottomSheet` pattern (shipped v1.4 UX-01)
 
 ### Backfill & Operations
 
@@ -129,8 +129,8 @@ Which phases cover which requirements. Populated during roadmap creation (Phases
 | PAL-03 | Phase 67 | Complete |
 | PAL-04 | Phase 67 | Complete |
 | PAL-05 | Phase 67 | Complete |
-| PAL-06 | Phase 67 | Pending |
-| PAL-07 | Phase 67 | Pending |
+| PAL-06 | Phase 67 | Complete |
+| PAL-07 | Phase 67 | Complete |
 | OPS-01 | Phase 68 | Pending |
 | OPS-02 | Phase 68 | Pending |
 | OPS-03 | Phase 68 | Pending |

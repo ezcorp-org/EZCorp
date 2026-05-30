@@ -8,6 +8,13 @@ export interface ShortcutBinding {
 
 export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
 	{ key: "k", meta: true, action: "palette", label: "Open command palette" },
+	{
+		key: "p",
+		meta: true,
+		shift: true,
+		action: "palette-commands",
+		label: "Open command palette (commands)",
+	},
 	{ key: "n", meta: true, action: "new-chat", label: "New conversation" },
 	{ key: "/", meta: true, action: "help", label: "Show keyboard shortcuts" },
 	{ key: "\\", meta: true, action: "sidebar-toggle", label: "Toggle sidebar" },

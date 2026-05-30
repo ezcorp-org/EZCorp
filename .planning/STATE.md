@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
-current_plan: "Phase 66 COMPLETE (66-01..04). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
+current_plan: "Phase 66 COMPLETE (66-01..05). 66-05 closed the search-helper coverage gate (gap-closure, add-to-ci). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
 status: completed
-stopped_at: "66-05 paused at Task 3 decision checkpoint (Tasks 1-2 done: commits 4950dbf1 + 49c3bbc1). Awaiting gate-location decision (release-sdk.yml only vs also ci.yml)."
-last_updated: "2026-05-30T12:05:47.317Z"
+stopped_at: Completed 66-05-PLAN.md (add-to-ci checkpoint resolved). Phase 66 fully complete (66-01..05).
+last_updated: "2026-05-30T14:53:07.824Z"
 last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 12
-  completed_plans: 11
+  completed_plans: 12
   percent: 67
 ---
 
@@ -27,9 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 66 — Sidebar Search (COMPLETE — 66-01 infra + 66-02 sidebar + 66-03 deep-link + 66-04 e2e all landed)
-Current Plan: Phase 66 COMPLETE (66-01..04). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66.
-Status: 66-04 complete — full-phase end-to-end coverage (UI-01/02/03/04) across chromium + mobile-chromium. Extended `web/e2e/conversation-search.spec.ts` (viewport-aware helpers + toggle/default, reload-persist, two-section results, <2-char guard, degraded-no-mutate, generic empty) and created `web/e2e/sidebar-search-deeplink.spec.ts` (recent / strip-on-reload / paginated-out window-grow / off-branch branch-switch / unknown-id no-op / group-header-not-deep-link). 42/42 e2e green on both projects (21 cases × 2). Reuses the 66-01 /api/search/messages mock + makeSearchHit; clicks real 66-02 message-hit rows. One Rule-1 SUT fix in `ChatThread.svelte`: the `?m=` deep-link only fired on COLD MOUNT, so the sidebar click-journey (client `goto(...?m=)` on the persistent, non-remounting component) never pulsed and never stripped `?m=`. Moved the `?m=` consume into a reactive `$effect` (fires on cold load AND client nav) and made `resolveDeepLink found:false` non-terminal until `initialLoadDone` (so it retries once the target conv's tree loads instead of giving up against the previous conv's messages). 23/23 ChatThread.component + 84 adjacent ChatThread/deep-link vitest tests stay green; svelte-check clean on all owned files. Sacred-12-stash held (12→12); explicit-path adds only.
+Phase: 66 — Sidebar Search (COMPLETE — 66-01 infra + 66-02 sidebar + 66-03 deep-link + 66-04 e2e + 66-05 coverage-gate closure all landed)
+Current Plan: Phase 66 COMPLETE (66-01..05). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66.
+Status: 66-05 complete — gap-closure plan that machine-gates the three Phase 66 search helpers at 100% per-file. Extended `scripts/test-coverage.sh` to measure web/src/lib: widened the per-file loop to the two search-helper bun:test suites (snippet-sanitize + search-mode) and added a NEW node-run vitest --coverage leg (coverage-v8 fails under Bun) for the vitest-only deep-link-resolve + the two latent component pins, with SF:src/→SF:web/src/ re-rooting + VITEST_EXIT propagated to the gate. Added exact 100% pins for the three search modules in `scripts/coverage-thresholds.json` and reconciled the two pre-existing latent vitest-only pins (goal-row-logic.ts, GoalPill.svelte) — all five now satisfied by real lcov (14/14, 3/3, 31/31, 7/7, 45/45). Task-3 decision checkpoint resolved **add-to-ci**: added a node-22-provisioned `coverage` job to `.github/workflows/ci.yml` so the gate runs on every PR (not just release-sdk.yml). One Rule-3 deviation (plan-authorized): narrowed the web bun shard set to the two target files (not the whole web/src/__tests__ dir) to avoid pulling unrelated lib/SDK/example modules into the gate as new violations. Verified in isolation: ZERO new violations vs baseline, fixed 2. Sacred-12-stash held (12→12); explicit-path adds only. NOTE: full-tree `bun run test:coverage` stays RED on the current dirty working tree due to ~68 PRE-EXISTING baseline violations from uncommitted parallel-session changes to 100%-pinned files — out of 66-05 scope (logged in deferred-items.md); the gate goes green once that parallel work is committed/cleaned.
+Status (66-04, prior): full-phase end-to-end coverage (UI-01/02/03/04) across chromium + mobile-chromium. Extended `web/e2e/conversation-search.spec.ts` (viewport-aware helpers + toggle/default, reload-persist, two-section results, <2-char guard, degraded-no-mutate, generic empty) and created `web/e2e/sidebar-search-deeplink.spec.ts` (recent / strip-on-reload / paginated-out window-grow / off-branch branch-switch / unknown-id no-op / group-header-not-deep-link). 42/42 e2e green on both projects (21 cases × 2). Reuses the 66-01 /api/search/messages mock + makeSearchHit; clicks real 66-02 message-hit rows. One Rule-1 SUT fix in `ChatThread.svelte`: the `?m=` deep-link only fired on COLD MOUNT, so the sidebar click-journey (client `goto(...?m=)` on the persistent, non-remounting component) never pulsed and never stripped `?m=`. Moved the `?m=` consume into a reactive `$effect` (fires on cold load AND client nav) and made `resolveDeepLink found:false` non-terminal until `initialLoadDone` (so it retries once the target conv's tree loads instead of giving up against the previous conv's messages). 23/23 ChatThread.component + 84 adjacent ChatThread/deep-link vitest tests stay green; svelte-check clean on all owned files. Sacred-12-stash held (12→12); explicit-path adds only.
 Last activity: 2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m=
 
 Progress: [███████   ] v1.5 67% — 4/6 phases complete (63 + 64 + 65 + 66); 67/68 unblocked (depend on 65)
@@ -554,6 +555,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 66 P02 | 5min | 2 tasks | 3 files |
 | Phase 66 P03 | 6min | 3 tasks | 5 files |
 | Phase 66 P04 | 35min | 2 tasks | 3 files |
+| Phase 66 P05 | 40 | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -723,6 +725,8 @@ Plan 54-03 execution decisions:
 - [Phase 66]: 66-01: deep-link test runs under vitest (.unit.test.ts) not bun test — resolveDeepLink transitively imports Svelte-rune inline-tool-store via load-messages.ts
 - [Phase 66]: 66-01: window-grow policy grows directly to distanceFromTail (minimal covering window); distanceFromTail = path.length - idx (pathToRoot is root->leaf, tail=1)
 - [Phase 66]: 66-04: deep-link must consume ?m= reactively (not onMount-only) because the chat route is a persistent non-remounting ChatThread — the sidebar click-journey is a client goto, not a fresh mount
+- [Phase 66]: 66-05: per-file coverage gate now runs on every PR (add-to-ci) via a node-22-provisioned coverage job in ci.yml, in addition to release-sdk.yml
+- [Phase 66]: 66-05: three Phase 66 search helpers pinned at 100% per-file, satisfied by real lcov (bun shards for snippet-sanitize/search-mode + node-vitest leg for deep-link-resolve); vitest coverage MUST run under node (coverage-v8 fails under Bun)
 
 ### Pending Todos
 
@@ -749,6 +753,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-30T12:05:39.525Z
-Stopped at: 66-05 paused at Task 3 decision checkpoint (Tasks 1-2 done: commits 4950dbf1 + 49c3bbc1). Awaiting gate-location decision (release-sdk.yml only vs also ci.yml).
+Last session: 2026-05-30T14:53:07.820Z
+Stopped at: Completed 66-05-PLAN.md (add-to-ci checkpoint resolved). Phase 66 fully complete (66-01..05).
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

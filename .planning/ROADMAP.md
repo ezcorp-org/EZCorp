@@ -194,11 +194,12 @@ Plans:
   2. Selecting a result navigates to the conversation and scrolls to the matching message with a brief highlight pulse.
   3. Existing sidebar-search behavior — debounce, minimum query length, title matching, project + user scoping — continues to work unchanged.
   4. Lexical results keep their `<mark>` highlight rendering; semantic-only results render their plain ±window snippet in the same component without a fake highlight.
-**Plans**: 4 plans (3 waves)
+**Plans**: 5 plans (4 waves; 66-05 is gap closure)
   - [x] 66-01-PLAN.md — Wave 0: `/api/search/messages` e2e mock + pure helpers (deep-link-resolve, snippet-sanitize, search-mode) + unit tests (UI-01..04, wave 1)
-  - [ ] 66-02-PLAN.md — Sidebar: mode toggle + global LS + two-section grouped results + degraded/empty + widened onselect + component test (UI-01/02/04, wave 2)
-  - [ ] 66-03-PLAN.md — Deep-link: `?m=` route plumbing + ChatThread consume/strip/resolve/scroll + pulse keyframe + component test (UI-03, wave 2)
-  - [ ] 66-04-PLAN.md — e2e: extend conversation-search.spec.ts + new sidebar-search-deeplink.spec.ts on chromium + mobile-chromium (UI-01..04, wave 3)
+  - [x] 66-02-PLAN.md — Sidebar: mode toggle + global LS + two-section grouped results + degraded/empty + widened onselect + component test (UI-01/02/04, wave 2)
+  - [x] 66-03-PLAN.md — Deep-link: `?m=` route plumbing + ChatThread consume/strip/resolve/scroll + pulse keyframe + component test (UI-03, wave 2)
+  - [x] 66-04-PLAN.md — e2e: extend conversation-search.spec.ts + new sidebar-search-deeplink.spec.ts on chromium + mobile-chromium (UI-01..04, wave 3)
+  - [x] 66-05-PLAN.md — Gap closure: extend test-coverage.sh to measure web/src/lib (web bun shards + node-vitest leg), pin the three search helpers at 100% per-file, reconcile the two latent vitest-only pins; gate-location resolved add-to-ci (ci.yml gains a node-22 coverage job) (UI-01..04, wave 1)
 **Note**: User-visible surface — ships with 100% unit + integration + e2e (Playwright) coverage, CI-gated per-file on new paths.
 
 ### Phase 67: Command Palette Search
@@ -236,7 +237,7 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 | 63. Indexing Primitives | 3/3 | Complete    | 2026-05-29 |
 | 64. Embed-on-Write Worker | 2/2 | Complete    | 2026-05-29 |
 | 65. Hybrid Search SQL + API | 2/2 | Complete    | 2026-05-29 |
-| 66. Sidebar Search | 4/4 | Complete   | 2026-05-29 |
+| 66. Sidebar Search | 5/5 | Complete   | 2026-05-30 |
 | 67. Command Palette Search | 0/TBD | Not started | - |
 | 68. Backfill + Operations | 0/TBD | Not started | - |
 

@@ -4,14 +4,14 @@ milestone: v1.5
 milestone_name: Hybrid Chat Search
 current_plan: "Phase 66 COMPLETE (66-01..05). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66."
 status: verifying
-stopped_at: Completed 67-04-PLAN.md
-last_updated: "2026-05-30T20:46:29.185Z"
+stopped_at: Completed 67-01-PLAN.md (RED test scaffolds landed)
+last_updated: "2026-05-30T20:47:25.428Z"
 last_activity: "2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m="
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 19
-  completed_plans: 14
+  completed_plans: 15
   percent: 67
 ---
 
@@ -27,9 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-20) · .planning/ROADMAP.md (v1.5 Pha
 ## Current Position
 
 Milestone: v1.5 Hybrid Chat Search
-Phase: 66 — Sidebar Search (COMPLETE — 66-01 infra + 66-02 sidebar + 66-03 deep-link + 66-04 e2e + 66-05 coverage-gate closure all landed)
-Current Plan: Phase 66 COMPLETE (66-01..05). Next milestone work: Phase 67 (Cmd+K palette) or Phase 68 (backfill) — both depend on 65, not on 66.
-Status: 66-05 complete — gap-closure plan that machine-gates the three Phase 66 search helpers at 100% per-file. Extended `scripts/test-coverage.sh` to measure web/src/lib: widened the per-file loop to the two search-helper bun:test suites (snippet-sanitize + search-mode) and added a NEW node-run vitest --coverage leg (coverage-v8 fails under Bun) for the vitest-only deep-link-resolve + the two latent component pins, with SF:src/→SF:web/src/ re-rooting + VITEST_EXIT propagated to the gate. Added exact 100% pins for the three search modules in `scripts/coverage-thresholds.json` and reconciled the two pre-existing latent vitest-only pins (goal-row-logic.ts, GoalPill.svelte) — all five now satisfied by real lcov (14/14, 3/3, 31/31, 7/7, 45/45). Task-3 decision checkpoint resolved **add-to-ci**: added a node-22-provisioned `coverage` job to `.github/workflows/ci.yml` so the gate runs on every PR (not just release-sdk.yml). One Rule-3 deviation (plan-authorized): narrowed the web bun shard set to the two target files (not the whole web/src/__tests__ dir) to avoid pulling unrelated lib/SDK/example modules into the gate as new violations. Verified in isolation: ZERO new violations vs baseline, fixed 2. Sacred-12-stash held (12→12); explicit-path adds only. NOTE: full-tree `bun run test:coverage` stays RED on the current dirty working tree due to ~68 PRE-EXISTING baseline violations from uncommitted parallel-session changes to 100%-pinned files — out of 66-05 scope (logged in deferred-items.md); the gate goes green once that parallel work is committed/cleaned.
+Phase: 67 — Command Palette Search (in progress; 67-01 RED test scaffolds landed; 67-02 + 67-04 also landed via parallel sessions)
+Current Plan: Phase 67 in flight — 67-01 (test scaffolds), 67-02, 67-04 have SUMMARYs; 67-03/05/06/07 remaining.
+Status (67-01): three frontend test files landed test-first. (1) `web/src/lib/search/__tests__/palette-results.test.ts` (283L) — TRUE-RED unit contract for `buildPaletteResults` (Plan 05 import target): pins section order [commands, in-this-conversation, other] + the null-active-conversation single `messages` branch + project→conversation grouping + flatItems=actionable-rows-only render order + flat-index ArrowDown mapping + empty-section omission + first-seen-order parity with groupHitsByConversation. (2) `web/src/__tests__/CommandPalette.component.test.ts` (329L) — PARTIAL-RED component contract driving the palette via mocked searchMessages+goto (extended projectId/projectName hit shape, ≥2 projects + active conv): 7 message-search assertions RED until Plan 06 (sections-with-commands, snippet sanitize, role badge + glyph ≈/⊕/“, arrow-skip-headers, row-type Enter deep-link /project/<p>/chat/<c>?m=<id>, generic empty, degraded notice + no-mode-mutation); 5 guard assertions already GREEN (dialog ARIA, focus-restore, ez-prefix-no-search, <2-char-no-search, command-Enter-no-deeplink). (3) `web/src/__tests__/app-layout-palette-shortcut.test.ts` (52L) — source-read suite mirroring app-layout-agents-nav.test.ts, pinning both case "palette"/case "palette-commands" arms + initialView={…} pass-through. 2 deviations auto-fixed: (a) Rule-1 — moved goto+searchMessages spies into vi.hoisted() (vi.mock factories hoist above imports → "Cannot access before initialization"); (b) Rule-3 — Plan 04 routing already shipped (commit 098545c1), so Task 3 landed GREEN (3/3) as an honest regression guard rather than a fabricated RED. Zero production source touched by 67-01's three commits (61cb2ca3 + 6a47df3c + 059f1d63). Sacred-12-stash held (12→12); explicit-path adds only (left parallel-session dirty files untouched). Commits: 61cb2ca3 (Task1 unit RED), 6a47df3c (Task2 component RED), 059f1d63 (Task3 routing guard).
+Status (66-05, prior): 66-05 complete — gap-closure plan that machine-gates the three Phase 66 search helpers at 100% per-file. Extended `scripts/test-coverage.sh` to measure web/src/lib: widened the per-file loop to the two search-helper bun:test suites (snippet-sanitize + search-mode) and added a NEW node-run vitest --coverage leg (coverage-v8 fails under Bun) for the vitest-only deep-link-resolve + the two latent component pins, with SF:src/→SF:web/src/ re-rooting + VITEST_EXIT propagated to the gate. Added exact 100% pins for the three search modules in `scripts/coverage-thresholds.json` and reconciled the two pre-existing latent vitest-only pins (goal-row-logic.ts, GoalPill.svelte) — all five now satisfied by real lcov (14/14, 3/3, 31/31, 7/7, 45/45). Task-3 decision checkpoint resolved **add-to-ci**: added a node-22-provisioned `coverage` job to `.github/workflows/ci.yml` so the gate runs on every PR (not just release-sdk.yml). One Rule-3 deviation (plan-authorized): narrowed the web bun shard set to the two target files (not the whole web/src/__tests__ dir) to avoid pulling unrelated lib/SDK/example modules into the gate as new violations. Verified in isolation: ZERO new violations vs baseline, fixed 2. Sacred-12-stash held (12→12); explicit-path adds only. NOTE: full-tree `bun run test:coverage` stays RED on the current dirty working tree due to ~68 PRE-EXISTING baseline violations from uncommitted parallel-session changes to 100%-pinned files — out of 66-05 scope (logged in deferred-items.md); the gate goes green once that parallel work is committed/cleaned.
 Status (66-04, prior): full-phase end-to-end coverage (UI-01/02/03/04) across chromium + mobile-chromium. Extended `web/e2e/conversation-search.spec.ts` (viewport-aware helpers + toggle/default, reload-persist, two-section results, <2-char guard, degraded-no-mutate, generic empty) and created `web/e2e/sidebar-search-deeplink.spec.ts` (recent / strip-on-reload / paginated-out window-grow / off-branch branch-switch / unknown-id no-op / group-header-not-deep-link). 42/42 e2e green on both projects (21 cases × 2). Reuses the 66-01 /api/search/messages mock + makeSearchHit; clicks real 66-02 message-hit rows. One Rule-1 SUT fix in `ChatThread.svelte`: the `?m=` deep-link only fired on COLD MOUNT, so the sidebar click-journey (client `goto(...?m=)` on the persistent, non-remounting component) never pulsed and never stripped `?m=`. Moved the `?m=` consume into a reactive `$effect` (fires on cold load AND client nav) and made `resolveDeepLink found:false` non-terminal until `initialLoadDone` (so it retries once the target conv's tree loads instead of giving up against the previous conv's messages). 23/23 ChatThread.component + 84 adjacent ChatThread/deep-link vitest tests stay green; svelte-check clean on all owned files. Sacred-12-stash held (12→12); explicit-path adds only.
 Last activity: 2026-05-29 — 66-04 landed: full-phase e2e (UI-01/02/03/04) on chromium + mobile-chromium; Rule-1 fix to ChatThread so the sidebar click-journey deep-link actually pulses + strips ?m=
 
@@ -558,6 +559,7 @@ Progress: [██████████] v1.4 99% Phase 62 (per-plan; phases 5
 | Phase 66 P05 | 40 | 3 tasks | 3 files |
 | Phase 67-command-palette-search P02 | 2min | 2 tasks | 1 files |
 | Phase 67 P04 | 3min | 2 tasks | 4 files |
+| Phase 67 P01 | 5 | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -732,6 +734,7 @@ Plan 54-03 execution decisions:
 - [Phase 67-command-palette-search]: 67-02: local makeCrossProjectHit extends makeSearchHit with projectId/projectName via cast — keeps the RED palette e2e self-contained without touching the production MessageSearchHit type (Plan 04 widens it)
 - [Phase 67]: 67-04: palette-commands (Cmd+Shift+P) added; both palette + palette-commands toggle but set paletteInitialView first; merge-by-action keeps custom overrides for both
 - [Phase 67]: 67-04: declared optional initialView prop on CommandPalette (inert until Plan 06) to keep layout svelte-check clean; verified Task 2 via source-grep because Plan 01 RED routing test is not yet on disk
+- [Phase 67]: 67-01: Plan 04 routing (palette/palette-commands + initialView) already shipped (commit 098545c1); Task 3 source-read test landed as GREEN regression guard, not RED
 
 ### Pending Todos
 
@@ -758,6 +761,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-30T20:46:29.182Z
-Stopped at: Completed 67-04-PLAN.md
+Last session: 2026-05-30T20:47:25.394Z
+Stopped at: Completed 67-01-PLAN.md (RED test scaffolds landed)
 Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.

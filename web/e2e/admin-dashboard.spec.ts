@@ -22,10 +22,18 @@ test.describe("Admin Dashboard", () => {
 		errorSummary: { totalErrors: 3, errorRate: [{ date: "2026-03-23", count: 1 }], recentErrors: [{ id: "e1", level: "error", message: "Connection timeout", createdAt: "2026-03-23T11:00:00Z" }] },
 	};
 
+	// Embedding-index progress (System tab, OPS-04 read-only card).
+	// coverage: 150/200 → 75% (clean rounding, exercises embedCoveragePct).
+	const embedProgressData = {
+		backlog: { pending: 12, inProgress: 3, failed: 1, total: 16 },
+		coverage: { eligibleMessages: 200, embeddedMessages: 150 },
+	};
+
 	const defaultRoutes = {
 		"/api/auth/me": () => adminMe,
 		"/api/admin/analytics": () => analyticsData,
 		"/api/admin/system": () => systemData,
+		"/api/admin/embed-progress": () => embedProgressData,
 	};
 
 	test("shows dashboard with 4 tab buttons", async ({ page, mockApi }) => {
@@ -102,6 +110,56 @@ test.describe("Admin Dashboard", () => {
 		await expect(page.getByText("Database Size")).toBeVisible({ timeout: 5000 });
 		await expect(page.getByText("Uptime")).toBeVisible({ timeout: 5000 });
 		await expect(page.getByRole("heading", { name: "Errors (Last 7 Days)" })).toBeVisible({ timeout: 5000 });
+	});
+
+	test("system tab shows embedding-index progress card", async ({ page, mockApi }) => {
+		await mockApi({
+			projects: [proj],
+			routes: defaultRoutes,
+		});
+
+		await page.goto("/admin/dashboard");
+
+		await expect(page.getByRole("button", { name: "System" })).toBeVisible({ timeout: 5000 });
+		await page.getByRole("button", { name: "System" }).click();
+
+		const card = page.getByTestId("embed-progress-card");
+		await expect(card).toBeVisible({ timeout: 5000 });
+
+		// Backlog row: pending · in progress · failed · total, all from the payload.
+		await expect(card).toContainText("12 pending");
+		await expect(card).toContainText("3 in progress");
+		await expect(card).toContainText("1 failed");
+		await expect(card).toContainText("16 total");
+
+		// Coverage row: embeddedMessages / eligibleMessages messages (150 / 200)
+		// plus the page-computed coverage percent: round(150 / 200 * 100) = 75%.
+		await expect(card).toContainText("150");
+		await expect(card).toContainText("200 messages");
+		await expect(card).toContainText("(75%)");
+	});
+
+	test("system tab embedding card shows 0% coverage when no eligible messages", async ({ page, mockApi }) => {
+		// Divide-by-zero guard: eligibleMessages = 0 → embedCoveragePct = 0.
+		await mockApi({
+			projects: [proj],
+			routes: {
+				...defaultRoutes,
+				"/api/admin/embed-progress": () => ({
+					backlog: { pending: 0, inProgress: 0, failed: 0, total: 0 },
+					coverage: { eligibleMessages: 0, embeddedMessages: 0 },
+				}),
+			},
+		});
+
+		await page.goto("/admin/dashboard");
+
+		await expect(page.getByRole("button", { name: "System" })).toBeVisible({ timeout: 5000 });
+		await page.getByRole("button", { name: "System" }).click();
+
+		const card = page.getByTestId("embed-progress-card");
+		await expect(card).toBeVisible({ timeout: 5000 });
+		await expect(card).toContainText("(0%)");
 	});
 
 	test("shows last updated timestamp after data loads", async ({ page, mockApi }) => {

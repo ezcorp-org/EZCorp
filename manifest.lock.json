@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-19T00:27:09.188Z",
+  "generatedAt": "2026-05-29T21:03:36.401Z",
   "extensions": {
     "ai-kit": {
       "version": "0.1.0",
@@ -25,7 +25,7 @@
     "extension-author": {
       "version": "0.1.0",
       "entrypoint": "./index.ts",
-      "toolsHash": "sha256-eNw2asMgRh7ZOef2lFlROMFM5SzX5WXsFxYonBUhC18="
+      "toolsHash": "sha256-V7+mCIO4ZnDU/5uVNp3NBuehI6NfcOjMnb7BN84WD5I="
     },
     "file-refactor": {
       "version": "1.0.0",

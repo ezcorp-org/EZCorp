@@ -31,18 +31,20 @@
  * because createMessage auto-enqueues eligible messages (conversations.ts:414),
  * which would pre-populate the outbox and defeat the gaps-only premise.
  */
-import { test, expect, describe, beforeEach, afterAll } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach, afterAll } from "bun:test";
 import { setupTestDb, closeTestDb, getTestDb, mockDbConnection } from "./helpers/test-pglite";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 mockDbConnection();
 
-const { runBackfill, parseArgs } = await import("../../scripts/backfill-embeddings");
+const { runBackfill, parseArgs, main, isWorkerDown, isProcessAlive } = await import(
+  "../../scripts/backfill-embeddings"
+);
 const { enqueueEmbedJobIfAbsent, getBackfillBatchSize, getBackfillSleepMs } = await import(
   "../db/queries/message-embed-outbox"
 );
 const { createProject } = await import("../db/queries/projects");
-const { projects, conversations, messages, messageChunks, messageEmbedOutbox } = await import("../db/schema");
+const { conversations, messages, messageChunks, messageEmbedOutbox } = await import("../db/schema");
 const { EMBEDDING_MODEL_ID } = await import("../memory/embeddings");
 
 // ── Raw seeders (bypass createMessage's auto-enqueue) ──────────────────────
@@ -57,9 +59,12 @@ async function seedConversation(opts: { test?: boolean | null } = {}) {
   return conv!;
 }
 
-async function seedMessage(conversationId: string, role: string, content: string) {
+async function seedMessage(conversationId: string, role: string, content: string, createdAt?: Date) {
   const db = getTestDb();
-  const [msg] = await db.insert(messages).values({ conversationId, role, content }).returning();
+  const [msg] = await db
+    .insert(messages)
+    .values({ conversationId, role, content, ...(createdAt ? { createdAt } : {}) })
+    .returning();
   return msg!;
 }
 
@@ -70,6 +75,16 @@ async function seedChunk(messageId: string, conversationId: string) {
     content: "already-embedded chunk",
     chunkIndex: 0,
     embeddingModelId: EMBEDDING_MODEL_ID,
+  });
+}
+
+async function seedStaleChunk(messageId: string, conversationId: string) {
+  await getTestDb().insert(messageChunks).values({
+    messageId,
+    conversationId,
+    content: "stale-model chunk",
+    chunkIndex: 0,
+    embeddingModelId: `${EMBEDDING_MODEL_ID}-OLD`, // differs from current model
   });
 }
 
@@ -326,5 +341,323 @@ describe("backfill-embeddings (OPS-01/OPS-02) — RED until Plans 02+04", () => 
       expect(parsed.error).toContain("unknown flag");
       expect(parsed.error).toContain("--bogus");
     });
+
+    test("--batch-size requires a value; --sleep-ms rejects a negative integer", () => {
+      // --batch-size with a missing trailing token.
+      const a = parseArgs(["--batch-size"]);
+      expect("error" in a).toBe(true);
+      // --sleep-ms with a negative value (covers the sleep-ms validation branch).
+      const b = parseArgs(["--sleep-ms", "-5"]);
+      expect("error" in b).toBe(true);
+      if (!("error" in b)) throw new Error("unreachable");
+      expect(b.error).toContain("--sleep-ms requires a non-negative integer");
+      // --project with a missing trailing token.
+      const c = parseArgs(["--project"]);
+      expect("error" in c).toBe(true);
+      // --sleep-ms accepts 0 (no-pause sentinel).
+      const ok = parseArgs(["--sleep-ms", "0"]);
+      if ("error" in ok) throw new Error("unexpected error");
+      expect(ok.sleepMs).toBe(0);
+    });
+  });
+
+  describe("OPS-01 --refresh-stale (stale-model re-enqueue) + paced batches", () => {
+    test("re-enqueues messages whose chunks use an OLD model via DO-UPDATE; a fresh-model chunk is left alone", async () => {
+      const conv = await seedConversation();
+      // (a) message chunked with the CURRENT model → NOT stale → not re-enqueued.
+      const fresh = await seedMessage(conv.id, "assistant", "fresh-model chunked");
+      await seedChunk(fresh.id, conv.id);
+      // (b) message chunked with an OLD model → stale → re-enqueued by --refresh-stale.
+      const stale = await seedMessage(conv.id, "assistant", "stale-model chunked");
+      await seedStaleChunk(stale.id, conv.id);
+
+      // WITHOUT --refresh-stale: both are chunked, so neither is a gap → 0 enqueued.
+      const plain = await runBackfill(getTestDb(), { ...FULL });
+      expect(plain.enqueued).toBe(0);
+      expect((await outboxRows()).length).toBe(0);
+
+      // WITH --refresh-stale: exactly the stale-model message is re-enqueued.
+      const refreshed = await runBackfill(getTestDb(), { ...FULL, refreshStale: true });
+      expect(refreshed.enqueued).toBe(1);
+      expect((await outboxFor(stale.id)).length).toBe(1);
+      expect((await outboxFor(fresh.id)).length).toBe(0);
+    });
+
+    test("--refresh-stale in dry-run reports the would-enqueue count but writes nothing", async () => {
+      const conv = await seedConversation();
+      const stale = await seedMessage(conv.id, "assistant", "stale chunk");
+      await seedStaleChunk(stale.id, conv.id);
+
+      const result = await runBackfill(getTestDb(), { ...FULL, refreshStale: true, dryRun: true });
+      expect(result.enqueued).toBe(1);
+      expect((await outboxRows()).length).toBe(0); // wrote nothing
+    });
+
+    test("paces between full pages: a sleepMs>0 run across two pages still enqueues every gap", async () => {
+      const conv = await seedConversation();
+      // Three gaps with batchSize=2 forces a multi-page loop that hits the
+      // `sleepMs > 0` Bun.sleep branch between the first full page and the next.
+      // DISTINCT, increasing created_at timestamps so the keyset cursor
+      // (m.created_at > afterCreatedAt) advances deterministically — rows with
+      // an identical defaultNow() stamp would be skipped on the second page.
+      const t0 = new Date("2026-01-01T00:00:00.000Z");
+      await seedMessage(conv.id, "user", "gap a", new Date(t0.getTime() + 1000));
+      await seedMessage(conv.id, "user", "gap b", new Date(t0.getTime() + 2000));
+      await seedMessage(conv.id, "user", "gap c", new Date(t0.getTime() + 3000));
+
+      const progressTicks: number[] = [];
+      const result = await runBackfill(getTestDb(), {
+        ...FULL,
+        batchSize: 2,
+        sleepMs: 1,
+        onProgress: (p: { enqueued: number; eligible: number; backlog: number }) =>
+          progressTicks.push(p.enqueued),
+      });
+      expect(result.enqueued).toBe(3);
+      expect((await outboxRows()).length).toBe(3);
+      // onProgress fired once per page (2 pages: 2 then 3).
+      expect(progressTicks).toEqual([2, 3]);
+    });
+  });
+});
+
+// ── Plan 04 main()/exit-code + worker-liveness coverage ────────────────────
+//
+// These suites drive the CLI's orchestration layer IN-PROCESS (not via spawn)
+// so the lines count toward this file's coverage. `mockDbConnection()` makes
+// main()'s `initDb()` a no-op and `getDb()` return the shared PGlite harness,
+// so main() runs end-to-end against the seeded test DB. We never call
+// process.exit (the `import.meta.main` guard does that in production); we
+// assert main()'s RETURNED exit code (0 / 1 / 2) plus its stdout/stderr.
+
+/** Capture process.argv + std stream writes around one main() invocation. */
+async function runMain(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const savedArgv = process.argv;
+  const origStdout = process.stdout.write.bind(process.stdout);
+  const origStderr = process.stderr.write.bind(process.stderr);
+  const origLog = console.log;
+  let stdout = "";
+  let stderr = "";
+  // process.argv[0]=runtime, [1]=script; main() reads slice(2).
+  process.argv = ["bun", "scripts/backfill-embeddings.ts", ...args];
+  (process.stdout.write as unknown) = (chunk: unknown) => {
+    stdout += typeof chunk === "string" ? chunk : String(chunk);
+    return true;
+  };
+  (process.stderr.write as unknown) = (chunk: unknown) => {
+    stderr += typeof chunk === "string" ? chunk : String(chunk);
+    return true;
+  };
+  // printHelp() uses console.log, which does NOT route through the patched
+  // process.stdout.write above — capture it explicitly onto the stdout buffer.
+  console.log = (...parts: unknown[]) => {
+    stdout += parts.map((p) => (typeof p === "string" ? p : String(p))).join(" ") + "\n";
+  };
+  try {
+    const code = await main();
+    return { code, stdout, stderr };
+  } finally {
+    process.argv = savedArgv;
+    (process.stdout.write as unknown) = origStdout;
+    (process.stderr.write as unknown) = origStderr;
+    console.log = origLog;
+  }
+}
+
+describe("backfill-embeddings main() — exit codes + branches", () => {
+  // The repo lockfile (.ezcorp/embed-worker.pid) points at a dead PID in CI,
+  // so the worker-down WARNING fires by default. We force it deterministically
+  // via the kill-switch env, saved/restored per test so we never leak it.
+  let savedKill: string | undefined;
+  beforeEach(async () => {
+    await setupTestDb();
+    savedKill = process.env.EZCORP_DISABLE_EMBED_WORKER;
+    // Default: force worker DOWN so main()'s WARNING branch is exercised and
+    // the result is independent of the host's real lockfile/PID liveness.
+    process.env.EZCORP_DISABLE_EMBED_WORKER = "1";
+  });
+  afterEach(() => {
+    if (savedKill === undefined) delete process.env.EZCORP_DISABLE_EMBED_WORKER;
+    else process.env.EZCORP_DISABLE_EMBED_WORKER = savedKill;
+  });
+  afterAll(async () => {
+    await closeTestDb();
+  });
+
+  test("--help prints usage to stdout and returns 0 (no enqueue)", async () => {
+    const conv = await seedConversation();
+    await seedMessage(conv.id, "user", "a gap that must NOT be touched by --help");
+
+    const { code, stdout } = await runMain(["--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toContain("Usage:");
+    expect(stdout).toContain("--dry-run");
+    // --help short-circuits before initDb/enqueue — nothing was queued.
+    expect((await outboxRows()).length).toBe(0);
+  });
+
+  test("unknown flag writes an error + usage to stderr and returns 2", async () => {
+    const { code, stdout, stderr } = await runMain(["--bogus"]);
+    expect(code).toBe(2);
+    // The error line goes to stderr; the usage text follows on stdout (console.log).
+    expect(stderr).toContain("unknown flag: --bogus");
+    expect(stdout).toContain("Usage:");
+  });
+
+  test("a bad numeric arg also returns the invocation-error code 2", async () => {
+    const { code, stderr } = await runMain(["--batch-size", "0"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("--batch-size requires a positive integer");
+  });
+
+  test("--status prints the getEmbedProgress JSON to stdout and returns 0, enqueuing nothing", async () => {
+    const conv = await seedConversation();
+    // One eligible gap (counts toward coverage.eligibleMessages) + one chunked
+    // (counts toward embeddedMessages).
+    await seedMessage(conv.id, "user", "uncovered gap");
+    const chunked = await seedMessage(conv.id, "assistant", "already embedded");
+    await seedChunk(chunked.id, conv.id);
+
+    const { code, stdout } = await runMain(["--status"]);
+    expect(code).toBe(0);
+    const progress = JSON.parse(stdout);
+    expect(progress).toEqual({
+      backlog: { pending: 0, inProgress: 0, failed: 0, total: 0 },
+      coverage: { eligibleMessages: 2, embeddedMessages: 1 },
+    });
+    // --status must enqueue NOTHING.
+    expect((await outboxRows()).length).toBe(0);
+  });
+
+  test("default apply enqueues the gaps, warns LOUDLY that the worker is down, and returns 0", async () => {
+    const conv = await seedConversation();
+    const gap = await seedMessage(conv.id, "user", "fill me");
+
+    const { code, stdout, stderr } = await runMain(["--verbose"]);
+    expect(code).toBe(0);
+
+    // The worker-down WARNING (kill-switch) landed on stderr, not stdout.
+    expect(stderr).toContain("WARNING: the EmbedWorker appears to be DOWN");
+    expect(stderr).toContain("EZCORP_DISABLE_EMBED_WORKER");
+    // --verbose done-line on stderr.
+    expect(stderr).toContain('"done":true');
+
+    // stdout is a single parseable summary doc with errors: [].
+    const summary = JSON.parse(stdout);
+    expect(summary.dryRun).toBe(false);
+    expect(summary.enqueued).toBe(1);
+    expect(summary.eligibleScanned).toBe(1);
+    expect(summary.errors).toEqual([]);
+    expect(summary.backlog.pending).toBe(1);
+
+    // The gap was actually queued.
+    expect((await outboxFor(gap.id)).length).toBe(1);
+  });
+
+  test("--dry-run reports the would-enqueue count, writes nothing, returns 0", async () => {
+    const conv = await seedConversation();
+    await seedMessage(conv.id, "user", "gap one");
+    await seedMessage(conv.id, "assistant", "gap two");
+
+    const { code, stdout } = await runMain(["--dry-run"]);
+    expect(code).toBe(0);
+    const summary = JSON.parse(stdout);
+    expect(summary.dryRun).toBe(true);
+    expect(summary.enqueued).toBe(2);
+    expect((await outboxRows()).length).toBe(0);
+  });
+
+  test("a per-item enqueue failure is accumulated into errors and returns 1 (final progress still rendered)", async () => {
+    const conv = await seedConversation();
+    await seedMessage(conv.id, "user", "this enqueue will throw");
+
+    // Install a BEFORE INSERT trigger that throws on every outbox insert. This
+    // makes runBackfill()'s enqueue reject; main() catches it into `errors`,
+    // then STILL fetches the final getEmbedProgress snapshot (which reads the
+    // table fine — only INSERTs are blocked) and returns 1.
+    const db = getTestDb();
+    await db.execute(
+      sql`CREATE OR REPLACE FUNCTION _backfill_boom() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom-on-insert'; END; $$ LANGUAGE plpgsql;`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER _backfill_boom_trg BEFORE INSERT ON message_embed_outbox FOR EACH ROW EXECUTE FUNCTION _backfill_boom();`,
+    );
+
+    const { code, stdout } = await runMain([]);
+    expect(code).toBe(1);
+    const summary = JSON.parse(stdout);
+    expect(summary.errors.length).toBe(1);
+    // The captured message is the drizzle "Failed query: insert into
+    // message_embed_outbox ..." wrapper around the trigger's RAISE EXCEPTION.
+    expect(summary.errors[0]).toContain("message_embed_outbox");
+    expect(summary.enqueued).toBe(0);
+    // Nothing committed despite the attempt.
+    expect((await outboxRows()).length).toBe(0);
+  });
+
+  test("worker-up path: with the kill-switch cleared and a live PID lockfile, main() does NOT warn", async () => {
+    delete process.env.EZCORP_DISABLE_EMBED_WORKER;
+    const lockPath = ".ezcorp/embed-worker.pid";
+    const lockFile = Bun.file(lockPath);
+    const hadLock = await lockFile.exists();
+    const savedLock = hadLock ? await lockFile.text() : null;
+    // Point the lockfile at THIS live process so isWorkerDown() → false.
+    await Bun.write(lockPath, String(process.pid));
+    try {
+      const conv = await seedConversation();
+      await seedMessage(conv.id, "user", "fill me too");
+      const { code, stdout, stderr } = await runMain([]);
+      expect(code).toBe(0);
+      expect(stderr).not.toContain("WARNING: the EmbedWorker appears to be DOWN");
+      expect(JSON.parse(stdout).enqueued).toBe(1);
+    } finally {
+      // Restore the host's original lockfile byte-for-byte.
+      if (savedLock !== null) await Bun.write(lockPath, savedLock);
+    }
+  });
+});
+
+describe("isWorkerDown / isProcessAlive (worker-liveness probes)", () => {
+  let savedKill: string | undefined;
+  beforeEach(() => {
+    savedKill = process.env.EZCORP_DISABLE_EMBED_WORKER;
+    delete process.env.EZCORP_DISABLE_EMBED_WORKER;
+  });
+  afterEach(() => {
+    if (savedKill === undefined) delete process.env.EZCORP_DISABLE_EMBED_WORKER;
+    else process.env.EZCORP_DISABLE_EMBED_WORKER = savedKill;
+  });
+
+  test("isProcessAlive: own PID is alive; invalid/dead PIDs are not", () => {
+    expect(isProcessAlive(process.pid)).toBe(true);
+    // Non-finite / non-positive guard.
+    expect(isProcessAlive(0)).toBe(false);
+    expect(isProcessAlive(-1)).toBe(false);
+    expect(isProcessAlive(Number.NaN)).toBe(false);
+    // A PID extremely unlikely to exist → ESRCH → not alive.
+    expect(isProcessAlive(2 ** 31 - 1)).toBe(false);
+  });
+
+  test("isWorkerDown: kill-switch env forces DOWN regardless of lockfile", async () => {
+    process.env.EZCORP_DISABLE_EMBED_WORKER = "1";
+    expect(await isWorkerDown()).toBe(true);
+  });
+
+  test("isWorkerDown: kill-switch=0 falls through to lockfile liveness", async () => {
+    process.env.EZCORP_DISABLE_EMBED_WORKER = "0"; // not "1" → not forced down
+    const lockPath = ".ezcorp/embed-worker.pid";
+    const lockFile = Bun.file(lockPath);
+    const hadLock = await lockFile.exists();
+    const savedLock = hadLock ? await lockFile.text() : null;
+    try {
+      // (a) live PID → worker UP (not down).
+      await Bun.write(lockPath, String(process.pid));
+      expect(await isWorkerDown()).toBe(false);
+      // (b) dead PID in lockfile → worker DOWN.
+      await Bun.write(lockPath, "999999999");
+      expect(await isWorkerDown()).toBe(true);
+    } finally {
+      if (savedLock !== null) await Bun.write(lockPath, savedLock);
+    }
   });
 });

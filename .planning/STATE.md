@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Hybrid Chat Search
 current_plan: Phase 68 — Plans 02 + 03 + 04 + 05 of 5 COMPLETE (OPS-01/02/03/04 landed; 04 = backfill CLI; 05 = OPS-04 web surface; 01 RED scaffolds prior).
-status: in_progress
+status: unknown
 stopped_at: Completed 68-04-PLAN.md
-last_updated: "2026-05-31T01:02:10.457Z"
+last_updated: "2026-05-31T01:08:23.933Z"
 last_activity: "2026-05-31 — 68-05 landed: OPS-04 web surface — admin-gated GET /api/admin/embed-progress (composes Plan-02 getEmbedProgress, auth mirrored from admin/system) + read-only embedding-progress card on the admin dashboard system tab; server test 5/5 GREEN, svelte-check clean on both files, zero e2e; commits ab469421 + 2d126a64 + efebc4d0 (parallel with 68-04's CLI half)"
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 24
   completed_plans: 24
-  percent: 95
+  percent: 83
 ---
 
 # Project State

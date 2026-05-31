@@ -56,10 +56,10 @@ Requirements for the v1.5 milestone. Each maps to exactly one roadmap phase (63�
 
 ### Backfill & Operations
 
-- [ ] **OPS-01**: An operator-run script enqueues embedding jobs for all existing eligible messages; it is resumable and idempotent (`ON CONFLICT DO NOTHING`)
+- [x] **OPS-01**: An operator-run script enqueues embedding jobs for all existing eligible messages; it is resumable and idempotent (`ON CONFLICT DO NOTHING`)
 - [ ] **OPS-02**: Backfill throttles itself so live chat traffic is not starved during a large catch-up
 - [x] **OPS-03**: `ANALYZE` runs after backfill batches so the query planner has fresh statistics (no autovacuum under PGlite)
-- [ ] **OPS-04**: Operators can observe embedding progress — outbox backlog depth and `message_chunks` coverage
+- [x] **OPS-04**: Operators can observe embedding progress — outbox backlog depth and `message_chunks` coverage
 
 ## v2 Requirements
 
@@ -131,10 +131,10 @@ Which phases cover which requirements. Populated during roadmap creation (Phases
 | PAL-05 | Phase 67 | Complete |
 | PAL-06 | Phase 67 | Complete |
 | PAL-07 | Phase 67 | Complete |
-| OPS-01 | Phase 68 | Pending |
+| OPS-01 | Phase 68 | Complete |
 | OPS-02 | Phase 68 | Pending |
 | OPS-03 | Phase 68 | Complete |
-| OPS-04 | Phase 68 | Pending |
+| OPS-04 | Phase 68 | Complete |
 
 **Coverage:**
 - v1 requirements: 35 total

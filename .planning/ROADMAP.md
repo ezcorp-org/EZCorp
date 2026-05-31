@@ -20,7 +20,7 @@
 - [x] **Phase 65: Hybrid Search SQL + API** — single-CTE RRF query builder + `/api/search/messages` endpoint with hybrid/keyword/semantic modes, in-CTE tenant scoping, snippet asymmetry, match-type tagging, degraded fallback (SRCH-01..08) (completed 2026-05-29)
 - [x] **Phase 66: Sidebar Search** — Hybrid/Keyword/Semantic mode toggle on `ConversationList.svelte` with localStorage persistence + deep-link to matching message (UI-01..04) (completed 2026-05-29)
 - [x] **Phase 67: Command Palette Search** — Cmd+K global search palette extending `CommandPalette.svelte`, Cmd+Shift+P rebind, grouped sections, match-type icons, deep-link, a11y, mobile BottomSheet fallback (PAL-01..07) (completed 2026-05-30)
-- [ ] **Phase 68: Backfill + Operations** — resumable idempotent backfill script with throttle, post-batch ANALYZE, and embedding-progress observability (OPS-01..04)
+- [x] **Phase 68: Backfill + Operations** — resumable idempotent backfill script with throttle, post-batch ANALYZE, and embedding-progress observability (OPS-01..04) (completed 2026-05-31)
 
 <details>
 <summary>✅ v1.0 MVP (Phases 1-11) — SHIPPED 2026-03-10</summary>
@@ -252,7 +252,7 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 | 65. Hybrid Search SQL + API | 2/2 | Complete    | 2026-05-29 |
 | 66. Sidebar Search | 5/5 | Complete   | 2026-05-30 |
 | 67. Command Palette Search | 7/7 | Complete   | 2026-05-30 |
-| 68. Backfill + Operations | 4/5 | In Progress|  |
+| 68. Backfill + Operations | 5/5 | Complete   | 2026-05-31 |
 
 ---
 

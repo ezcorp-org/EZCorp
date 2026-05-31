@@ -401,6 +401,35 @@ export class EmbedWorker {
         }
       }
 
+      // OPS-03: post-backlog-clear planner maintenance.
+      // PGlite has no autovacuum, so after a big backfill drains the planner
+      // stats on message_chunks go stale (degrading HNSW/FTS plans). We only
+      // reach here when rows.length > 0 (the empty-tick path early-returned at
+      // :337 and degraded ticks bailed above), so probe the *remaining*
+      // claimable-pending backlog with the SAME predicate claimBatch uses. If
+      // this non-empty drain cleared the backlog to zero, run ANALYZE exactly
+      // once. The probe re-uses claimBatch's `result.rows ?? result` unwrap
+      // idiom; ANALYZE is wrapped in its own try/catch so a stats-refresh
+      // failure can never crash a tick or fail the drain (mirrors the
+      // tick-level catch discipline below).
+      const backlogResult = await db.execute(sql`
+        SELECT COUNT(*)::int AS n FROM message_embed_outbox
+        WHERE status = 'pending'
+          AND (next_attempt_after IS NULL OR next_attempt_after <= NOW())
+      `);
+      const backlogRows = (backlogResult as { rows: { n: number }[] }).rows
+        ?? (backlogResult as { n: number }[]);
+      const remaining = backlogRows[0]?.n ?? 0;
+      if (remaining === 0) {
+        try {
+          await db.execute(sql`ANALYZE message_chunks`);
+        } catch (analyzeErr) {
+          log.warn("embed-worker: ANALYZE message_chunks failed — continuing", {
+            error: String((analyzeErr as Error)?.message ?? analyzeErr),
+          });
+        }
+      }
+
       return { claimed: rows.length, embedded, failed, skipped: 0 };
     } catch (err) {
       log.warn("embed-worker: tick crashed — daemon continues", {

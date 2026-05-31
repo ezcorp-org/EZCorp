@@ -151,6 +151,88 @@ export async function clearMessageEmbedState(tx: ClearEmbedTx, messageId: string
   await tx.delete(messageChunks).where(eq(messageChunks.messageId, messageId));
 }
 
+// ── Phase 68 Plan 02: getEmbedProgress (OPS-04) ─────────────────────────────
+
+/**
+ * Embed-index progress snapshot — the single source of truth shared by the
+ * backfill CLI's `--status` flag, the in-run progress line, and the admin
+ * endpoint.
+ *
+ * - `backlog`  — outbox rows by status (pending awaiting a worker tick,
+ *   in_progress claimed-this-tick, failed terminal); `total` is their sum.
+ * - `coverage` — `eligibleMessages` is the count of messages that SHOULD have
+ *   an embedding (user/assistant, non-test-conversation, non-whitespace);
+ *   `embeddedMessages` is how many of those actually have ≥1 chunk row. The
+ *   gap (`eligible - embedded`) is roughly the backfill's remaining work.
+ */
+export interface EmbedProgress {
+  backlog: { pending: number; inProgress: number; failed: number; total: number };
+  coverage: { eligibleMessages: number; embeddedMessages: number };
+}
+
+/**
+ * Compute the embed-index {@link EmbedProgress} snapshot.
+ *
+ * Eligibility predicates are MIRRORED VERBATIM from message-search.ts (DRY —
+ * never re-derived):
+ *   - `(c.test IS NULL OR c.test = false)`   (message-search.ts:139/194)
+ *   - `m.role IN ('user','assistant')`       (message-search.ts:195)
+ *   - `length(trim(m.content)) > 0`          (mirrors isEmbedEligible, message-chunker.ts:20)
+ *
+ * `embeddedMessages` is `COUNT(DISTINCT mc.message_id)` over chunked messages
+ * that ALSO satisfy eligibility — a 2-chunk message counts ONCE, and a chunk
+ * pointing at a now-ineligible message never inflates coverage.
+ *
+ * `db` is the {@link DrainDb} handle (PGlite test db, Bun.sql, and drizzle all
+ * satisfy it). Three small aggregates rather than one giant join: the backlog
+ * GROUP BY is folded into the typed shape (missing statuses default to 0).
+ */
+export async function getEmbedProgress(db: DrainDb): Promise<EmbedProgress> {
+  const backlogRes = await db.execute(sql`
+    SELECT status, COUNT(*)::int AS count
+    FROM message_embed_outbox
+    GROUP BY status
+  `);
+  const backlogRows = ((backlogRes as { rows?: { status: string; count: number }[] }).rows
+    ?? (backlogRes as { status: string; count: number }[]));
+
+  const backlog = { pending: 0, inProgress: 0, failed: 0, total: 0 };
+  for (const r of backlogRows) {
+    const count = Number(r.count);
+    if (r.status === "pending") backlog.pending = count;
+    else if (r.status === "in_progress") backlog.inProgress = count;
+    else if (r.status === "failed") backlog.failed = count;
+    backlog.total += count;
+  }
+
+  const eligibleRes = await db.execute(sql`
+    SELECT COUNT(*)::int AS count
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    WHERE (c.test IS NULL OR c.test = false)
+      AND m.role IN ('user', 'assistant')
+      AND length(trim(m.content)) > 0
+  `);
+  const eligibleRows = ((eligibleRes as { rows?: { count: number }[] }).rows
+    ?? (eligibleRes as { count: number }[]));
+  const eligibleMessages = Number(eligibleRows[0]?.count ?? 0);
+
+  const embeddedRes = await db.execute(sql`
+    SELECT COUNT(DISTINCT mc.message_id)::int AS count
+    FROM message_chunks mc
+    JOIN messages m ON m.id = mc.message_id
+    JOIN conversations c ON c.id = m.conversation_id
+    WHERE (c.test IS NULL OR c.test = false)
+      AND m.role IN ('user', 'assistant')
+      AND length(trim(m.content)) > 0
+  `);
+  const embeddedRows = ((embeddedRes as { rows?: { count: number }[] }).rows
+    ?? (embeddedRes as { count: number }[]));
+  const embeddedMessages = Number(embeddedRows[0]?.count ?? 0);
+
+  return { backlog, coverage: { eligibleMessages, embeddedMessages } };
+}
+
 // ── Phase 64 Plan 01: EmbedWorker drain helpers ────────────────────────────
 
 /**

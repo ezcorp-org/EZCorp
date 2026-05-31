@@ -24,7 +24,9 @@ import { eq } from "drizzle-orm";
 
 mockDbConnection();
 
-const { enqueueEmbedJob, clearMessageEmbedState } = await import("../db/queries/message-embed-outbox");
+const { enqueueEmbedJob, enqueueEmbedJobIfAbsent, clearMessageEmbedState } = await import(
+  "../db/queries/message-embed-outbox"
+);
 const { createConversation, createMessage, updateMessageContent } = await import("../db/queries/conversations");
 const { createProject } = await import("../db/queries/projects");
 const { EMBEDDING_MODEL_ID } = await import("../memory/embeddings");
@@ -95,6 +97,39 @@ describe("message-embed-outbox (real helpers, no module mock)", () => {
       expect(rows[0]!.status).toBe("pending");
       expect(rows[0]!.attempts).toBe(0);
       expect(rows[0]!.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
+    });
+  });
+
+  describe("enqueueEmbedJobIfAbsent (real DO NOTHING)", () => {
+    test("first call inserts one pending row; a second call is a no-op (still one row)", async () => {
+      const conv = await seedConversation();
+      const msg = await createMessage(conv.id, { role: "system", content: "x" }); // system → no auto-enqueue
+      await enqueueEmbedJobIfAbsent(getTestDb(), msg.id, conv.id);
+      await enqueueEmbedJobIfAbsent(getTestDb(), msg.id, conv.id);
+
+      const rows = await outboxRowsFor(msg.id);
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.status).toBe("pending");
+      expect(rows[0]!.attempts).toBe(0);
+    });
+
+    test("leaves a pre-existing failed row BYTE-FOR-BYTE intact (DO NOTHING, not DO UPDATE)", async () => {
+      const conv = await seedConversation();
+      const msg = await createMessage(conv.id, { role: "system", content: "x" });
+      await enqueueEmbedJobIfAbsent(getTestDb(), msg.id, conv.id);
+      // Drive it to a terminal failed state with a backoff stamp.
+      const stamp = new Date(Date.now() + 60_000).toISOString();
+      await getTestDb()
+        .update(messageEmbedOutbox)
+        .set({ status: "failed", attempts: 3, nextAttemptAfter: new Date(stamp) })
+        .where(eq(messageEmbedOutbox.messageId, msg.id));
+
+      await enqueueEmbedJobIfAbsent(getTestDb(), msg.id, conv.id);
+
+      const row = (await outboxRowsFor(msg.id))[0]!;
+      expect(row.status).toBe("failed"); // never reset to pending
+      expect(row.attempts).toBe(3); // never reset to 0
+      expect(row.nextAttemptAfter?.getTime()).toBe(new Date(stamp).getTime()); // backoff preserved
     });
   });
 

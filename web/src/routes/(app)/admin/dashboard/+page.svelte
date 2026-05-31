@@ -25,9 +25,15 @@
 		errorSummary: { totalErrors: number; errorRate: { date: string; count: number }[]; recentErrors: { id: string; level: string; message: string; createdAt: string }[] };
 	};
 
+	type EmbedProgress = {
+		backlog: { pending: number; inProgress: number; failed: number; total: number };
+		coverage: { eligibleMessages: number; embeddedMessages: number };
+	};
+
 	let activeTab = $state<"overview" | "usage" | "activity" | "system">("overview");
 	let analyticsData = $state<AnalyticsData | null>(null);
 	let systemData = $state<SystemData | null>(null);
+	let embedProgress = $state<EmbedProgress | null>(null);
 	let lastUpdated = $state<Date | null>(null);
 	let secondsAgo = $state(0);
 	let isAdmin = $state(false);
@@ -57,8 +63,13 @@
 		if (res.ok) systemData = await res.json();
 	}
 
+	async function fetchEmbedProgress() {
+		const res = await fetch("/api/admin/embed-progress");
+		if (res.ok) embedProgress = await res.json();
+	}
+
 	async function refreshAll() {
-		await Promise.all([fetchAnalytics(), fetchSystem()]);
+		await Promise.all([fetchAnalytics(), fetchSystem(), fetchEmbedProgress()]);
 		lastUpdated = new Date();
 		loading = false;
 	}
@@ -194,6 +205,18 @@
 			.slice(0, 15)
 	);
 	let maxErrByModel = $derived(errorsByModel.reduce((m, d) => Math.max(m, d.errorCount), 1));
+
+	// System tab: embedding-index coverage percent (read-only OPS-04 card).
+	// Guards divide-by-zero when there are no eligible messages yet.
+	let embedCoveragePct = $derived(
+		embedProgress && embedProgress.coverage.eligibleMessages > 0
+			? Math.round(
+					(embedProgress.coverage.embeddedMessages /
+						embedProgress.coverage.eligibleMessages) *
+						100,
+				)
+			: 0
+	);
 
 	// System tab: max error rate for bar scaling
 	let maxErrorRate = $derived(
@@ -587,6 +610,37 @@
 					</div>
 				</div>
 
+				<!-- Embedding Index Progress (read-only, OPS-04) -->
+				<div class="section">
+					<h3 class="section-title">Embedding Index</h3>
+					{#if embedProgress}
+						<div
+							class="embed-progress-card rounded-lg border"
+							data-testid="embed-progress-card"
+						>
+							<div class="embed-progress-row">
+								<span class="embed-progress-label">Backlog (outbox)</span>
+								<span class="embed-progress-value">
+									{embedProgress.backlog.pending.toLocaleString()} pending
+									· {embedProgress.backlog.inProgress.toLocaleString()} in progress
+									· {embedProgress.backlog.failed.toLocaleString()} failed
+									· {embedProgress.backlog.total.toLocaleString()} total
+								</span>
+							</div>
+							<div class="embed-progress-row">
+								<span class="embed-progress-label">Coverage (message_chunks)</span>
+								<span class="embed-progress-value">
+									{embedProgress.coverage.embeddedMessages.toLocaleString()}
+									/ {embedProgress.coverage.eligibleMessages.toLocaleString()} messages
+									<span class="text-muted">({embedCoveragePct}%)</span>
+								</span>
+							</div>
+						</div>
+					{:else}
+						<p class="empty-text">No embedding-index data.</p>
+					{/if}
+				</div>
+
 				<!-- Table Row Counts -->
 				<div class="section">
 					<h3 class="section-title">Resource Counts</h3>
@@ -855,6 +909,38 @@
 		width: 4rem;
 		flex: 0 0 4rem;
 		text-align: right;
+	}
+
+	/* Embedding-index progress card (read-only) */
+	.embed-progress-card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 1rem 1.25rem;
+		border-color: var(--color-border);
+		background: var(--color-surface-secondary);
+	}
+	.embed-progress-row {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+	}
+	@media (min-width: 768px) {
+		.embed-progress-row {
+			flex-direction: row;
+			align-items: baseline;
+			justify-content: space-between;
+			gap: 1rem;
+		}
+	}
+	.embed-progress-label {
+		font-size: 0.8125rem;
+		color: var(--color-text-muted);
+	}
+	.embed-progress-value {
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--color-text-primary);
 	}
 
 	/* Activity feed */

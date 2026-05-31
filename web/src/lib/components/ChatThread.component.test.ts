@@ -501,6 +501,36 @@ describe("ChatThread branch navigation render", () => {
 		);
 		expect(queryByText("branch-B")).toBeNull();
 	});
+
+	// Regression: a `capability-event` row is persisted with a null
+	// parentMessageId (recordCapabilityCall.ts). It used to land in the
+	// root sibling group and make the first user message render a phantom
+	// `1/2` branch switcher on a brand-new, never-branched chat.
+	test("trailing root-level capability-event does NOT add a phantom branch", async () => {
+		const tree: Message[] = [
+			msg("u1", { role: "user", createdAt: "2026-01-01T00:00:01.000Z" }),
+			msg("a1", {
+				role: "assistant",
+				parentMessageId: "u1",
+				content: "the-answer",
+				createdAt: "2026-01-01T00:00:02.000Z",
+			}),
+			// Inline annotation — null parent, no children.
+			msg("cap1", {
+				role: "capability-event",
+				parentMessageId: null,
+				content: JSON.stringify({ __ezcorp_capability_event: true }),
+				createdAt: "2026-01-01T00:00:03.000Z",
+			}),
+		];
+		const { getByText, queryByLabelText } = mountThread(tree);
+		await vi.waitFor(() =>
+			expect(getByText("the-answer")).toBeInTheDocument(),
+		);
+		// No BranchNavigator anywhere in the thread.
+		expect(queryByLabelText("Previous branch")).toBeNull();
+		expect(queryByLabelText("Next branch")).toBeNull();
+	});
 });
 
 describe("ChatThread toolbar actions wire to factory calls", () => {

@@ -261,7 +261,7 @@ export async function runBackfill(db: BackfillDb, opts: BackfillOpts): Promise<B
 }
 
 /** Liveness probe — mirrors embed-worker.ts isProcessAlive (L457-466). */
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -276,7 +276,7 @@ function isProcessAlive(pid: number): boolean {
  * Detect whether the EmbedWorker is DOWN from this separate process's vantage
  * (RESEARCH Pitfall 3): the kill-switch env, or an absent/dead PID lockfile.
  */
-async function isWorkerDown(): Promise<boolean> {
+export async function isWorkerDown(): Promise<boolean> {
   if (process.env.EZCORP_DISABLE_EMBED_WORKER === "1") return true;
   const file = Bun.file(EMBED_WORKER_LOCKFILE);
   if (!(await file.exists())) return true;

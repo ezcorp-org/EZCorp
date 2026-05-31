@@ -123,6 +123,8 @@
 		findLeafByMessageId,
 		computeLatestLeaf,
 		pathToRoot,
+		buildSiblingMap,
+		getSiblings as getSiblingsFromMap,
 		type HistoricalToolCall,
 	} from "$lib/chat/page-handlers/load-messages.js";
 	import { handleExtensionTurnSaved } from "$lib/chat/page-handlers/handle-extension-turn.js";
@@ -391,20 +393,10 @@
 		activeRunId ? store.streamingStatus[activeRunId] : undefined,
 	);
 
-	// ── siblingMap — copied verbatim from +page.svelte ≈ L538 ─────────
-	let siblingMap = $derived.by(() => {
-		const map = new Map<string, { id: string; createdAt: string }[]>();
-		for (const msg of allMessages) {
-			const parentKey = msg.parentMessageId ?? "__root__";
-			const list = map.get(parentKey) ?? [];
-			list.push({ id: msg.id, createdAt: msg.createdAt });
-			map.set(parentKey, list);
-		}
-		for (const list of map.values()) {
-			list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-		}
-		return map;
-	});
+	// ── siblingMap — pure helper in load-messages.ts (filters out
+	// capability-event rows so root-level annotations don't show up as
+	// phantom branches; mirrors computeLatestLeaf's tree-only filter).
+	let siblingMap = $derived(buildSiblingMap(allMessages));
 
 	// ── messages path walk — copied verbatim from +page.svelte ≈ L553 ─
 	let messages = $derived.by(() =>
@@ -801,8 +793,7 @@
 	}
 
 	function getSiblings(msg: Message): { id: string; createdAt: string }[] {
-		const parentKey = msg.parentMessageId ?? "__root__";
-		return siblingMap.get(parentKey) ?? [];
+		return getSiblingsFromMap(siblingMap, msg);
 	}
 	function getHistoricalToolCalls(
 		messageId: string,

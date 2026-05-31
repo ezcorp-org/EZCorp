@@ -159,6 +159,50 @@ export function computeLatestLeaf(msgs: Message[]): string | null {
 	).id;
 }
 
+/** Sentinel parent key for root-level (parentless) messages in the sibling map. */
+export const ROOT_SIBLING_KEY = "__root__";
+
+/** Lightweight sibling reference — the only fields BranchNavigator needs. */
+export type SiblingRef = { id: string; createdAt: string };
+
+/**
+ * Group messages by parent into a sibling map keyed by `parentMessageId`
+ * (null → `ROOT_SIBLING_KEY`), with each group sorted by `createdAt`
+ * ascending. `getSiblings` reads this map; the BranchNavigator renders a
+ * `‹ n/m ›` switcher whenever a message's group has more than one entry.
+ *
+ * `capability-event` rows are inline annotations persisted with a null
+ * `parentMessageId` and no children (see `recordCapabilityCall.ts`). They
+ * are NOT conversational tree nodes, so they're excluded here — otherwise a
+ * trailing root-level capability-event becomes a phantom sibling of the
+ * first user message and the navigator shows a spurious branch switcher on
+ * a thread that was never branched. Mirrors the same
+ * `role !== "capability-event"` filter `computeLatestLeaf` already applies.
+ */
+export function buildSiblingMap(messages: Message[]): Map<string, SiblingRef[]> {
+	const map = new Map<string, SiblingRef[]>();
+	for (const msg of messages) {
+		if (msg.role === "capability-event") continue;
+		const parentKey = msg.parentMessageId ?? ROOT_SIBLING_KEY;
+		const list = map.get(parentKey) ?? [];
+		list.push({ id: msg.id, createdAt: msg.createdAt });
+		map.set(parentKey, list);
+	}
+	for (const list of map.values()) {
+		list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+	}
+	return map;
+}
+
+/** Siblings of `msg` (messages sharing its parent) from a prebuilt map. */
+export function getSiblings(
+	map: Map<string, SiblingRef[]>,
+	msg: Message,
+): SiblingRef[] {
+	const parentKey = msg.parentMessageId ?? ROOT_SIBLING_KEY;
+	return map.get(parentKey) ?? [];
+}
+
 /**
  * Walk the conversation tree from `leafId` up to the root, returning the
  * messages in root → leaf order. Cycle-guarded. Returns `[]` when the id

@@ -75,6 +75,9 @@ const {
 	findLeafByMessageId,
 	computeLatestLeaf,
 	pathToRoot,
+	buildSiblingMap,
+	getSiblings,
+	ROOT_SIBLING_KEY,
 	hydrateToolCallsFromApiData,
 	makeLoadMessages,
 } = await import("../load-messages.ts");
@@ -281,6 +284,67 @@ describe("pathToRoot", () => {
 		];
 		// Walk terminates instead of looping forever; order is root-most first.
 		expect(pathToRoot(messages, "a").map((m) => m.id)).toEqual(["b", "a"]);
+	});
+});
+
+describe("buildSiblingMap / getSiblings", () => {
+	test("groups parentless messages under ROOT_SIBLING_KEY", () => {
+		const messages = [makeMessage({ id: "u1", parentMessageId: null })];
+		const map = buildSiblingMap(messages);
+		expect(map.get(ROOT_SIBLING_KEY)?.map((s) => s.id)).toEqual(["u1"]);
+	});
+
+	test("groups children under their parentMessageId", () => {
+		const messages = [
+			makeMessage({ id: "u1", parentMessageId: null }),
+			makeMessage({ id: "a1", role: "assistant", parentMessageId: "u1" }),
+		];
+		const map = buildSiblingMap(messages);
+		expect(map.get("u1")?.map((s) => s.id)).toEqual(["a1"]);
+	});
+
+	test("sorts each group by createdAt ascending", () => {
+		const messages = [
+			makeMessage({ id: "late", parentMessageId: "p", createdAt: "2025-01-02T00:00:00.000Z" }),
+			makeMessage({ id: "early", parentMessageId: "p", createdAt: "2025-01-01T00:00:00.000Z" }),
+		];
+		const map = buildSiblingMap(messages);
+		expect(map.get("p")?.map((s) => s.id)).toEqual(["early", "late"]);
+	});
+
+	// The bug this module guards against: a `capability-event` row is
+	// persisted with a null parentMessageId (see recordCapabilityCall.ts).
+	// Without the filter it lands in the root group and the first user
+	// message renders a phantom `1/2` branch switcher on a thread that was
+	// never branched.
+	test("excludes capability-event rows so they aren't phantom root siblings", () => {
+		const messages = [
+			makeMessage({ id: "u1", role: "user", parentMessageId: null }),
+			makeMessage({ id: "a1", role: "assistant", parentMessageId: "u1" }),
+			makeMessage({ id: "cap", role: "capability-event", parentMessageId: null }),
+		];
+		const map = buildSiblingMap(messages);
+		// Root group is just the single user message — no phantom sibling.
+		expect(map.get(ROOT_SIBLING_KEY)?.map((s) => s.id)).toEqual(["u1"]);
+		// The capability-event never appears as anyone's sibling.
+		expect(getSiblings(map, messages[0]!)).toHaveLength(1);
+	});
+
+	test("getSiblings returns all real branches for an edited/regenerated message", () => {
+		const messages = [
+			makeMessage({ id: "u1", parentMessageId: null }),
+			makeMessage({ id: "a1", role: "assistant", parentMessageId: "u1", createdAt: "2025-01-01T00:00:01.000Z" }),
+			// Regenerated sibling — a genuine branch under the same parent.
+			makeMessage({ id: "a2", role: "assistant", parentMessageId: "u1", createdAt: "2025-01-01T00:00:02.000Z" }),
+		];
+		const map = buildSiblingMap(messages);
+		expect(getSiblings(map, messages[1]!).map((s) => s.id)).toEqual(["a1", "a2"]);
+	});
+
+	test("getSiblings returns [] when the parent group is absent", () => {
+		const map = buildSiblingMap([makeMessage({ id: "u1", parentMessageId: null })]);
+		const orphan = makeMessage({ id: "x", parentMessageId: "no-such-parent" });
+		expect(getSiblings(map, orphan)).toEqual([]);
 	});
 });
 

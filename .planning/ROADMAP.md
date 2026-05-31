@@ -232,8 +232,13 @@ Plans:
   2. During a large backfill, the script throttles itself so live chat traffic is not starved — interactive chat latency stays unaffected.
   3. `ANALYZE` runs after backfill batches so the planner has fresh statistics (PGlite has no autovacuum), and the HNSW index is actually used post-backfill.
   4. An operator can observe embedding progress — outbox backlog depth and `message_chunks` coverage.
-**Plans**: TBD
-**Note**: Operator-facing surface — ships with unit + integration coverage on the script and progress-visibility paths.
+**Plans**: 5 plans (3 waves)
+  - [ ] 68-01-PLAN.md — Wave 0 RED test scaffolds: backfill-embeddings.test.ts + embed-progress.test.ts (OPS-01/02/04, wave 1)
+  - [ ] 68-02-PLAN.md — Query primitives in message-embed-outbox.ts: enqueueEmbedJobIfAbsent (DO NOTHING) + getEmbedProgress (OPS-01/04, wave 2)
+  - [ ] 68-03-PLAN.md — ANALYZE message_chunks hook inside EmbedWorker.tickOnce() + bg-timers regression guard (OPS-03, wave 2)
+  - [ ] 68-04-PLAN.md — Operator CLI scripts/backfill-embeddings.ts (gaps-only paced enqueue, --status/--dry-run/--refresh-stale, worker-down warn) + package.json alias (OPS-01/02/04, wave 3)
+  - [ ] 68-05-PLAN.md — Admin surface: GET /api/admin/embed-progress + read-only dashboard status card (OPS-04, wave 3)
+**Note**: Operator-facing surface — ships with unit + integration coverage on the script and progress-visibility paths (NO e2e per CONTEXT).
 
 ## Progress
 
@@ -247,8 +252,8 @@ Phases execute in numeric order with the unanimous research build order: 63 (fou
 | 65. Hybrid Search SQL + API | 2/2 | Complete    | 2026-05-29 |
 | 66. Sidebar Search | 5/5 | Complete   | 2026-05-30 |
 | 67. Command Palette Search | 7/7 | Complete   | 2026-05-30 |
-| 68. Backfill + Operations | 0/TBD | Not started | - |
+| 68. Backfill + Operations | 0/5 | Planned     | - |
 
 ---
 
-*Last updated: 2026-05-30 — Phase 66 complete (5 plans, 4 waves incl. 66-05 gap closure; UI-01..04 covered + search-helper coverage gate machine-enforced). Next: `/gsd:plan-phase 67` (Cmd+K palette) or `/gsd:plan-phase 68` (backfill).*
+*Last updated: 2026-05-30 — Phase 68 planned (5 plans, 3 waves; OPS-01..04 covered — Wave 0 RED scaffolds → query primitives + tickOnce ANALYZE → CLI + admin surface). Next: `/gsd:execute-phase 68`.*

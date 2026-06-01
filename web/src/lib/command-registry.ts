@@ -7,11 +7,15 @@ export interface Command {
 	id: string;
 	label: string;
 	group: "Navigate" | "Actions" | "Search" | "Ez" | "Project";
-	// Optional leading glyph. When set it is rendered verbatim as text (e.g. a
-	// project's emoji icon) in place of the group SVG — see CommandPalette's
-	// `commandRow` snippet. Left unset for normal commands (they fall back to
-	// the per-group icon).
+	// Optional leading glyph. When set it is rendered verbatim as text in place
+	// of the group SVG — see CommandPalette's `commandRow` snippet. Left unset
+	// for normal commands (they fall back to the per-group icon).
 	icon?: string;
+	// Optional project-style avatar (logo image, else a colored letter from the
+	// name) shown in the icon slot — mirrors the sidebar's project rail. Used by
+	// the per-project rows under the Projects sub-menu. Takes precedence over the
+	// group icon. `src` is an image URL or null.
+	avatar?: { name: string; src: string | null };
 	shortcut?: string;
 	context?: string[];
 	action: () => void;
@@ -212,7 +216,9 @@ export function buildCommands(
 							id: `project-${p.id}`,
 							label: p.name,
 							group: "Project" as const,
-							icon: p.icon ?? undefined,
+							// Show the project's logo (or a colored-letter fallback),
+							// matching the sidebar — not a generic folder icon.
+							avatar: { name: p.name, src: p.icon },
 							action: openSubmenu,
 							children: buildProjectActions(p.id),
 						})),

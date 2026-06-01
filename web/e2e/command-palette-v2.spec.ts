@@ -217,18 +217,22 @@ test.describe("Command Palette v2", () => {
 	});
 
 	test("message-search results show each chat's owning-project icon", async ({ page, mockApi }) => {
-		// Two projects: one with an emoji icon, one without (folder fallback).
-		const rocketProj = makeProject({ id: "proj-rocket", name: "Rocket", icon: "🚀" });
+		// A project `icon` is an image URL / data-URI (rendered via <img>), not an
+		// emoji. One project carries a logo image, the other has none (→ a
+		// colored-initial avatar fallback).
+		const logoSrc =
+			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+		const logoProj = makeProject({ id: "proj-logo", name: "Rocket", icon: logoSrc });
 		const plainProj = makeProject({ id: "proj-plain", name: "Plain", icon: null });
 		await mockApi({
-			projects: [rocketProj, plainProj],
+			projects: [logoProj, plainProj],
 			searchMessages: {
 				hits: [
 					makeSearchHit({
-						messageId: "m-rocket",
-						conversationId: "conv-rocket",
+						messageId: "m-logo",
+						conversationId: "conv-logo",
 						conversationTitle: "Rocket Chat",
-						projectId: "proj-rocket",
+						projectId: "proj-logo",
 						projectName: "Rocket",
 					}),
 					makeSearchHit({
@@ -251,20 +255,22 @@ test.describe("Command Palette v2", () => {
 		await page.keyboard.type("match");
 
 		// Each conversation group carries a right-aligned project badge.
-		const rocketBadge = palette
+		const logoBadge = palette
 			.locator('[data-testid="palette-project-badge"]')
 			.filter({ hasText: "Rocket" });
 		const plainBadge = palette
 			.locator('[data-testid="palette-project-badge"]')
 			.filter({ hasText: "Plain" });
 
-		await expect(rocketBadge).toBeVisible();
-		// Emoji project → emoji glyph, no folder svg.
-		await expect(rocketBadge).toContainText("🚀");
-		await expect(rocketBadge.locator("svg")).toHaveCount(0);
+		// Project with a logo → its icon image is rendered.
+		await expect(logoBadge).toBeVisible();
+		await expect(logoBadge.locator("img")).toHaveAttribute("src", logoSrc);
 
-		// Icon-less project → folder fallback svg.
+		// Icon-less project → colored-initial avatar (the "P" of "Plain"), no img.
 		await expect(plainBadge).toBeVisible();
-		await expect(plainBadge.locator("svg")).toHaveCount(1);
+		await expect(plainBadge.locator("img")).toHaveCount(0);
+		await expect(
+			plainBadge.locator('[data-testid="palette-project-avatar"]'),
+		).toHaveText("P");
 	});
 });

@@ -5,7 +5,7 @@ milestone_name: Hybrid Chat Search
 current_plan: Phase 68 — Plans 02 + 03 + 04 + 05 of 5 COMPLETE (OPS-01/02/03/04 landed; 04 = backfill CLI; 05 = OPS-04 web surface; 01 RED scaffolds prior).
 status: unknown
 stopped_at: Completed 68-04-PLAN.md
-last_updated: "2026-05-31T01:08:23.933Z"
+last_updated: "2026-06-01T17:55:51.877Z"
 last_activity: "2026-05-31 — 68-05 landed: OPS-04 web surface — admin-gated GET /api/admin/embed-progress (composes Plan-02 getEmbedProgress, auth mirrored from admin/system) + read-only embedding-progress card on the admin dashboard system tab; server test 5/5 GREEN, svelte-check clean on both files, zero e2e; commits ab469421 + 2d126a64 + efebc4d0 (parallel with 68-04's CLI half)"
 progress:
   total_phases: 6
@@ -786,6 +786,6 @@ None tracked yet. Use `/gsd:add-todo` to capture v1.4 ideas during execution.
 
 ## Session Continuity
 
-Last session: 2026-05-31T01:02:02.917Z
-Stopped at: Completed 68-04-PLAN.md
-Resume: Plan 56-02 (UI + endpoints) is unblocked — wires `buildAlwaysAllowValue(allowed, now, { ttlOverrideMs, expiresAt })` at the reapprove endpoint + first-time-grant write site, and surfaces `readTtlOverrideMs(row.value)` at admin/UI read sites. Plan 56-03 (formatTtl + sticky KV) is unblocked — `expiresAt` is the materialized timestamp formatTtl renders; sticky KV pattern writes to settings (orthogonal to the always-allow row). Phase 57 (mobile UX) remains parallelizable per v1.4 DAG. Phase 58 still blocked on ≥7-day clean seccomp soak signal. v1.3 deferred items still recorded in 55-03-SUMMARY.md.
+Last session: 2026-06-01
+Stopped at: v1.5 Hybrid Chat Search milestone COMPLETE — audited (35/35, `tech_debt`), post-audit cleanup landed (chat-index deep-link fix `4bbd279b`, IDX-06 embeddings-state test fix `9156f80e`), archived to `.planning/milestones/v1.5-*`, ROADMAP/PROJECT/MILESTONES/RETROSPECTIVE updated, REQUIREMENTS.md archived + removed, tagged `v1.5`.
+Resume: Between milestones. Run `/gsd:new-milestone` to start the next cycle (questioning → research → requirements → roadmap). Candidate seeds: ranking tuning (RANK-01/02), search-snippet polish (POLISH-01..04), and carry-forward test-infra debt (BUN-01 MCP-subprocess trio, Playwright auth fixtures, cross-file mock leak, Nyquist validation for 63–68).

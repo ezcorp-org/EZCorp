@@ -10,28 +10,24 @@ Anyone can sit down, chat with persistent memory, find agent apps others built, 
 
 ## Current State
 
-**Shipped:** v1.4 Trust Hardening & v1.3 Closeout (2026-05-13).
+**Shipped:** v1.5 Hybrid Chat Search (2026-06-01).
 
-v1.4 closed six v1.3 security-review findings (5 LOW CCs + Claim-1), hardened MCP extension isolation end-to-end (DNS-rebind defense via `Bun.dns.lookup` recheck + private tmpfs `/tmp` + seccomp BPF flipped from `SCMP_ACT_LOG` to `SCMP_ACT_ERRNO` enforce after 7-day soak + per-extension veth-pair on `br-ezcorp-mcp` with nftables egress drop and conntrack/IPv6 guards), shipped per-capability TTL UI on settings, completed Phase 49 deferred mobile UX (shared `BottomSheet` wrapping all 9 pickers, pg_trgm marketplace search, agent-picker save/pin, drag-reorder extension chips), repaired ~110 stale-locator e2e specs across three test-debt phases (59, 61, 62), and retro-claimed already-landed v1.4 commits + corrected the four-scope-modal doc. Independent closeout repair pass (2026-05-13) took backend bun:test pool from 71 failures across 22 files to 9 failures across 6 files (65 newly-passing tests across 7 atomic commits).
+v1.5 layered semantic (pgvector/HNSW) recall alongside the existing lexical (Postgres FTS) precision so every past chat is findable instantly — additive-only. A transactional embed-on-write pipeline (token-aware chunker → `message_embed_outbox` → background `EmbedWorker` on the HostMaintenanceDaemon pattern) keeps `message_chunks` current without ever blocking the chat path; a single-CTE Reciprocal-Rank-Fusion query (`searchMessages()`, k=60, in-CTE tenant scoping verified inside the HNSW scan) powers one `GET /api/search/messages` endpoint consumed by both the sidebar Hybrid/Keyword/Semantic toggle and a new Cmd+K global command palette, each deep-linking to the matching message with a highlight pulse. An operator backfill CLI (`scripts/backfill-embeddings.ts`, resumable + idempotent + throttled + post-batch ANALYZE) and a read-only admin embedding-progress surface index existing history and expose backlog/coverage. 35/35 requirements satisfied; audit verdict `tech_debt` (no blockers).
 
-**Shipped earlier:** v1.3 Security & Permissions (2026-05-09). The platform's complete security backbone — unified permission engine, capability expiry sweeps, MCP isolation, audit infrastructure (`audit_log` + `sdk_capability_calls`), PermissionGate / ExpiredGrantsBanner / ExpiredReapproveModal flow. First-party built-ins (lessons distiller, memory extractor) ship as bundled extensions on the public SDK.
+**Shipped earlier:** v1.4 Trust Hardening & v1.3 Closeout (2026-05-13) — closed six v1.3 security-review findings, hardened MCP isolation end-to-end (DNS-rebind defense, private tmpfs, seccomp enforce, veth-pair + nftables egress drop), per-capability TTL UI, Phase 49 mobile UX, ~110 stale-locator e2e repairs. v1.3 Security & Permissions (2026-05-09) — the platform's security backbone (unified PDP, capability expiry sweeps, MCP isolation, audit infrastructure) with first-party built-ins shipping as bundled extensions on the public SDK.
 
-## Current Milestone: v1.5 Hybrid Chat Search
+## Next Milestone
+
+**TBD** — start with `/gsd:new-milestone` (questioning → research → requirements → roadmap). v1.5 deferred candidates that may seed it: ranking tuning (project-boost/recency-decay RRF coefficients — RANK-01), search-snippet polish (`MentionText` rendering, backfill toast, role badges — POLISH-01..04), and carry-forward test-infra debt (BUN-01 MCP-subprocess trio, Playwright auth fixtures, cross-file mock leak).
+
+<details>
+<summary>Previous milestone — v1.5 Hybrid Chat Search (archived)</summary>
 
 **Goal:** Make every past chat findable instantly — add semantic (pgvector) recall alongside the existing lexical (Postgres FTS) precision, surfaced through the sidebar search box and a new Cmd+K palette.
 
-**Target features:**
+**Delivered:** Indexing primitives (`message_chunks` HNSW + `message_embed_outbox`, token-aware chunker, transactional eligibility-gated outbox enqueue, IDX-06 truncation fix); embed-on-write worker (degraded gate, backoff, boot recovery, kill-switch); hybrid search SQL + `GET /api/search/messages` (RRF k=60, match-type tagging, degraded→keyword fallback); sidebar mode toggle + deep-link; Cmd+K palette (Cmd+Shift+P rebind, cross-project grouping, a11y, mobile BottomSheet); backfill CLI + admin embed-progress. Full detail: `.planning/milestones/v1.5-ROADMAP.md`.
 
-- **Hybrid search backend** — chunked pgvector embeddings over chat messages, combined with existing FTS via Reciprocal Rank Fusion (RRF). Reuses the local Transformers.js embedder (`all-MiniLM-L6-v2`, 384-dim) and pgvector extension already wired for `memories` and `knowledge_base_chunks`.
-- **Sidebar mode toggle** — extend `ConversationList.svelte` search with a Hybrid / Keyword / Semantic toggle (Hybrid default). Preserve current `ts_headline` snippet highlighting for lexical hits; emit plain ±window snippets for semantic-only hits.
-- **Cmd+K command palette** — global search overlay accessible from anywhere; routes to the same hybrid endpoint, jumps to matching message on selection.
-- **Embed-on-write + backfill** — durable embed-on-write (outbox pattern) for new messages; one-shot backfill script for existing conversations; skip system / tool roles.
-
-**Explicitly NOT in v1.5 (deferred to v1.6+):**
-
-- **Filters (date / agent / model / project), saved searches, dedicated `/search` page, in-conversation Ctrl+F bar** — covered by sidebar + Cmd+K for v1; revisit once base ranking is validated.
-- **Chat-as-RAG (use past chats as context in new chat)** — exposes the index as a memory source; separate scope and trust review.
-- **Carry-forward v1.4 debt** (MCP-integration test trio, Playwright auth fixture, `mock-cleanup.ts MODULE_PATHS` widening, operator/device verifications, `agent-detail.spec.ts:178`) — stays carry-forward; v1.5 is pure feature focus.
+</details>
 
 <details>
 <summary>Previous milestone — v1.4 Trust Hardening & v1.3 Closeout (archived)</summary>
@@ -125,15 +121,18 @@ The following 6 commits landed on main during the v1.3 audit window via a parall
 - ✓ Phase 49 mobile UX deferred items — shared `BottomSheet.svelte` wrapping all 9 pickers at viewport `<lg` (UX-01); marketplace search uses pg_trgm GIN + `ts_rank_cd` hybrid with 6h `gin_clean_pending_list` (UX-02); save-search + pinned-agents in agent picker via settings KV (UX-03); drag-reorder extension chips on agent edit via svelte-dnd-action (UX-04) — v1.4
 - ✓ Test debt repair — `api-mocks.ts` audit + 14 additive v1.3 handlers (TEST-01); ~110 stale-locator Playwright specs hardened via data-testid across Phases 59/61/62 (TEST-02); 3 chat-side `test.fixme` flipped active (TEST-03); 10 pre-existing backend failures triaged with verdicts (TEST-04); `MEMORY_INJECTION_ELIGIBILITY_CHANGED.metadata.projectIds` assertion (TEST-05). Plus 2026-05-13 closeout repair pass: −65 backend failures, −16 failing files — v1.4
 - ✓ Audit-claim & docs polish — PROJECT.md "Already-landed v1.4 commits" table extended with `b652f2b` + `763d718` per-commit invariant checks (CLAIM-01); `docs/permissions/four-scope-modal.md` corrected + atomic 5-site rename "Allow this time" → "Allow until restart" (DOCS-01) — v1.4
+- ✓ Indexing primitives — `message_chunks` (vector(384), HNSW, denormalized `conversation_id`, `ON DELETE CASCADE`) + `message_embed_outbox` tables; token-aware chat chunker (256/32-overlap); transactional role-gated outbox enqueue in `createMessage`/`updateMessageContent`; `EMBEDDING_MODEL_ID` SoT; IDX-06 input-truncation fix via `tokenizer.model_max_length` (IDX-01..07) — v1.5
+- ✓ Embed-on-write worker — background `message_embed_outbox` drainer (HostMaintenanceDaemon pattern): subquery-UPDATE batch claim, sequential embed, degraded-mode gate, exponential backoff + max-attempts cap, boot stale-lock recovery, `EZCORP_DISABLE_EMBED_WORKER` kill-switch (ING-01..05) — v1.5
+- ✓ Hybrid search SQL + API — `searchMessages()` single-CTE RRF (k=60) fusing FTS + pgvector with in-CTE tenant scoping (filter inside HNSW scan, EXPLAIN-verified on pgvector 0.8.0), match-type tagging, snippet asymmetry, behind `GET /api/search/messages` (hybrid/keyword/semantic + server-owned degraded→keyword fallback) (SRCH-01..08) — v1.5
+- ✓ Sidebar search mode toggle — Hybrid/Keyword/Semantic on `ConversationList.svelte` (Hybrid default) with global localStorage persistence, grouped results, `?m=` deep-link reactively consumed by `ChatThread` (scroll + highlight pulse), existing debounce/min-length/title-match/scoping preserved (UI-01..04) — v1.5
+- ✓ Cmd+K command palette search — global search palette extending `CommandPalette.svelte` (Cmd+Shift+P rebind via shortcut registry), cross-project `scope=all` grouped results, match-type icons, cross-project deep-link, ARIA-dialog/focus-trap a11y, mobile `BottomSheet` fallback (PAL-01..07) — v1.5
+- ✓ Backfill + operations — resumable idempotent `scripts/backfill-embeddings.ts` (gaps-only paced enqueue, `--status`/`--dry-run`/`--refresh-stale`, worker-down warn), self-limiting post-drain `ANALYZE message_chunks`, read-only admin embed-progress (`GET /api/admin/embed-progress` + dashboard card) (OPS-01..04) — v1.5
 
 ### Active
 
-<!-- v1.5 Hybrid Chat Search — detailed REQ-IDs land in REQUIREMENTS.md after roadmap creation. -->
+<!-- Next milestone TBD — REQ-IDs land in a fresh REQUIREMENTS.md after `/gsd:new-milestone`. -->
 
-- [ ] Hybrid chat search backend (pgvector + FTS + RRF) — v1.5
-- [ ] Sidebar search mode toggle (Hybrid / Keyword / Semantic) — v1.5
-- [ ] Cmd+K command palette overlay — v1.5
-- [ ] Embed-on-write outbox + one-shot backfill — v1.5
+_None — between milestones. v1.5 shipped 2026-06-01. Candidate seeds for the next milestone: ranking tuning (RANK-01/02), search-snippet polish (POLISH-01..04), carry-forward test-infra debt._
 
 ### Out of Scope
 
@@ -156,20 +155,21 @@ The following 6 commits landed on main during the v1.3 audit window via a parall
 
 ## Context
 
-Shipped v1.4 over ~3 days (2026-05-10 → 2026-05-13), 9 phases (54–62), 45 plans, 46 summaries. All v1.3 closeout debt resolved; 23/23 v1.4 requirements satisfied per `.planning/milestones/v1.4-MILESTONE-AUDIT.md` (verdict: `tech_debt` — no blockers; documented carry-forward items only).
+Shipped v1.5 over ~3 days (2026-05-29 → 2026-06-01), 6 phases (63–68), 24 plans. 35/35 requirements satisfied per `.planning/milestones/v1.5-MILESTONE-AUDIT.md` (verdict: `tech_debt` — no blockers; human-verification + Nyquist-validation items tracked). Prior: v1.4 (2026-05-13, 9 phases, 23/23 reqs).
 
-Tech stack: Bun, SvelteKit, Svelte 5, Tailwind CSS 4, PGlite with pgvector, Drizzle ORM.
+Tech stack: Bun, SvelteKit, Svelte 5, Tailwind CSS 4, PGlite with pgvector (≥0.8.0), Drizzle ORM.
 LLM layer: pi-ai for streaming/completion, pi-agent-core for agent tool loops.
-Architecture: Provider abstractions injected into agents, EventBus for real-time updates, WebSocket pub/sub. Permission engine (PDP) gates every capability call; capability expiry sweeps run hourly; MCP servers isolated via netns veth-pair + nftables egress drop + seccomp `SCMP_ACT_ERRNO` enforce + bearer-token proxy with DNS-rebind defense; per-capability TTL UI on settings page.
+Architecture: Provider abstractions injected into agents, EventBus for real-time updates, WebSocket pub/sub. Permission engine (PDP) gates every capability call; capability expiry sweeps run hourly; MCP servers isolated via netns veth-pair + nftables egress drop + seccomp `SCMP_ACT_ERRNO` enforce + bearer-token proxy with DNS-rebind defense. **Hybrid chat search (v1.5):** token-aware chunker → `message_embed_outbox` → background `EmbedWorker` (HostMaintenanceDaemon pattern) keeps `message_chunks` (HNSW) current off the chat hot path; `searchMessages()` single-CTE RRF (k=60) fuses FTS + pgvector behind one `GET /api/search/messages` endpoint serving both the sidebar toggle and the Cmd+K palette.
 Deployment: Docker (oven/bun:1-slim) with named volume for PGlite persistence.
 Local embeddings via Transformers.js (all-MiniLM-L6-v2, 384-dim).
 
-Known tech debt carried into v1.5+ (5 categories):
-- **MCP-integration test trio** (`af1-mcp-sandbox-regression`, `mcp-api-routes`, `mcp-e2e`) — reclassified 2026-05-13 from Bun-segfault deferred to functional MCP stdio spawn-envelope / refresh / tool-execution failures on current Bun 1.3.11. Needs MCP client wrapper debugging.
-- **Playwright auth-fixture infrastructure** — unblocks SEC-06 e2e + UX-01..04 e2e flows currently held at `test.fixme`.
-- **`mock-cleanup.ts MODULE_PATHS` widening** (Phase-59-04 verdict #4) — closes 3 wrapper false-positives at `scripts/test.sh PARALLEL=6`. All pass in isolation.
-- **Infrastructure-only operator verifications** — bwrap-on-NixOS for Phase 55 MCP-02; iOS home-indicator visual clearance for Phase 57 UX-01; 24h CAP_NET_ADMIN conntrack soak for Phase 58 MCP-05. Each has unit/integration proxy coverage.
-- **agent-detail.spec.ts:178** strict-mode collision (pre-existing; documented in 62-02-SUMMARY).
+Known tech debt carried into v1.6+ :
+- **BUN-01 subprocess/MCP test category** — `*/e2e-server-pipeline.test.ts`, `af1-mcp-sandbox-regression`, `mcp-api-routes`, `mcp-e2e`, `reliability-e2e`, `ws-reconnect-integration` fail in the local NixOS dev env (no sandbox caps / subprocess spawn). Authoritative gate is CI; needs MCP client wrapper + sandbox-env debugging.
+- **Coverage gate local↔CI divergence** — `bun run test:coverage` shows ~68 per-file violations locally because the BUN-01 subprocess tests crash (dropping example-extension/route coverage) and the search route/`message-search.ts` get coverage only from the node-vitest + route legs CI runs. Zero v1.5 files affected. Authoritative gate = CI (`release-sdk.yml` + `ci.yml` node-22 job).
+- **Cross-file mock leak** — `author-install.test.ts` + `installer-idempotent-local.test.ts` produce 7 failures only when co-run in one bun process (`installImpl` mock leak); pass alone.
+- **Playwright auth-fixture infrastructure** — unblocks SEC-06 + UX e2e flows held at `test.fixme` (carry-forward from v1.4).
+- **Nyquist validation** — v1.5 phases 63–68 have VALIDATION.md scaffolds but none marked fully `nyquist_compliant`; phases shipped with substantive unit/integration/e2e coverage.
+- **Infrastructure-only operator verifications** (v1.4 carry-forward) — bwrap-on-NixOS (MCP-02), iOS home-indicator clearance (UX-01), 24h conntrack soak (MCP-05); plus v1.5 human-verify items (Cmd+Shift+P private-window, admin embed card, backfill→drain parity).
 
 ## Constraints
 
@@ -206,6 +206,11 @@ Known tech debt carried into v1.5+ (5 categories):
 | Reverse-RPC gate via conversation_extensions wiring | Event-driven invocations consult dispatcher's wiring source vs strict currentConversationId | ✓ Good (v1.3 closeout) — fixed silently-failing auto-trigger flow that Phase 53.6 missed |
 | JWT `jti` claim for token uniqueness | Random 16-byte per-call vs relying on iat-second resolution | ✓ Good (v1.3 closeout) — closes latent same-second sessions.token_hash UNIQUE collision |
 | Manifest-lock CI gate | `--check` flag prevents manifest drift vs trust-on-first-use | ✓ Good (v1.3) — pinned `manifest.lock.json` is part of the integrity gate the PDP relies on |
+| HNSW (not ivfflat) for `message_chunks` | Better recall/latency at chat-corpus scale, no training step | ✓ Good (v1.5) — verified live; tenant filter applies inside the HNSW scan on pgvector 0.8.0 |
+| Embed-on-write outbox + background worker | Decouple embedding from the chat finalize path vs inline embed | ✓ Good (v1.5) — first transactional outbox in the codebase; chat path never blocks on the embedder |
+| RRF (k=60) for hybrid fusion | Rank-based fusion needs no score normalization across FTS+vector | ✓ Good (v1.5) — single-CTE query; NDCG tuning deferred to RANK-01 (no labeled corpus yet) |
+| One `/api/search/messages` endpoint for both surfaces | Sidebar + Cmd+K palette share one contract vs parallel components | ✓ Good (v1.5) — `MessageSearchHit` consumed identically; palette extends `CommandPalette.svelte` |
+| Self-limiting post-drain `ANALYZE` | Refresh planner stats after backfill (no autovacuum under PGlite) | ✓ Good (v1.5) — gated on backlog==0 after a non-empty drain, not every-N |
 
 ---
-*Last updated: 2026-05-20 — v1.5 Hybrid Chat Search milestone opened*
+*Last updated: 2026-06-01 — after v1.5 Hybrid Chat Search milestone (shipped)*

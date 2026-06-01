@@ -1,5 +1,32 @@
 # Milestones
 
+## v1.5 Hybrid Chat Search (Shipped: 2026-06-01)
+
+**Phases completed:** 6 phases (63–68), 24 plans
+**Timeline:** ~3 days (2026-05-29 → 2026-06-01)
+**Git range:** `f1ba976a` (Phase 63 start) → v1.5 milestone commit
+**Requirements:** 35/35 satisfied per `.planning/milestones/v1.5-MILESTONE-AUDIT.md` (audit verdict: `tech_debt` — no blockers; human-verification + Nyquist-validation items tracked)
+
+**Delivered:** Semantic (pgvector/HNSW) recall layered alongside the existing lexical (Postgres FTS) precision so every past chat is findable instantly — additive-only. A transactional embed-on-write pipeline (chunker → outbox → background worker) keeps `message_chunks` current without ever blocking the chat path; a single-CTE Reciprocal-Rank-Fusion query powers one `GET /api/search/messages` endpoint consumed by both the sidebar mode-toggle search and a new Cmd+K global command palette, each deep-linking to the matching message; an operator backfill CLI + admin progress surface index existing history and expose coverage.
+
+**Key accomplishments:**
+1. **Indexing Primitives (Phase 63)** — `message_chunks` (vector(384), HNSW `idx_message_chunks_embedding`, denormalized `conversation_id`, `ON DELETE CASCADE`) + `message_embed_outbox` tables; token-aware chat chunker (256/32-overlap); first transactional outbox enqueue in the codebase gated to user/assistant roles inside `createMessage`/`updateMessageContent`; `EMBEDDING_MODEL_ID` single-source-of-truth; fixed the silent over-length input-truncation defect via `tokenizer.model_max_length` cap (IDX-01..07).
+2. **Embed-on-Write Worker (Phase 64)** — background outbox drainer on the HostMaintenanceDaemon pattern: claims batches via subquery UPDATE, embeds sequentially (Transformers.js singleton), inserts chunks, with a degraded-mode gate (`isEmbeddingReady`), exponential backoff + max-attempts poison-pill cap, boot-time stale-lock recovery, and an `EZCORP_DISABLE_EMBED_WORKER` kill-switch (ING-01..05).
+3. **Hybrid Search SQL + API (Phase 65)** — `searchMessages()` single-CTE RRF (k=60) fusing FTS + pgvector with in-CTE tenant scoping (filter inside the HNSW scan, EXPLAIN-verified on pgvector 0.8.0 via `hnsw.iterative_scan='relaxed_order'`), match-type tagging (lexical/semantic/both), snippet asymmetry (`<mark>` ts_headline vs plain ±window), behind `GET /api/search/messages` (hybrid/keyword/semantic + server-owned degraded→keyword fallback) (SRCH-01..08).
+4. **Sidebar Search (Phase 66)** — Hybrid/Keyword/Semantic toggle on `ConversationList.svelte` defaulting to Hybrid with global localStorage persistence, two-section grouped results, and `?m=` deep-link consumed reactively by the non-remounting `ChatThread` (scroll + 1.8s highlight pulse), preserving all existing debounce/min-length/title-match/scoping behavior (UI-01..04).
+5. **Command Palette Search (Phase 67)** — Cmd+K global search palette extending `CommandPalette.svelte` (not a parallel component) with the prior action rebound to Cmd+Shift+P via the shortcut registry (case-folded key match), cross-project `scope=all` results grouped In-this-conversation / Other, match-type icons, cross-project deep-link, full ARIA-dialog/focus-trap a11y, and mobile `BottomSheet` fallback (PAL-01..07).
+6. **Backfill + Operations (Phase 68)** — resumable, idempotent `scripts/backfill-embeddings.ts` (gaps-only keyset-paced `enqueueEmbedJobIfAbsent` with `--status`/`--dry-run`/`--refresh-stale` + worker-down warn), self-limiting `ANALYZE message_chunks` after a non-empty drain (no autovacuum under PGlite), and a read-only admin embedding-progress surface (`GET /api/admin/embed-progress` + dashboard card) reporting backlog depth + coverage (OPS-01..04).
+
+**Post-audit cleanup (2026-06-01):** chat-index deep-link `messageId` drop fixed + regression test (`4bbd279b`); IDX-06 `memory-embeddings-state.test.ts` tokenizer-stub regression fixed, 6/11 → 11/11 (`9156f80e`); coverage gate re-run and the 68 violations / 82 failures diagnosed as the pre-existing BUN-01 subprocess/MCP local↔CI divergence (zero v1.5 files affected).
+
+**Tech debt carried forward to next milestone:**
+1. **Human-verification items** — Phase 67: Cmd+Shift+P vs browser private-window shortcut (Chrome/Firefox), cross-project hit pulse/strip visual. Phase 68: admin embedding card visual, backfill CLI worker-down warning, end-to-end backfill→drain coverage parity. Each has automated proxy coverage; absolute criterion needs a live browser/server.
+2. **Nyquist validation** — all 6 phases have VALIDATION.md scaffolds but none are marked fully `nyquist_compliant`; run `/gsd:validate-phase {63..68}` or accept (phases shipped with substantive unit + integration + e2e coverage; P68 passed agent-team UAT).
+3. **BUN-01 subprocess/MCP test category** — `*/e2e-server-pipeline.test.ts`, `af1-mcp-sandbox-regression`, `mcp-api-routes`, `mcp-e2e`, `reliability-e2e`, `ws-reconnect-integration` fail in the local NixOS dev env (no sandbox caps); authoritative gate is CI. Carry-forward from v1.4.
+4. **Cross-file mock leak (new)** — `author-install.test.ts` + `installer-idempotent-local.test.ts` produce 7 failures only when co-run in one bun process (`installImpl` mock leak); pass alone. Unrelated to v1.5 search.
+
+---
+
 ## v1.4 Trust Hardening & v1.3 Closeout (Shipped: 2026-05-13)
 
 **Phases completed:** 9 phases (54–62), 45 plans, 46 summaries

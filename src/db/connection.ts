@@ -308,7 +308,20 @@ async function initPostgres(): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (PgJson.prototype as any).mapToDriverValue = identity;
 
-  const db = drizzle(DATABASE_URL!, { schema });
+  // Pool size for the Bun.sql client. Bun's default is 10, which is too small
+  // for endpoints that fan out several queries per request: the admin
+  // analytics route issued ~11 concurrent queries via Promise.all and could
+  // deadlock the whole shared pool at just two concurrent requests (every
+  // route shares this client). That fan-out is now serialised at the call
+  // site, but a modestly larger pool gives realistic dashboard bursts
+  // headroom without relying on a single endpoint's internals. Overridable
+  // via DB_POOL_MAX; clamped to a sane [1, 100] range.
+  const poolMax = (() => {
+    const raw = Number(process.env.DB_POOL_MAX);
+    if (!Number.isFinite(raw)) return 20;
+    return Math.max(1, Math.min(100, Math.floor(raw)));
+  })();
+  const db = drizzle({ connection: { url: DATABASE_URL!, max: poolMax }, schema });
   _pglite = null;
 
   // Wrap execute() so raw SQL results always return { rows: [...] }

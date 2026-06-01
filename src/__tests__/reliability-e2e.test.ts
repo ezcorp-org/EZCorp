@@ -93,6 +93,13 @@ beforeEach(() => {
 
 describe("SSE disconnect → reconnect flow", () => {
   test("transitions connected → disconnected → reconnecting → connected with correct events", async () => {
+    // Fire all timers (grace window + backoff) immediately so the test runs
+    // fast. The visible `connectionState` store is gated behind a grace
+    // window (CONNECTION_GRACE_MS): a transient blip stays "connected" until
+    // the grace timer fires, so we must let it fire to observe "reconnecting".
+    const origSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => unknown, _delay?: number) => origSetTimeout(fn, 0)) as any;
+
     const events: WSEvent[] = [];
     const client = createWSClient();
     client.subscribe((ev) => events.push(ev));
@@ -109,10 +116,13 @@ describe("SSE disconnect → reconnect flow", () => {
     es1.simulateError();
 
     expect(events.some(e => e.type === "ws:disconnected")).toBe(true);
+
+    // Let the grace timer fire so the gated state surfaces "reconnecting".
+    await new Promise(r => origSetTimeout(r, 10));
     expect(storeValue.state).toBe("reconnecting");
 
-    // Wait for backoff timer (attempt 0 = 1000ms)
-    await new Promise(r => setTimeout(r, 1200));
+    // Backoff timer also fires immediately under the patched setTimeout.
+    await new Promise(r => origSetTimeout(r, 10));
 
     // New EventSource created
     const es2 = latestES();
@@ -131,6 +141,7 @@ describe("SSE disconnect → reconnect flow", () => {
     expect(disconnect).toBeGreaterThan(firstConnect);
     expect(reconnect).toBeGreaterThan(disconnect);
 
+    globalThis.setTimeout = origSetTimeout;
     client.close();
   });
 

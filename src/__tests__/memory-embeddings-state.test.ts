@@ -14,11 +14,16 @@ mock.module("@huggingface/transformers", () => ({
       throw new Error("forced model init failure");
     }
     // Return a stub extractor that produces a deterministic fp32 vector.
-    return async (_text: string, _opts?: unknown) => {
+    const extractor = async (_text: string, _opts?: unknown) => {
       const data = new Float32Array(EMBEDDING_DIMENSIONS);
       for (let i = 0; i < EMBEDDING_DIMENSIONS; i++) data[i] = (i + 1) * 0.01;
       return { data };
     };
+    // The real FeatureExtractionPipeline carries a tokenizer; getExtractor()
+    // sets tokenizer.model_max_length to cap input at CHUNK_TOKENS (IDX-06),
+    // so the stub must expose one or that assignment NPEs.
+    (extractor as unknown as { tokenizer: { model_max_length?: number } }).tokenizer = {};
+    return extractor;
   },
   env: { backends: { onnx: {} } },
 }));

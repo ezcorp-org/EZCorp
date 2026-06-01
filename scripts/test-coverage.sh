@@ -118,11 +118,16 @@ VITEST_EXIT=0
     src/__tests__/deep-link-resolve.unit.test.ts \
     src/lib/components/goal-row-logic.unit.test.ts \
     src/lib/components/GoalPill.component.test.ts \
+    src/lib/components/UpdateBanner.component.test.ts \
+    src/__tests__/version-endpoint.server.test.ts \
     --coverage --coverage.provider=v8 --coverage.reporter=lcovonly \
     --coverage.reportsDirectory="$VITEST_COV" \
     --coverage.include='src/lib/search/**' \
     --coverage.include='src/lib/components/goal-row-logic.ts' \
-    --coverage.include='src/lib/components/GoalPill.svelte' ) || VITEST_EXIT=$?
+    --coverage.include='src/lib/components/GoalPill.svelte' \
+    --coverage.include='src/lib/components/UpdateBanner.svelte' \
+    --coverage.include='src/lib/components/UpdateBanner.helpers.ts' \
+    --coverage.include='src/routes/api/version/+server.ts' ) || VITEST_EXIT=$?
 # vitest (run from web/) emits SF paths web/-relative (SF:src/lib/...).
 # Re-root them so merge-lcov.ts resolves them against the repo root and the
 # repo-root-relative threshold keys (web/src/lib/...) match.

@@ -49,6 +49,28 @@ describe("UpdateBanner", () => {
 		expect(queryByRole("status")).toBeNull();
 	});
 
+	test("renders nothing when /api/version responds non-ok (best-effort, silent)", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => makeFetchResponse({}, false)),
+		);
+		const { queryByRole } = render(UpdateBanner);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(queryByRole("status")).toBeNull();
+	});
+
+	test("renders nothing when the fetch throws (network error swallowed)", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("network down");
+			}),
+		);
+		const { queryByRole } = render(UpdateBanner);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(queryByRole("status")).toBeNull();
+	});
+
 	test("renders the banner with latest + current versions when update available", async () => {
 		vi.stubGlobal(
 			"fetch",

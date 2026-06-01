@@ -1,6 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach, afterAll, mock } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -238,5 +238,51 @@ describe("getUpdateCheck — cache behavior", () => {
     const { getUpdateCheck } = await import("../update-check");
     const r = await getUpdateCheck();
     expect(r.updateAvailable).toBe(false);
+  });
+
+  test("cache file present but missing a string checkedAt is ignored (treated as no cache)", async () => {
+    // readCache must reject a structurally-valid-but-incomplete cache (no
+    // `checkedAt` string) and fall through to a fresh GitHub fetch rather
+    // than trusting the stale `latest`.
+    writeFileSync(
+      join(tempDir, ".update-check.json"),
+      JSON.stringify({ latest: "v0.0.1" }), // no checkedAt
+    );
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ tag_name: "v0.7.0", html_url: "https://example.com/fresh" }), { status: 200 })) as any;
+
+    const { getUpdateCheck } = await import("../update-check");
+    const r = await getUpdateCheck();
+    // The malformed cache's "v0.0.1" was discarded; the fresh tag is used.
+    expect(r.latest).toBe("v0.7.0");
+    expect(r.source).toBe("github-releases");
+  });
+
+  test("corrupt (non-JSON) cache file is swallowed and a fresh fetch runs", async () => {
+    // readCache's JSON.parse throws on garbage; the catch must return null so
+    // a broken cache file never wedges the check.
+    writeFileSync(join(tempDir, ".update-check.json"), "{ not valid json ");
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ tag_name: "v0.8.0", html_url: "https://example.com/fresh" }), { status: 200 })) as any;
+
+    const { getUpdateCheck } = await import("../update-check");
+    const r = await getUpdateCheck();
+    expect(r.latest).toBe("v0.8.0");
+    expect(r.source).toBe("github-releases");
+  });
+
+  test("a cache write failure is swallowed — the check still returns fresh data", async () => {
+    // Make the cache *path* a directory so writeFileSync throws EISDIR. Using
+    // a directory (not chmod) means the failure reproduces even when the
+    // suite runs as root, where permission bits are ignored. writeCache must
+    // catch + log rather than throw.
+    mkdirSync(join(tempDir, ".update-check.json"), { recursive: true });
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ tag_name: "v0.9.1", html_url: "https://example.com/fresh" }), { status: 200 })) as any;
+
+    const { getUpdateCheck } = await import("../update-check");
+    const r = await getUpdateCheck();
+    expect(r.latest).toBe("v0.9.1");
+    expect(r.source).toBe("github-releases");
   });
 });

@@ -7,28 +7,12 @@
  */
 
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
-import { describe, test, expect, afterEach, beforeAll, vi } from "vitest";
+import { describe, test, expect, afterEach, vi } from "vitest";
 import Toast from "./Toast.svelte";
 import type { ToastData } from "$lib/toast.svelte.js";
 
-// jsdom doesn't implement Web Animations API, which Svelte's transition:fly
-// calls into via element.animate(). Stub it to a no-op Animation-like object
-// so the component mounts without throwing.
-beforeAll(() => {
-	if (typeof Element.prototype.animate !== "function") {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(Element.prototype as any).animate = () => ({
-			cancel() {},
-			finish() {},
-			pause() {},
-			play() {},
-			reverse() {},
-			addEventListener() {},
-			removeEventListener() {},
-			finished: Promise.resolve(),
-		});
-	}
-});
+// Element.prototype.animate (Web Animations API, used by Svelte's
+// transition:fly) is polyfilled globally in vitest-setup.ts.
 
 afterEach(() => cleanup());
 

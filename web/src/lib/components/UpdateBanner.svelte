@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { fly } from "svelte/transition";
 	import {
 		DISMISS_STORAGE_KEY,
 		dismissValue,
@@ -34,45 +35,89 @@
 </script>
 
 {#if info?.updateAvailable && !dismissed}
-	<div class="update-banner" role="status">
-		<span>
-			Update available: <strong>{info.latest}</strong>
-			<span class="current">(current: {info.current})</span>
-		</span>
-		<span class="actions">
+	<div class="update-toast" role="status" in:fly={{ y: 16, duration: 200 }}>
+		<svg
+			class="icon"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+		>
+			<circle cx="12" cy="12" r="10" />
+			<path d="M12 16V8M8.5 11.5 12 8l3.5 3.5" />
+		</svg>
+		<div class="body">
+			<div class="headline">
+				Update available: <strong>{info.latest}</strong>
+				<span class="current">(current: {info.current})</span>
+			</div>
 			{#if info.releaseUrl}
-				<a href={info.releaseUrl} target="_blank" rel="noopener noreferrer">Release notes</a>
+				<a class="release-link" href={info.releaseUrl} target="_blank" rel="noopener noreferrer"
+					>Release notes</a
+				>
 			{/if}
-			<button type="button" onclick={dismiss} aria-label="Dismiss">×</button>
-		</span>
+		</div>
+		<button type="button" class="close" onclick={dismiss} aria-label="Dismiss">×</button>
 	</div>
 {/if}
 
 <style>
-	.update-banner {
+	.update-toast {
+		position: fixed;
+		bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+		left: calc(1rem + env(safe-area-inset-left, 0px));
+		z-index: 60;
 		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		gap: 1rem;
-		padding: 0.5rem 1rem;
+		align-items: flex-start;
+		gap: 0.625rem;
+		max-width: min(20rem, calc(100vw - 2rem));
+		padding: 0.75rem 0.875rem;
 		background: #1f3a5f;
 		color: #fff;
-		font-size: 0.875rem;
+		border: 1px solid rgba(255, 255, 255, 0.14);
+		border-radius: 0.625rem;
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32);
+		font-size: 0.8125rem;
+		line-height: 1.35;
+	}
+	/* Clear the mobile bottom navigation on small screens. */
+	@media (max-width: 768px) {
+		.update-toast {
+			bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+		}
+	}
+	.icon {
+		flex: none;
+		width: 1.125rem;
+		height: 1.125rem;
+		margin-top: 0.05rem;
+		opacity: 0.9;
+	}
+	.body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		min-width: 0;
 	}
 	.current {
 		opacity: 0.7;
 		margin-left: 0.25rem;
 	}
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-	}
-	.actions a {
+	.release-link {
 		color: #fff;
 		text-decoration: underline;
+		width: fit-content;
 	}
-	.actions button {
+	.release-link:hover {
+		opacity: 0.8;
+	}
+	.close {
+		flex: none;
+		align-self: flex-start;
+		margin: -0.25rem -0.25rem 0 0.25rem;
 		background: transparent;
 		border: none;
 		color: #fff;
@@ -81,7 +126,7 @@
 		line-height: 1;
 		padding: 0 0.25rem;
 	}
-	.actions button:hover {
+	.close:hover {
 		opacity: 0.7;
 	}
 </style>

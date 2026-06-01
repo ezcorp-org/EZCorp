@@ -132,7 +132,11 @@ describe("buildSandboxedMcpSpec — stdio wrap", () => {
 
     const expectedBytes = 1024 * 1024 * 1024;
     expect(wrapped.args?.[0]).toBe(`--rss=${expectedBytes}`);
-    expect(wrapped.args?.[1]).toBe(`--as=${expectedBytes}`);
+    // `--as` (virtual address space) is sized with headroom above the rss
+    // bound — JIT runtimes reserve far more virtual than resident memory,
+    // so pinning `--as` to the rss bytes segfaults the child. It stays
+    // FINITE (the AF-1 "no unlimited" invariant) but scales to 8× rss.
+    expect(wrapped.args?.[1]).toBe(`--as=${expectedBytes * 8}`);
   });
 
   test("child env does NOT inherit EZCORP_PERMITTED_HOSTS from parent when network not granted", async () => {

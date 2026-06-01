@@ -50,8 +50,8 @@ describe("buildProjectActions", () => {
 
 describe("buildCommands — Projects drill-down", () => {
 	const projects = [
-		proj({ id: "a", name: "Alpha", icon: "🚀" }),
-		proj({ id: "b", name: "Beta" }), // icon null → undefined on the command
+		proj({ id: "a", name: "Alpha", icon: "https://logo.test/alpha.png" }),
+		proj({ id: "b", name: "Beta" }), // icon null → avatar.src null (letter fallback)
 	];
 
 	test("adds a Projects command whose children mirror the projects", () => {
@@ -66,13 +66,13 @@ describe("buildCommands — Projects drill-down", () => {
 		]);
 	});
 
-	test("project entries carry their emoji icon (or undefined) and their actions", () => {
+	test("project entries carry a logo avatar (image src or null) and their actions", () => {
 		const projectsCmd = buildCommands("global", projects).find(
 			(c) => c.id === "projects",
 		)!;
 		const [alpha, beta] = projectsCmd.children!;
-		expect(alpha.icon).toBe("🚀");
-		expect(beta.icon).toBeUndefined();
+		expect(alpha.avatar).toEqual({ name: "Alpha", src: "https://logo.test/alpha.png" });
+		expect(beta.avatar).toEqual({ name: "Beta", src: null });
 		expect(alpha.group).toBe("Project");
 		expect(alpha.children?.map((c) => c.id)).toEqual([
 			"project-a-chat",

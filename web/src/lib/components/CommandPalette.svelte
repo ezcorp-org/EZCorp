@@ -170,11 +170,34 @@
 		return "“"; // lexical / keyword match
 	}
 
-	// Project emoji for a hit's owning project, looked up from the shared store
-	// (already populated by the sidebar — same source `buildCommands` uses). null
-	// when the project has no emoji set OR isn't in the store, so the header falls
-	// back to the folder glyph. Cheap linear scan — the project list is small.
-	function projectIconFor(projectId: string | undefined): string | null {
+	// Deterministic fallback avatar color from a project name — ProjectRail
+	// parity, so a logo-less project shows the SAME colored letter as the
+	// sidebar.
+	const BG_COLORS = [
+		"bg-blue-600",
+		"bg-green-600",
+		"bg-purple-600",
+		"bg-orange-600",
+		"bg-pink-600",
+		"bg-teal-600",
+		"bg-indigo-600",
+		"bg-red-600",
+	];
+	function hashColor(name: string): string {
+		let hash = 0;
+		for (let i = 0; i < name.length; i++) {
+			hash = (hash * 31 + name.charCodeAt(i)) | 0;
+		}
+		return BG_COLORS[Math.abs(hash) % BG_COLORS.length]!;
+	}
+
+	// Project icon image source for a hit's owning project, looked up from the
+	// shared store (already populated by the sidebar — same source `buildCommands`
+	// uses). A project `icon` is an image URL / data-URI (ProjectRail renders it
+	// via <img>), NOT an emoji. null when the project has no icon set OR isn't in
+	// the store, so the badge falls back to the colored-initial avatar. Cheap
+	// linear scan — the project list is small.
+	function projectIconSrc(projectId: string | undefined): string | null {
 		if (!projectId) return null;
 		return store.projects.find((p) => p.id === projectId)?.icon ?? null;
 	}
@@ -447,24 +470,28 @@
 	{/if}
 {/snippet}
 
-<!-- Project badge for a search-result conversation header — the emoji (when
-     the project has one) else the folder fallback (sidebar / ProjectPicker
+<!-- Project badge for a search-result conversation header — the project's logo
+     image when set, else a colored-initial avatar (ProjectRail / command-row
      parity), trailed by the project name. Right-aligned via `ml-auto` so each
      chat group carries a clear project identifier in its top-right corner. -->
 {#snippet projectBadge(projectId: string | undefined, projectName: string)}
-	{@const icon = projectIconFor(projectId)}
+	{@const iconSrc = projectIconSrc(projectId)}
 	<span
 		class="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-[var(--color-text-muted)]"
 		data-testid="palette-project-badge"
 		title={projectName}
 	>
-		{#if icon}
-			<span class="text-[11px] leading-none" aria-hidden="true">{icon}</span>
-		{:else}
-			<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-			</svg>
-		{/if}
+		<span
+			class="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden rounded {iconSrc ? '' : hashColor(projectName)}"
+			data-testid="palette-project-avatar"
+			aria-hidden="true"
+		>
+			{#if iconSrc}
+				<img src={iconSrc} alt={projectName} class="h-full w-full object-cover" />
+			{:else}
+				<span class="text-[8px] font-semibold leading-none text-white">{projectName.charAt(0).toUpperCase()}</span>
+			{/if}
+		</span>
 		<span class="truncate">{projectName}</span>
 	</span>
 {/snippet}
@@ -482,9 +509,23 @@
 		class="flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition-colors {idx === highlightedIndex ? 'bg-[var(--color-surface-tertiary)]' : 'hover:bg-[var(--color-surface-tertiary)]/50'}"
 		onclick={() => executeCommand(cmd)}
 	>
-		{#if cmd.icon}
-			<!-- Custom glyph (e.g. a project's emoji), rendered in the icon slot
-			     in place of the per-group SVG. -->
+		{#if cmd.avatar}
+			<!-- Project logo (sidebar parity): the icon image when set, else a
+			     colored avatar with the project's first letter. aria-hidden so the
+			     button's accessible name stays just the project label. -->
+			<span
+				class="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-md {cmd.avatar.src ? '' : hashColor(cmd.avatar.name)}"
+				data-testid="cmd-avatar"
+				aria-hidden="true"
+			>
+				{#if cmd.avatar.src}
+					<img src={cmd.avatar.src} alt={cmd.avatar.name} class="h-full w-full object-cover" />
+				{:else}
+					<span class="text-[10px] font-semibold text-white">{cmd.avatar.name.charAt(0).toUpperCase()}</span>
+				{/if}
+			</span>
+		{:else if cmd.icon}
+			<!-- Custom glyph rendered in the icon slot in place of the group SVG. -->
 			<span class="flex h-4 w-4 shrink-0 items-center justify-center text-sm leading-none" aria-hidden="true">{cmd.icon}</span>
 		{:else}
 			{@render groupIcon(cmd)}

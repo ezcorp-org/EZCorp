@@ -39,12 +39,13 @@ vi.mock("$lib/api.js", async (orig) => {
 	return { ...real, searchMessages: searchMessagesMock };
 });
 
-// --- $lib/stores.svelte.js: fixed project list (one with an emoji, one without) ---
+// --- $lib/stores.svelte.js: fixed project list (one with a logo, one without) ---
+const ALPHA_LOGO = "https://logo.test/alpha.png";
 vi.mock("$lib/stores.svelte.js", () => ({
 	store: {
 		activeProjectId: "global",
 		projects: [
-			{ id: "a", name: "Alpha", path: "", icon: "🚀", variables: {}, createdAt: "", updatedAt: "" },
+			{ id: "a", name: "Alpha", path: "", icon: "https://logo.test/alpha.png", variables: {}, createdAt: "", updatedAt: "" },
 			{ id: "b", name: "Beta", path: "", icon: null, variables: {}, createdAt: "", updatedAt: "" },
 		],
 	},
@@ -175,10 +176,10 @@ describe("CommandPalette — Projects drill-down", () => {
 		expect(searchMessagesMock).not.toHaveBeenCalled();
 	});
 
-	test("project rows use the emoji icon when set, folder fallback otherwise", async () => {
+	test("project rows show the project logo (image or letter avatar), not a folder", async () => {
 		const { container } = renderPalette();
 
-		// The Projects parent uses the folder icon.
+		// The Projects parent still uses the folder icon.
 		const projectsBtn = rows(container).find((b) => (b.textContent ?? "").includes("Projects"))!;
 		expect(
 			[...projectsBtn.querySelectorAll("svg path")].some((p) =>
@@ -190,13 +191,19 @@ describe("CommandPalette — Projects drill-down", () => {
 		const alpha = rows(container).find((b) => (b.textContent ?? "").includes("Alpha"))!;
 		const beta = rows(container).find((b) => (b.textContent ?? "").includes("Beta"))!;
 
-		// Alpha: emoji rendered in the leading icon slot.
-		expect(alpha.querySelector('span[aria-hidden="true"]')?.textContent?.trim()).toBe("🚀");
-		// Beta: no emoji → folder fallback svg.
+		// Alpha: logo image in the avatar slot.
+		const img = alpha.querySelector('[data-testid="cmd-avatar"] img');
+		expect(img?.getAttribute("src")).toBe(ALPHA_LOGO);
+		expect(img?.getAttribute("alt")).toBe("Alpha");
+
+		// Beta (no logo): colored-letter avatar, NOT an image and NOT a folder svg.
+		const betaAvatar = beta.querySelector('[data-testid="cmd-avatar"]');
+		expect(betaAvatar?.querySelector("img")).toBeNull();
+		expect(betaAvatar?.textContent?.trim()).toBe("B");
 		expect(
 			[...beta.querySelectorAll("svg path")].some((p) =>
 				p.getAttribute("d")?.startsWith(FOLDER_D),
 			),
-		).toBe(true);
+		).toBe(false);
 	});
 });

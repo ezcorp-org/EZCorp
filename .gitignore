@@ -85,3 +85,6 @@ projects/
 # Local git worktrees — checked-out branches under ./worktrees/ for parallel
 # work. Never commit; the actual branches live in the remote.
 worktrees/
+
+# Local Claude Code agent config (per-machine, do not commit)
+.claude/

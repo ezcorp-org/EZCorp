@@ -85,7 +85,7 @@
 {:else if cardName === 'KokoroTtsPlayerCard'}
 	<KokoroTtsPlayerCard {toolCall} {conversationId} {messageId} />
 {:else if cardName === 'PriceChartCard'}
-	<PriceChartCard {toolCall} {conversationId} {mode} />
+	<PriceChartCard {toolCall} />
 {:else if cardName === 'SubstackReviewCard'}
 	<SubstackReviewCard {toolCall} {conversationId} />
 {:else if shouldRenderWeatherCard}

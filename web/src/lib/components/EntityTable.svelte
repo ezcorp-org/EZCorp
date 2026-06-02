@@ -17,41 +17,14 @@
 
 <script lang="ts">
   import EntityFormModal from "./EntityFormModal.svelte";
+  import type {
+    EntityDeclaration,
+    EntityRecordWithWarning,
+  } from "@ezcorp/sdk/entities";
 
-  interface JsonSchemaField {
-    type: "object" | "string" | "number" | "boolean" | "array";
-    description?: string;
-    properties?: Record<string, JsonSchemaField>;
-    required?: readonly string[];
-    additionalProperties?: boolean;
-    minLength?: number;
-    maxLength?: number;
-    pattern?: string;
-    enum?: readonly string[];
-    minimum?: number;
-    maximum?: number;
-    integer?: boolean;
-    items?: JsonSchemaField;
-  }
-
-  interface EntityDeclaration {
-    type: string;
-    label: string;
-    pluralLabel: string;
-    scope?: "user" | "project" | "conversation";
-    cascadeOnUninstall?: boolean;
-    schema: JsonSchemaField;
-    preview?: string;
-  }
-
-  interface EntityRecordView {
-    slug: string;
-    data: Record<string, unknown>;
-    _validationWarning?: {
-      code: "SCHEMA_DRIFT";
-      issues: Array<{ path: string; message: string }>;
-    };
-  }
+  /** Row shape returned by the list endpoint — the stored record plus
+   *  an optional schema-drift warning. */
+  type EntityRecordView = EntityRecordWithWarning;
 
   let {
     extensionId,
@@ -117,7 +90,7 @@
   function previewFor(rec: EntityRecordView): string {
     const tmpl = decl.preview;
     if (!tmpl) return summarize(rec.data);
-    return tmpl.replace(/\{([^}]+)\}/g, (_, raw: string) => {
+    return tmpl.replace(/\{([^}]+)\}/g, (_match: string, raw: string) => {
       const path = raw.trim();
       if (path === "slug") return rec.slug;
       const parts = path.split(".");

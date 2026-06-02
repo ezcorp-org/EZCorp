@@ -231,10 +231,16 @@
 		injectionEligible = nextValue;
 		togglingEligibility = true;
 		try {
+			// The API helper is typed `Promise<Record<string, unknown>>`
+			// but the PATCH route returns the full memory row (see
+			// `updateMemoryInjectionEligibility` in $lib/api). The broad
+			// record type doesn't structurally overlap `Memory`, so a
+			// direct `as Memory` is rejected — the runtime shape is
+			// guaranteed by the route, hence the `as unknown as` bridge.
 			const updated = (await updateMemoryInjectionEligibility(
 				memory.id,
 				nextValue,
-			)) as Memory;
+			)) as unknown as Memory;
 			injectionEligible = updated.injectionEligible;
 			onupdated(updated);
 		} catch (err) {

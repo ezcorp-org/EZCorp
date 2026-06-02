@@ -344,6 +344,17 @@
 				m.id === optimisticUserMsg.id ? result.userMessage : m,
 			);
 
+			// Action-only submissions (`![EZ:*]` tokens with no surrounding
+			// prose) skip the LLM call server-side, so there's no run to
+			// stream and `runId` comes back null. Short-circuit the
+			// streaming setup and reconcile from the persisted tree — same
+			// contract the chat page's send-message handler honors.
+			if (result.runId === null) {
+				activeRunId = null;
+				await refreshMessages();
+				return;
+			}
+
 			// Register the runId with the global streaming store so SSE
 			// `run:token` / `run:status` events accumulate into
 			// `store.streamingMessages[runId]`. Same call the chat page

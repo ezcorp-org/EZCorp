@@ -164,7 +164,7 @@
 	// (e.g. denial says "no llm:openai grant" + sidebar shows
 	// `llm.providers: ["anthropic"]`).
 	let grantsSummary = $derived.by(() => {
-		const g = data.extension.grantedPermissions as Record<string, unknown>;
+		const g = data.extension.grantedPermissions;
 		if (!g) return [];
 		return Object.entries(g)
 			.filter(([k]) => k !== "grantedAt")

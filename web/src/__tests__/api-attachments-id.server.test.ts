@@ -29,6 +29,13 @@ const { getConversation } = await import("$server/db/queries/conversations");
 const { insertAuditEntry } = await import("$server/db/queries/audit-log");
 const { GET } = await import("../routes/api/attachments/[id]/+server");
 
+// Under vitest's jsdom worker the `Bun` global is not exposed, so the
+// audit-side-effect tests below (which stub `Bun.file` to force a 404
+// before any file IO) would throw `Bun is not defined`. Define the
+// namespace when absent so it can be stubbed onto; a `??=` is a no-op
+// under a real Bun runtime.
+(globalThis as { Bun?: unknown }).Bun ??= {};
+
 function makeEvent(opts: {
 	id?: string;
 	locals?: Record<string, unknown>;

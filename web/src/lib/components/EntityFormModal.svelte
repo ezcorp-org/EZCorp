@@ -22,22 +22,10 @@
 
 <script lang="ts">
   import { inputClass } from "$lib/styles.js";
+  import type { JsonSchema, JsonSchemaObject } from "@ezcorp/sdk/entities";
 
-  interface JsonSchemaField {
-    type: "object" | "string" | "number" | "boolean" | "array";
-    description?: string;
-    properties?: Record<string, JsonSchemaField>;
-    required?: readonly string[];
-    additionalProperties?: boolean;
-    minLength?: number;
-    maxLength?: number;
-    pattern?: string;
-    enum?: readonly string[];
-    minimum?: number;
-    maximum?: number;
-    integer?: boolean;
-    items?: JsonSchemaField;
-  }
+  /** Local alias for a node anywhere in the locked schema subset. */
+  type JsonSchemaField = JsonSchema;
 
   let {
     open,
@@ -58,7 +46,7 @@
     label: string;
     /** Entity declaration `type` slug — used to build the API URL. */
     typeSlug: string;
-    schema: JsonSchemaField;
+    schema: JsonSchemaObject;
     slug?: string;
     data?: Record<string, unknown>;
     extensionId: string;
@@ -69,6 +57,11 @@
     }) => void | Promise<void>;
     oncancel: () => void;
   } = $props();
+
+  // Slug HTML5 pattern. Kept as a script constant because the `{0,62}`
+  // quantifier would otherwise be parsed by Svelte as a `{…}`
+  // expression block in the attribute value (a comma-operator bug).
+  const SLUG_PATTERN = "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$";
 
   let slug = $state("");
   let values = $state<Record<string, unknown>>({});
@@ -156,11 +149,11 @@
 
   type FieldEntry = [string, JsonSchemaField];
 
-  function fieldEntries(field: JsonSchemaField): FieldEntry[] {
+  function fieldEntries(field: JsonSchemaObject): FieldEntry[] {
     return Object.entries(field.properties ?? {});
   }
 
-  function isRequired(parent: JsonSchemaField, key: string): boolean {
+  function isRequired(parent: JsonSchemaObject, key: string): boolean {
     return parent.required?.includes(key) === true;
   }
 
@@ -208,7 +201,7 @@
               required
               minlength={1}
               maxlength={64}
-              pattern="^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+              pattern={SLUG_PATTERN}
               oninput={(e) => (slug = (e.currentTarget as HTMLInputElement).value)}
               data-testid="entity-form-slug"
               disabled={submitting}

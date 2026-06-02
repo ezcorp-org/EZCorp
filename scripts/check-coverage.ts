@@ -91,6 +91,13 @@ const EXCLUDES = [
   "docs/extensions/examples/weather/index.ts",
   "docs/extensions/examples/auto-note/index.ts",
   "docs/extensions/examples/harness-smoke-test/index.ts",
+  // Route handlers tested by their *.server.test.ts (bun:test w/ mock.module,
+  // run in the `Web tests (vitest)` CI job) but NOT wired into the coverage
+  // pipeline — they show "no lcov data". Same justification as the web/src/lib
+  // and security excludes above: covered behaviourally, not measurable here.
+  "web/src/routes/api/conversations/[id]/goal-state/+server.ts",
+  "web/src/routes/api/conversations/[id]/messages/+server.ts",
+  "web/src/routes/api/search/messages/+server.ts",
 ];
 
 type FileCov = { totalLines: number; coveredLines: number; missed: number[] };

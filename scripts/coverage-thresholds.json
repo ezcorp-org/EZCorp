@@ -4,6 +4,7 @@
   "src/extensions/call-provenance.ts": 100,
   "src/extensions/event-subscription-dispatcher.ts": 95,
   "src/extensions/json-rpc.ts": 100,
+  "src/extensions/sdk/dev.ts": 97,
   "src/extensions/subprocess.ts": 95,
   "src/extensions/registry.ts": 95,
   "src/extensions/loader.ts": 90,

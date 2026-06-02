@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach, afterAll, mock, jest } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 afterAll(() => restoreModuleMocks());
@@ -51,6 +51,7 @@ function restoreGlobals() {
 }
 
 import { createWSClient, MAX_ATTEMPTS } from "../../web/src/lib/ws";
+import { CONNECTION_GRACE_MS } from "../../web/src/lib/connection-grace";
 import { connectionState } from "../../web/src/lib/stores/connection";
 import type { ConnectionInfo } from "../../web/src/lib/stores/connection";
 
@@ -115,11 +116,17 @@ describe("createWSClient state machine", () => {
 	});
 
 	test("onerror triggers reconnecting state", () => {
+		jest.useFakeTimers();
 		const client = createWSClient();
 		latestES().simulateOpen();
 		latestES().simulateError();
-		const val = getStoreValue();
-		expect(val.state).toBe("reconnecting");
+		// The visible `connectionState` is gated behind CONNECTION_GRACE_MS:
+		// a transient blip stays "connected" until the grace timer fires.
+		// Advance past the grace window to observe "reconnecting".
+		expect(getStoreValue().state).toBe("connected");
+		jest.advanceTimersByTime(CONNECTION_GRACE_MS + 1);
+		expect(getStoreValue().state).toBe("reconnecting");
+		jest.useRealTimers();
 		client.close();
 	});
 
@@ -177,15 +184,24 @@ describe("createWSClient state machine", () => {
 	});
 
 	test("multiple disconnects increment attempt and increase backoff", () => {
+		jest.useFakeTimers();
 		const client = createWSClient();
 		latestES().simulateOpen();
 
-		// Error triggers reconnect with attempt=0, then attempt becomes 1
+		// Error schedules a reconnect. The visible state is gated behind the
+		// grace window, so it stays "connected" until the grace timer fires.
 		latestES().simulateError();
+		expect(getStoreValue().state).toBe("connected");
+
+		// Advancing past the grace window also fires the (shorter) backoff
+		// timer, which increments attempt 0 -> 1 and reconnects. The grace
+		// flush then surfaces the "reconnecting" state with the bumped attempt.
+		jest.advanceTimersByTime(CONNECTION_GRACE_MS + 1);
 		const val = getStoreValue();
 		expect(val.state).toBe("reconnecting");
-		expect(val.attempt).toBe(0); // attempt at time of scheduleReconnect before increment
+		expect(val.attempt).toBe(1);
 
+		jest.useRealTimers();
 		client.close();
 	});
 
@@ -217,9 +233,11 @@ describe("createWSClient state machine", () => {
 
 		const countBefore = MockEventSource.instances.length;
 		client.manualRetry();
-		// Should create a new EventSource
+		// Should create a new EventSource (the reconnect attempt). The visible
+		// state stays gated as "connected" during the grace window — manualRetry
+		// reconnects optimistically without flashing a banner.
 		expect(MockEventSource.instances.length).toBe(countBefore + 1);
-		expect(getStoreValue().state).toBe("reconnecting");
+		expect(latestES().url).toBe("/api/runtime-events");
 
 		// Simulate successful reconnect
 		latestES().simulateOpen();
@@ -275,12 +293,15 @@ describe("createWSClient + connectionState integration", () => {
 	});
 
 	test("connect -> disconnect -> reconnecting -> manualRetry -> connected", () => {
+		jest.useFakeTimers();
 		const client = createWSClient();
 		latestES().simulateOpen();
 		expect(getStoreValue().state).toBe("connected");
 
-		// Disconnect triggers reconnecting state synchronously via scheduleReconnect
+		// Disconnect schedules a reconnect. The visible state is gated behind
+		// the grace window, surfacing "reconnecting" only after it elapses.
 		latestES().simulateError();
+		jest.advanceTimersByTime(CONNECTION_GRACE_MS + 1);
 		expect(getStoreValue().state).toBe("reconnecting");
 
 		// Manual retry resets and reconnects
@@ -288,6 +309,7 @@ describe("createWSClient + connectionState integration", () => {
 		latestES().simulateOpen();
 		expect(getStoreValue().state).toBe("connected");
 
+		jest.useRealTimers();
 		client.close();
 	});
 
@@ -352,6 +374,7 @@ describe("tab visibility reconnect", () => {
 	});
 
 	test("tab becomes visible and not connected triggers reconnect", () => {
+		jest.useFakeTimers();
 		setupGlobalsWithDocument(true);
 		const client = createWSClient();
 		// createWSClient should have registered visibilitychange listener
@@ -361,9 +384,11 @@ describe("tab visibility reconnect", () => {
 		);
 		expect(visibilityHandler).not.toBeNull();
 
-		// Simulate: connection was opened then lost
+		// Simulate: connection was opened then lost. The visible state is gated
+		// behind the grace window, surfacing "reconnecting" only after it elapses.
 		latestES().simulateOpen();
 		latestES().simulateError();
+		jest.advanceTimersByTime(CONNECTION_GRACE_MS + 1);
 		expect(getStoreValue().state).toBe("reconnecting");
 
 		const countBefore = MockEventSource.instances.length;
@@ -374,6 +399,7 @@ describe("tab visibility reconnect", () => {
 
 		// Should have created a new EventSource instance (called connect())
 		expect(MockEventSource.instances.length).toBeGreaterThan(countBefore);
+		jest.useRealTimers();
 		client.close();
 	});
 

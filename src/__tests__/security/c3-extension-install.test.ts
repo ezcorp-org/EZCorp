@@ -144,6 +144,14 @@ const installerMock = () => ({
       grantedPermissions: permissions,
     };
   },
+  // installFromGit (source:"git") + shouldAutoEnableOnInstall are imported at
+  // the top of the handler alongside the two installers we drive. The git path
+  // is out of scope for these probes; shouldAutoEnableOnInstall must return
+  // false for our fake names so the post-install auto-enable branch is skipped.
+  installFromGit: async () => {
+    throw new Error("installFromGit not exercised in sec-C3");
+  },
+  shouldAutoEnableOnInstall: () => false,
 });
 mock.module("$server/extensions/installer", installerMock);
 mock.module("../../extensions/installer", installerMock);
@@ -160,12 +168,40 @@ const registryMock = () => ({
 mock.module("$server/extensions/registry", registryMock);
 mock.module("../../extensions/registry", registryMock);
 
-// listExtensions is GET-only but it's still imported at top level.
+// listExtensions / getExtensionByName are GET-only but still imported at top
+// level. getExtension is called on the POST happy path to decide auto-enable —
+// return a row whose name is NOT in the auto-enable allowlist (combined with the
+// shouldAutoEnableOnInstall:false stub above) so the activate branch is skipped.
 const extQueriesMock = () => ({
   listExtensions: async () => [],
+  getExtensionByName: async () => null,
+  getExtension: async (id: string) => ({
+    id,
+    name: "fake-local-ext",
+    manifest: { permissions: {} },
+  }),
 });
 mock.module("$server/db/queries/extensions", extQueriesMock);
 mock.module("../../db/queries/extensions", extQueriesMock);
+
+// activate-extension is only reached on the auto-enable branch (which our stubs
+// skip), but it is imported at the top of the handler — stub it so the module
+// graph loads without pulling in the real activation pipeline.
+const activateMock = () => ({
+  activateExtension: async () => ({ ok: false, status: "skipped", message: "n/a" }),
+});
+mock.module("$lib/server/extensions/activate-extension", activateMock);
+mock.module("../../../web/src/lib/server/extensions/activate-extension", activateMock);
+
+// insertAuditEntry writes one "who installed this" row after a successful
+// install. Stub it to a no-op so we don't touch the real audit-log DB; the
+// handler already treats audit failures as non-fatal, but mocking keeps the
+// probe hermetic and avoids a real DB round-trip.
+const auditLogMock = () => ({
+  insertAuditEntry: async () => {},
+});
+mock.module("$server/db/queries/audit-log", auditLogMock);
+mock.module("../../db/queries/audit-log", auditLogMock);
 
 // ── Handler import (AFTER mocks) ─────────────────────────────────
 import { POST } from "../../../web/src/routes/api/extensions/+server";

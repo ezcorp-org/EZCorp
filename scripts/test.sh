@@ -52,8 +52,15 @@ IDX=0
 
 for f in "${FILES[@]}"; do
   OUTFILE="$TMPDIR/result_$IDX"
+  CODEFILE="$TMPDIR/code_$IDX"
   (
-    OUTPUT=$(bun test "./$f" 2>&1) || true
+    OUTPUT=$(bun test "./$f" 2>&1)
+    # Record bun's per-shard exit code — the authoritative pass/fail signal.
+    # Scraping the summary alone is unreliable: a file that errors at module
+    # load prints "N fail" with no "(fail)" lines, and a file killed (SIGKILL/
+    # OOM) under parallel load may print no summary at all. The exit code is
+    # the only signal that survives both, so we never silently pass a crash.
+    echo "$?" > "$CODEFILE"
     echo "$OUTPUT" > "$OUTFILE"
   ) &
   IDX=$((IDX + 1))
@@ -73,17 +80,33 @@ for ((i=0; i<${#FILES[@]}; i++)); do
   OUTFILE="$TMPDIR/result_$i"
   [ -f "$OUTFILE" ] || continue
   OUTPUT=$(cat "$OUTFILE")
+  CODE=$(cat "$TMPDIR/code_$i" 2>/dev/null || echo 1)
 
   PASS=$(echo "$OUTPUT" | awk '/pass/{for(j=1;j<=NF;j++) if($j ~ /^[0-9]+$/ && $(j+1)=="pass") print $j}' | tail -1)
   FAIL=$(echo "$OUTPUT" | awk '/fail/{for(j=1;j<=NF;j++) if($j ~ /^[0-9]+$/ && $(j+1)=="fail") print $j}' | tail -1)
 
   TOTAL_PASS=$((TOTAL_PASS + ${PASS:-0}))
+  # Count at least one failure when bun exited non-zero but printed no parseable
+  # "N fail" (module-load error, crash, or SIGKILL with no summary).
+  if [ "$CODE" != "0" ] && [ "${FAIL:-0}" = "0" ]; then
+    FAIL=1
+  fi
   TOTAL_FAIL=$((TOTAL_FAIL + ${FAIL:-0}))
 
-  if [ "${FAIL:-0}" != "0" ]; then
+  # A file is failing if bun exited non-zero OR the summary reported failures.
+  if [ "$CODE" != "0" ] || [ "${FAIL:-0}" != "0" ]; then
     FAILED_FILES+=("${FILES[$i]}")
     echo "--- FAIL: ${FILES[$i]} ---"
-    echo "$OUTPUT" | awk '/\(fail\)/'
+    DETAIL=$(echo "$OUTPUT" | awk '/\(fail\)/')
+    if [ -n "$DETAIL" ]; then
+      echo "$DETAIL"
+    else
+      # No per-test "(fail)" line — the file errored at load or was killed.
+      # Surface the tail of its output so CI failures are diagnosable instead
+      # of printing an empty header (the historical false-positive symptom).
+      echo "  (no per-test failures parsed; exit code $CODE — showing output tail)"
+      echo "$OUTPUT" | tail -20 | sed 's/^/  /'
+    fi
     echo ""
   fi
 done

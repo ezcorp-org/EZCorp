@@ -237,13 +237,25 @@ export async function buildSandboxedMcpSpec(
   const baseEnv = buildAllowedEnv(manifest, grantedPermissions, extensionId);
   const env: Record<string, string> = { ...baseEnv, ...(spec.env ?? {}) };
 
+  // `--rss` caps resident (physical) memory — that's the real bound on
+  // how much RAM the child can occupy. `--as` (virtual address space)
+  // must NOT be pinned to the same value: JIT runtimes (Bun's JSC +
+  // mimalloc, Node, JVM) RESERVE tens of GB of *virtual* address space
+  // at startup while keeping RSS tiny. Setting `--as=${memBytes}` (512MB
+  // default) is below Bun's minimum reservation and segfaults it before
+  // the first JSON-RPC byte. We keep a FINITE `--as` ceiling (the AF-1
+  // invariant — child must not inherit the parent's "unlimited") but
+  // size it with generous headroom so the runtime's virtual reservations
+  // fit. Floor at 4 GiB; scale to 8× rss for larger memory grants.
+  const asBytes = Math.max(memBytes * 8, 4 * 1024 * 1024 * 1024);
+
   // The pre-Phase-7 spec shape: command="prlimit", args=[--rss, --as,
   // <orig-cmd>, ...orig-args]. Build it once; the netns wrap (if any)
   // takes the entire array as its inner exec target.
   const prlimitCommand = "prlimit";
   const prlimitArgs: string[] = [
     `--rss=${memBytes}`,
-    `--as=${memBytes}`,
+    `--as=${asBytes}`,
     spec.command,
     ...(spec.args ?? []),
   ];

@@ -253,10 +253,24 @@ describe("sec-H3: all call sites have the fail-closed ownership check (source)",
 
     test(`${rel} — contains the fail-closed admin escape hatch`, () => {
       // The fixed code gates unowned rows behind `user.role !== "admin"`.
-      // Pre-fix no file contained this token. The exact shape varies a bit
-      // (inline vs helper), so we just require the role-gate sub-expression
-      // to appear at least once.
-      expect(src).toMatch(/user\.role\s*!==\s*"admin"/);
+      // Pre-fix no file contained this token. The exact shape varies a bit:
+      //   - inline: four files keep the literal
+      //     `<row>.userId !== user.id && user.role !== "admin"` check.
+      //   - delegated: messages/+server.ts and agent-chat/+server.ts now
+      //     route ownership through the shared helper
+      //     `resolveRootConversationForOwnership(...)`, which itself applies
+      //     the IDENTICAL fail-closed gate
+      //     (`root.userId !== user.id && user.role !== "admin"` →
+      //     null ⇒ 404) on the parent-walked ROOT owner. That is strictly
+      //     stronger than the old inline check (a sub-conv with userId=null
+      //     is now authorized against its owning root rather than being
+      //     freely readable), so accepting the helper call preserves — not
+      //     relaxes — the regression signal. The helper's own gate is pinned
+      //     directly by web/src/lib/server/conversation-ownership.ts.
+      // Require EITHER the inline role-gate OR the helper delegation.
+      expect(src).toMatch(
+        /user\.role\s*!==\s*"admin"|resolveRootConversationForOwnership/,
+      );
     });
 
     test(`${rel} — does NOT short-circuit on null conv/memory userId`, () => {
@@ -271,6 +285,24 @@ describe("sec-H3: all call sites have the fail-closed ownership check (source)",
       expect(src).not.toMatch(/parentConv\.userId\s*&&\s*parentConv\.userId\s*!==\s*user\.id/);
     });
   }
+});
+
+// The two delegated call sites (messages/+server.ts, agent-chat/+server.ts)
+// push the entire fail-closed decision into the shared ownership helper, so
+// the regression signal for those routes lives HERE. Pin the helper directly:
+// it must still gate the parent-walked root behind the admin escape hatch and
+// must NOT reintroduce the exploitable `root.userId &&` truthiness short-circuit.
+describe("sec-H3: shared ownership helper is itself fail-closed (source)", () => {
+  const HELPER_REL = "web/src/lib/server/conversation-ownership.ts";
+  const helperSrc = readFileSync(resolve(REPO_ROOT, HELPER_REL), "utf8");
+
+  test(`${HELPER_REL} — gates the parent-walked root behind admin`, () => {
+    expect(helperSrc).toMatch(/root\.userId\s*!==\s*user\.id\s*&&\s*user\.role\s*!==\s*"admin"/);
+  });
+
+  test(`${HELPER_REL} — does NOT short-circuit on null root userId`, () => {
+    expect(helperSrc).not.toMatch(/root\.userId\s*&&\s*root\.userId\s*!==\s*user\.id/);
+  });
 });
 
 // ── (B) Behavioral probes on the canonical handlers ───────────────

@@ -16,18 +16,24 @@
  *
  * RULINGS applied (pm-v3, 2026-04-14):
  *
- *   Test 1 (Empty lcov): FIX not lock. Guard added to
- *     scripts/check-coverage.ts: when enforced === 0 after iterating
- *     perFile, script now exits 1 with "no files matched any
- *     threshold rule — empty lcov or misconfigured thresholds". Test
- *     asserts the new behaviour directly. Rationale: silent gate-pass
- *     on a misconfigured CI was a real defect.
+ *   Test 1 (Empty lcov): FIX not lock. Two guards in
+ *     scripts/check-coverage.ts now make a misconfigured/empty gate
+ *     audible. (a) Any EXACT-file threshold key (no `*`) with no
+ *     matching lcov SF is reported as "listed in thresholds but no
+ *     lcov data" and fails the gate. (b) Failing that, if `enforced`
+ *     stays 0 the script exits 1 with "no files matched any threshold
+ *     rule". Because REAL_THRESHOLDS contains exact-file keys, an
+ *     empty / all-unmatched lcov trips guard (a) first. Test asserts
+ *     the exact-key fail-loud behaviour directly. Rationale: silent
+ *     gate-pass on a misconfigured CI was a real defect.
  *
- *   Test 2 (Missing-file): LOCK current. Silent skip for a threshold
- *     rule with no matching SF is defensible (deleted-file, glob-
- *     narrowing, not-yet-loaded test). Warning is a follow-on
- *     enhancement, not a defect. Test asserts no crash / NaN / type
- *     error; comment documents the gap.
+ *   Test 2 (Missing-file): FIX not lock. A threshold rule with no
+ *     matching SF is now surfaced — but only for EXACT-file keys
+ *     (no `*`). Wildcard keys remain a silent fallback (the
+ *     wildcard-is-fallback pattern), so a deleted/narrowed file under
+ *     a wildcard glob is still a no-op. Test asserts: an exact-file
+ *     threshold target absent from lcov fails the gate with the
+ *     "no lcov data" diagnostic, with no crash / NaN / type error.
  *
  *   Test 7 (merge-lcov DA semantics): LOCK current, re-aim assertion.
  *     merge-lcov.ts SUMS per-(SF,line). SUM vs MAX is gate-verdict-
@@ -41,11 +47,15 @@
  *
  * BASELINE-REGRESSION ANCHOR (test 8)
  *   Locks the 28-under-threshold set produced by check-coverage
- *   against the Gate #2 lcov (HEAD 05c2617, /tmp/gate2-cov.log). The
- *   synthetic anchor fixture gives every one of these files the same
- *   artificially-low coverage (10%) so each violates its respective
- *   threshold; this keeps the fixture compact (1 SF-record/file)
- *   while preserving the full path list as the invariant.
+ *   against the Gate #2 lcov (HEAD 05c2617, /tmp/gate2-cov.log), plus
+ *   src/extensions/lifecycle-dispatcher.ts — the one exact-file
+ *   threshold key in REAL_THRESHOLDS not in that 28-set, given an
+ *   lcov record so it's a coverage violation rather than the
+ *   "no lcov data" fail-loud exercised by #1/#2. The synthetic anchor
+ *   fixture gives every one of these files the same artificially-low
+ *   coverage (10%) so each violates its respective threshold; this
+ *   keeps the fixture compact (1 SF-record/file) while preserving the
+ *   full path list as the invariant.
  *
  *     packages/@ezcorp/sdk/src/runtime/channel.ts
  *     packages/@ezcorp/sdk/src/runtime/fs.ts
@@ -220,29 +230,36 @@ function lcovRecord(
 // ---------------------------------------------------------------------------
 // 1. Empty lcov — zero SF records.
 //
-// Guard added to scripts/check-coverage.ts (ruling pm-v3 2026-04-14):
-// when no files matched any threshold rule after iterating perFile,
-// script exits 1 with an explicit "no files matched" diagnostic. This
+// Two guards make a misconfigured/empty gate audible
+// (scripts/check-coverage.ts):
+//   (a) any EXACT-file threshold key with no matching lcov SF fails
+//       loud with "listed in thresholds but no lcov data";
+//   (b) failing that, `enforced === 0` exits 1 with "no files matched
+//       any threshold rule".
+// REAL_THRESHOLDS carries exact-file keys (json-rpc.ts, loader.ts, …),
+// so an empty / all-unmatched lcov trips guard (a) first. This
 // prevents silent gate-pass on a misconfigured CI or accidentally
 // empty lcov.
 // ---------------------------------------------------------------------------
 describe("coverage-gate semantics: #1 empty lcov", () => {
-  test("empty lcov fails with explicit 'no files matched' signal", async () => {
+  test("empty lcov fails loud on exact-file threshold keys with no lcov data", async () => {
     const sb = makeSandbox();
     try {
       await writeFixtures(sb.root, "", REAL_THRESHOLDS);
       const r = await runCheck(sb.root);
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain("no files matched any threshold rule");
+      expect(r.stderr).toContain("listed in thresholds but no lcov data");
+      // An exact-file key from REAL_THRESHOLDS must be named.
+      expect(r.stderr).toContain("src/extensions/json-rpc.ts");
       expect(r.stdout).not.toContain("PASSED");
     } finally {
       sb.cleanup();
     }
   });
 
-  test("lcov with only excluded/unmatched SF records also trips the guard", async () => {
-    // SF records exist but none match a threshold glob AND none are
-    // excluded-but-thresholded: enforced stays 0 → guard fires.
+  test("lcov with only unmatched SF records still trips the exact-key guard", async () => {
+    // SF records exist but none match a threshold glob; the exact-file
+    // threshold keys remain unmatched → guard (a) fires.
     const sb = makeSandbox();
     try {
       // src/unrelated/path/foo.ts is not covered by any threshold key.
@@ -250,7 +267,26 @@ describe("coverage-gate semantics: #1 empty lcov", () => {
       await writeFixtures(sb.root, lcov, REAL_THRESHOLDS);
       const r = await runCheck(sb.root);
       expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("listed in thresholds but no lcov data");
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("all-wildcard thresholds with empty lcov hit the 'no files matched' guard", async () => {
+    // No exact-file keys → guard (a) is vacuous; enforced stays 0 →
+    // guard (b) fires with the "no files matched" diagnostic.
+    const sb = makeSandbox();
+    try {
+      const wildcardOnly: Record<string, number> = {
+        "packages/@ezcorp/sdk/src/**": 100,
+        "web/src/lib/**": 90,
+      };
+      await writeFixtures(sb.root, "", wildcardOnly);
+      const r = await runCheck(sb.root);
+      expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("no files matched any threshold rule");
+      expect(r.stdout).not.toContain("PASSED");
     } finally {
       sb.cleanup();
     }
@@ -260,21 +296,28 @@ describe("coverage-gate semantics: #1 empty lcov", () => {
 // ---------------------------------------------------------------------------
 // 2. Missing-file — threshold references a file absent from lcov.
 //
-// Case 2: threshold-rule-matches-no-lcov is silently skipped in
-// current check-coverage.ts. Brief's "with warning" is a follow-on
-// enhancement, not a defect (ruling pm-v3 2026-04-14: defensible —
-// happens naturally for deleted, narrowed-out, or not-yet-loaded
-// files). Test locks current behaviour.
+// Current check-coverage.ts splits by key shape:
+//   - EXACT-file key (no `*`) with no matching lcov SF → fail loud
+//     ("listed in thresholds but no lcov data"). This catches typos,
+//     moved files, or paths the runner never exercises.
+//   - WILDCARD key with no matching SF → silent fallback (the
+//     wildcard-is-fallback pattern; a deleted/narrowed file under a
+//     wildcard glob is a legitimate no-op).
+// Both cases must avoid crash / NaN / type error.
 // ---------------------------------------------------------------------------
 describe("coverage-gate semantics: #2 missing-file in lcov", () => {
-  test("missing threshold target is silently skipped (no crash, no NaN)", async () => {
+  test("wildcard threshold with no matching SF is a silent no-op (no crash, no NaN)", async () => {
+    // Only wildcard thresholds, and the one present file passes them.
+    // A wildcard glob matching nothing is a legitimate fallback, not a
+    // failure.
     const sb = makeSandbox();
     try {
       const passingFile = "packages/@ezcorp/sdk/src/runtime/present.ts";
       const lcov = lcovRecord(sb.root, passingFile, 10, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-      const thresholds = {
-        ...REAL_THRESHOLDS,
-        "packages/@ezcorp/sdk/src/deleted.ts": 100,
+      const thresholds: Record<string, number> = {
+        "packages/@ezcorp/sdk/src/runtime/**": 100,
+        // Wildcard key that matches no present SF — must stay silent.
+        "web/src/lib/**": 90,
       };
       await writeFixtures(sb.root, lcov, thresholds);
       const r = await runCheck(sb.root);
@@ -284,6 +327,30 @@ describe("coverage-gate semantics: #2 missing-file in lcov", () => {
       expect(r.stderr).not.toContain("TypeError");
       expect(r.stderr).not.toContain("ReferenceError");
       expect(r.stdout).toContain("PASSED");
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("exact-file threshold absent from lcov fails loud (no crash, no NaN)", async () => {
+    const sb = makeSandbox();
+    try {
+      const passingFile = "packages/@ezcorp/sdk/src/runtime/present.ts";
+      const lcov = lcovRecord(sb.root, passingFile, 10, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      const thresholds: Record<string, number> = {
+        "packages/@ezcorp/sdk/src/runtime/**": 100,
+        // Exact-file key whose target is absent → fail loud.
+        "packages/@ezcorp/sdk/src/deleted.ts": 100,
+      };
+      await writeFixtures(sb.root, lcov, thresholds);
+      const r = await runCheck(sb.root);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("packages/@ezcorp/sdk/src/deleted.ts");
+      expect(r.stderr).toContain("listed in thresholds but no lcov data");
+      expect(r.stdout).not.toContain("NaN");
+      expect(r.stderr).not.toContain("NaN");
+      expect(r.stderr).not.toContain("TypeError");
+      expect(r.stderr).not.toContain("ReferenceError");
     } finally {
       sb.cleanup();
     }
@@ -568,23 +635,34 @@ describe("coverage-gate semantics: #7 merge-lcov shard union", () => {
 // the top of this file so human reviewers see the anchor intent
 // without chasing a fixture file.
 // ---------------------------------------------------------------------------
+// The lone exact-file threshold key from REAL_THRESHOLDS that is NOT
+// in BASELINE_28_FILES. Giving it a 10%-coverage fixture record turns
+// its would-be "no lcov data" fail-loud (see #1/#2) into a uniform
+// coverage violation, so the anchor measures one coherent set: every
+// enforced exact/wildcard target at 10% coverage.
+const LIFECYCLE_DISPATCHER = "src/extensions/lifecycle-dispatcher.ts";
+const ANCHOR_FILES: readonly string[] = [...BASELINE_28_FILES, LIFECYCLE_DISPATCHER];
+
 describe("coverage-gate semantics: #8 baseline-regression anchor", () => {
-  test("28 Gate #2 under-threshold files produce exactly 28 violations", async () => {
+  test("Gate #2 under-threshold files each produce a coverage violation", async () => {
     const sb = makeSandbox();
     try {
       // Every anchor file gets 10 lines, 1 covered → 10% coverage.
       // 10% is below every real threshold (min threshold is 90%), so
       // each matching enforced file will violate.
-      const parts = BASELINE_28_FILES.map((f) => lcovRecord(sb.root, f, 10, [1]));
+      const parts = ANCHOR_FILES.map((f) => lcovRecord(sb.root, f, 10, [1]));
       const lcov = parts.join("");
       await writeFixtures(sb.root, lcov, REAL_THRESHOLDS);
       const r = await runCheck(sb.root);
 
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain(
-        `Coverage gate FAILED (${BASELINE_28_FILES.length} file(s) below threshold)`,
+        `Coverage gate FAILED (${ANCHOR_FILES.length} file(s) below threshold)`,
       );
-      for (const f of BASELINE_28_FILES) {
+      // No file should fail for the "missing lcov data" reason — every
+      // enforced threshold target is present and under-covered.
+      expect(r.stderr).not.toContain("listed in thresholds but no lcov data");
+      for (const f of ANCHOR_FILES) {
         expect(r.stderr).toContain(f);
       }
     } finally {

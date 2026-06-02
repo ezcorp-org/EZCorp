@@ -131,7 +131,9 @@ function validateParams(params: Record<string, unknown>, forcedConvId: string): 
     } else if (params.toolCalls.length > MAX_TOOL_CALLS) {
       errors.push(`toolCalls: at most ${MAX_TOOL_CALLS} entries`);
     } else {
-      params.toolCalls.forEach((tc, i) => validateToolCallSpec(tc, i, errors));
+      params.toolCalls.forEach((tc, i) => {
+        validateToolCallSpec(tc, i, errors);
+      });
     }
   }
 

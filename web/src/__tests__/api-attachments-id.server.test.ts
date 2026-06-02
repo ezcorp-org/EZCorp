@@ -144,15 +144,17 @@ describe("GET /api/attachments/[id]", () => {
 			userId: "owner-2",
 		} as any);
 
-		const originalBun = (globalThis as any).Bun;
-		(globalThis as any).Bun = {
-			file: () => ({ exists: async () => false }),
-		};
+		// `globalThis.Bun` is a readonly global under Bun >=1.3.x, so we can't
+		// swap the whole namespace; `Bun.file` itself is writable, so stub it.
+		const originalFile = Bun.file;
+		(Bun as { file: typeof Bun.file }).file = (() => ({
+			exists: async () => false,
+		})) as unknown as typeof Bun.file;
 		try {
 			const res = await GET(makeEvent({ locals: { user: adminUser } }));
 			expect(res.status).toBe(404);
 		} finally {
-			(globalThis as any).Bun = originalBun;
+			(Bun as { file: typeof Bun.file }).file = originalFile;
 		}
 
 		// Side-effect: privileged read logged for owner audit.
@@ -179,14 +181,16 @@ describe("GET /api/attachments/[id]", () => {
 			userId: adminUser.id,
 		} as any);
 
-		const originalBun = (globalThis as any).Bun;
-		(globalThis as any).Bun = {
-			file: () => ({ exists: async () => false }),
-		};
+		// `globalThis.Bun` is a readonly global under Bun >=1.3.x, so we can't
+		// swap the whole namespace; `Bun.file` itself is writable, so stub it.
+		const originalFile = Bun.file;
+		(Bun as { file: typeof Bun.file }).file = (() => ({
+			exists: async () => false,
+		})) as unknown as typeof Bun.file;
 		try {
 			await GET(makeEvent({ locals: { user: adminUser } }));
 		} finally {
-			(globalThis as any).Bun = originalBun;
+			(Bun as { file: typeof Bun.file }).file = originalFile;
 		}
 		expect(vi.mocked(insertAuditEntry)).not.toHaveBeenCalled();
 	});

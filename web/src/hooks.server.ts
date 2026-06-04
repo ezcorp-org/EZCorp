@@ -20,6 +20,7 @@ import {
   clearSessionCookie,
   getSessionCookieName,
 } from "$lib/server/auth/session-cookie";
+import { matchPreviewOrigin, servePreviewRequest } from "$lib/server/preview/dispatch";
 
 const log = logger.child("hooks.server");
 
@@ -269,6 +270,17 @@ export const CSP_HEADER_VALUE = [
 export const handle: Handle = async ({ event, resolve }) => {
   const { request } = event;
   const url = new URL(request.url);
+
+  // ── Secure preview origin dispatch (D4 wildcard subdomain) ─────────
+  // MUST run before payload/rate/auth: a `<id>.preview.<host>` request is
+  // a SEPARATE origin and must never enter the app's auth flow (the app's
+  // host-only ezcorp_session is not sent here by design). The preview
+  // proxy enforces its own access via the __ezpreview token + registry.
+  // Disabled (no-op) unless EZCORP_PREVIEW_APP_HOST is configured.
+  const previewMatch = matchPreviewOrigin(request);
+  if (previewMatch) {
+    return servePreviewRequest(request, previewMatch);
+  }
 
   // OPTIONS preflight
   if (request.method === "OPTIONS") {

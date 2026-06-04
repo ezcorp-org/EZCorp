@@ -31,7 +31,9 @@ export function createProposeCreateProjectTool(ctx: EzToolContext): BuiltinToolD
     description:
       "Draft a new project for the user from name/path/description. Returns a URL the panel renders as a one-button 'Open prefilled form' card. The user reviews the form and submits to actually create the project — this tool never mutates state on its own.",
     category: "ez",
-    cardType: "default",
+    // Routes the `{ draftId, openUrl }` result to EzToolResultCard so the
+    // user gets the "Open prefilled form" button the EZ prompt promises.
+    cardType: "ez-propose",
     parameters: Type.Unsafe({
       type: "object",
       properties: {

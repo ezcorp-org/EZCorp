@@ -301,6 +301,80 @@ describe("ToolCardRouter — ez-install (install_draft deep-link) routing", () =
 	});
 });
 
+describe("ToolCardRouter — ez-propose (concierge propose_* deep-link) routing", () => {
+	test("propose_create_project result renders EzToolResultCard's 'Open prefilled form' anchor, NOT DefaultCard", () => {
+		// The exact wire shape from the real incident: the tool returns
+		// `{ draftId, openUrl }` as a JSON string, tagged cardType
+		// "ez-propose". Before the fix this fell through to DefaultCard and
+		// the form was never surfaced ("no prefilled form was created").
+		const toolCall: ToolCallState = {
+			id: "tc-propose-1",
+			toolName: "propose_create_project",
+			status: "complete",
+			input: { name: "ezTest", path: "./ezTest" },
+			startedAt: 0,
+			duration: 300,
+			cardType: "ez-propose",
+			output: JSON.stringify({
+				draftId: "381af91d",
+				openUrl: "/new-project?prefill=381af91d",
+			}),
+		};
+
+		const { getByTestId, queryByTestId } = render(ToolCardRouter, {
+			toolCall,
+			conversationId: "conv-1",
+			messageId: "msg-1",
+		});
+
+		expect(getByTestId("ez-tool-result-card")).toBeInTheDocument();
+		expect(queryByTestId("tool-card-default")).toBeNull();
+		const anchor = getByTestId("ez-card-open");
+		expect(anchor.tagName).toBe("A");
+		expect(anchor).toHaveAttribute("href", "/new-project?prefill=381af91d");
+		// toolName-derived default label for the project propose tool.
+		expect(anchor).toHaveTextContent("Open prefilled form");
+	});
+
+	test("propose result WITHOUT openUrl falls back to DefaultCard", () => {
+		const toolCall: ToolCallState = {
+			id: "tc-propose-2",
+			toolName: "propose_create_project",
+			status: "complete",
+			input: { name: "ezTest", path: "./ezTest" },
+			startedAt: 0,
+			duration: 120,
+			cardType: "ez-propose",
+			output: JSON.stringify({ draftId: "no-url" }),
+		};
+		const { getByTestId, queryByTestId } = render(ToolCardRouter, {
+			toolCall,
+			conversationId: "conv-1",
+			messageId: "msg-1",
+		});
+		expect(getByTestId("tool-card-default")).toBeInTheDocument();
+		expect(queryByTestId("ez-tool-result-card")).toBeNull();
+	});
+
+	test("propose running call (no output yet) falls back to DefaultCard", () => {
+		const toolCall: ToolCallState = {
+			id: "tc-propose-3",
+			toolName: "propose_create_agent",
+			status: "running",
+			input: { name: "Summarizer", prompt: "..." },
+			startedAt: 0,
+			cardType: "ez-propose",
+		};
+		const { getByTestId, queryByTestId } = render(ToolCardRouter, {
+			toolCall,
+			conversationId: "conv-1",
+			messageId: "msg-1",
+		});
+		expect(getByTestId("tool-card-default")).toBeInTheDocument();
+		expect(queryByTestId("ez-tool-result-card")).toBeNull();
+	});
+});
+
 describe("ToolCardRouter — image-gen-grid permission gate", () => {
 	test("permissionPending overrides cardType and renders PermissionGate (not ImageGenCard)", () => {
 		// Mirrors the bun-test sibling's "image-gen-grid still respects

@@ -79,4 +79,12 @@ describe("getCardComponentName", () => {
 	test("ez-install still respects permissionPending gate", () => {
 		expect(getCardComponentName("ez-install", true)).toBe("PermissionGate");
 	});
+
+	test("maps 'ez-propose' cardType to EzToolResultCard (built-in propose_* tools)", () => {
+		expect(getCardComponentName("ez-propose", false)).toBe("EzToolResultCard");
+	});
+
+	test("ez-propose still respects permissionPending gate", () => {
+		expect(getCardComponentName("ez-propose", true)).toBe("PermissionGate");
+	});
 });

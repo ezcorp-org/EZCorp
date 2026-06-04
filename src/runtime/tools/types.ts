@@ -12,7 +12,13 @@ export type ToolCategory = "read" | "write" | "execute" | "ez";
 
 export type PermissionMode = "ask" | "auto-edit" | "yolo";
 
-export type CardType = "terminal" | "diff" | "search-results" | "table" | "default";
+// `ez-propose` routes the propose_* concierge tools' results to the
+// frontend EzToolResultCard — a one-button "Open prefilled form" card
+// built from the tool's `{ draftId, openUrl }` output. Without it the
+// result falls through to DefaultCard and the form is never surfaced
+// (the EZ system prompt promises "a card with a button that opens the
+// prefilled form").
+export type CardType = "terminal" | "diff" | "search-results" | "table" | "default" | "ez-propose";
 
 export interface BuiltinToolDef {
   name: string;

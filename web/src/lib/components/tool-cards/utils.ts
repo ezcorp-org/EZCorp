@@ -44,6 +44,11 @@ export function getCardComponentName(cardType: string | undefined, permissionPen
 		// the host-revalidated `/extensions/<name>` deep-link renders as a
 		// one-click "Open extension" link instead of raw JSON.
 		case 'ez-install': return 'EzToolResultCard';
+		// `ez-propose` is declared by the built-in concierge `propose_*`
+		// tools. Their `{ draftId, openUrl }` result routes to the same
+		// EzToolResultCard so the "Open prefilled form" button surfaces
+		// (the EZ system prompt promises exactly that card).
+		case 'ez-propose': return 'EzToolResultCard';
 		default: return 'DefaultCard';
 	}
 }

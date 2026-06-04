@@ -22,6 +22,7 @@
 	import CollapsibleCard from "./CollapsibleCard.svelte";
 	import EzToolResultCard from "$lib/components/ez/EzToolResultCard.svelte";
 	import { parseInstallCardResult } from "./ez-install-card-logic.js";
+	import { parseProposeCardResult } from "./ez-propose-card-logic.js";
 
 	let { toolCall, conversationId, messageId, onsendmessage, mode = 'inline' }: { toolCall: ToolCallState; conversationId?: string; messageId?: string; onsendmessage?: (message: string) => void; mode?: 'inline' | 'dock' } = $props();
 
@@ -40,12 +41,18 @@
 		(cardName === 'DefaultCard' && toolCall.status === 'complete' && isTimeClockOutput(toolCall.output)),
 	);
 
-	// `ez-install` only renders EzToolResultCard once the result actually
-	// carries a usable `openUrl` (running call / no deep-link → null);
-	// otherwise fall back to DefaultCard so a streaming or malformed
-	// result degrades to today's behavior instead of an empty card.
-	let installResult = $derived(
-		cardName === 'EzToolResultCard' ? parseInstallCardResult(toolCall.output) : null,
+	// EzToolResultCard renders only once the result actually carries a
+	// usable `openUrl` (running call / no deep-link → null); otherwise we
+	// fall back to DefaultCard so a streaming or malformed result degrades
+	// to today's behavior instead of an empty card. The parser is keyed on
+	// cardType: `ez-install` (extension-author install_draft) vs
+	// `ez-propose` (built-in concierge propose_* tools).
+	let ezCardResult = $derived(
+		cardName !== 'EzToolResultCard'
+			? null
+			: toolCall.cardType === 'ez-install'
+				? parseInstallCardResult(toolCall.output)
+				: parseProposeCardResult(toolCall.output),
 	);
 
 	// Noisy dev-command cards (Bash, grep/glob, Edit/Write diffs) collapse to a
@@ -94,8 +101,8 @@
 	<TimeClockCard {toolCall} />
 {:else if cardName === 'ImageGenCard'}
 	<ImageGenCard {toolCall} {conversationId} {messageId} {onsendmessage} />
-{:else if cardName === 'EzToolResultCard' && installResult}
-	<EzToolResultCard result={installResult} toolName={toolCall.toolName} />
+{:else if cardName === 'EzToolResultCard' && ezCardResult}
+	<EzToolResultCard result={ezCardResult} toolName={toolCall.toolName} />
 {:else}
 	<DefaultCard {toolCall} />
 {/if}

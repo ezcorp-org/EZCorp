@@ -37,47 +37,95 @@ mock.module("../extensions/mcp-netns", () => ({
   computeVethMcpIp: (slot: number) => `10.42.0.${slot * 4 + 2}/30`,
 }));
 
+// The setuid spawn-helper presence gate (uid mode). Default: NOT present,
+// so previewCapabilities() under the default mocks behaves like the old
+// netns-or-static fail-closed (the host has no /app helper). Precedence
+// tests flip this via computePreviewCapabilities's injected deps.
+let helperPresent = false;
+mock.module("../runtime/preview/preview-spawn", () => ({
+  isPreviewSpawnHelperPresent: () => helperPresent,
+}));
+
 const netns = await import("../runtime/preview/preview-netns");
 
 beforeEach(() => {
   netnsAvailable = { available: true, reason: undefined };
   vethAvailable = { available: true, reason: undefined };
+  helperPresent = false;
   slotPool = [];
   nextSlot = 1;
   netns._resetPreviewCapabilitiesForTests();
   netns._resetPreviewNetnsForTests();
 });
 
-describe("previewCapabilities (D2 fail-closed)", () => {
-  test("static is always available; dynamic available when both probes pass", () => {
+describe("previewCapabilities — capability MODE (netns > uid > static)", () => {
+  test("netns mode when both netns + veth probes pass (hardened)", () => {
     const caps = netns.previewCapabilities();
     expect(caps.static).toBe(true);
     expect(caps.dynamic).toBe(true);
+    expect(caps.mode).toBe("netns");
     expect(caps.reason).toBeNull();
   });
 
-  test("dynamic fails closed (static still works) when netns is unavailable", () => {
+  test("static (fail-closed) when netns unavailable + no setuid helper", () => {
     netnsAvailable = { available: false, reason: "not linux" };
     netns._resetPreviewCapabilitiesForTests();
     const caps = netns.previewCapabilities();
     expect(caps.static).toBe(true);
     expect(caps.dynamic).toBe(false);
-    expect(caps.reason).toBe("not linux");
-  });
-
-  test("dynamic fails closed when veth/CAP_NET_ADMIN is unavailable", () => {
-    vethAvailable = { available: false, reason: "missing binary: nft" };
-    netns._resetPreviewCapabilitiesForTests();
-    const caps = netns.previewCapabilities();
-    expect(caps.dynamic).toBe(false);
-    expect(caps.reason).toBe("missing binary: nft");
+    expect(caps.mode).toBe("static");
+    expect(caps.reason).toContain("not linux");
   });
 
   test("caches the result (probe not re-evaluated until reset)", () => {
-    expect(netns.previewCapabilities().dynamic).toBe(true);
+    expect(netns.previewCapabilities().mode).toBe("netns");
     netnsAvailable = { available: false, reason: "changed" };
-    // No reset -> still cached true.
-    expect(netns.previewCapabilities().dynamic).toBe(true);
+    expect(netns.previewCapabilities().mode).toBe("netns"); // cached
+  });
+
+  // Precedence branches via the injectable computePreviewCapabilities so
+  // each tier is deterministic regardless of the host.
+  test("precedence: netns wins when netns+veth available", () => {
+    const caps = netns.computePreviewCapabilities({
+      probeNetns: () => ({ available: true }),
+      probeVeth: () => ({ available: true }),
+      helperPresent: () => true,
+    });
+    expect(caps.mode).toBe("netns");
+    expect(caps.dynamic).toBe(true);
+  });
+
+  test("precedence: uid mode when netns missing but helper present", () => {
+    const caps = netns.computePreviewCapabilities({
+      probeNetns: () => ({ available: false, reason: "EPERM unshare" }),
+      probeVeth: () => ({ available: false }),
+      helperPresent: () => true,
+    });
+    expect(caps.mode).toBe("uid");
+    expect(caps.dynamic).toBe(true);
+    expect(caps.reason).toContain("portable uid mode");
+  });
+
+  test("precedence: uid mode when netns present but veth/CAP_NET_ADMIN missing", () => {
+    const caps = netns.computePreviewCapabilities({
+      probeNetns: () => ({ available: true }),
+      probeVeth: () => ({ available: false, reason: "no CAP_NET_ADMIN" }),
+      helperPresent: () => true,
+    });
+    expect(caps.mode).toBe("uid");
+    expect(caps.dynamic).toBe(true);
+  });
+
+  test("precedence: static fail-closed when neither netns nor helper", () => {
+    const caps = netns.computePreviewCapabilities({
+      probeNetns: () => ({ available: false, reason: "not linux" }),
+      probeVeth: () => ({ available: false }),
+      helperPresent: () => false,
+    });
+    expect(caps.mode).toBe("static");
+    expect(caps.dynamic).toBe(false);
+    expect(caps.static).toBe(true);
+    expect(caps.reason).toContain("setuid spawn helper not present");
   });
 });
 

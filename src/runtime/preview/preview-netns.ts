@@ -34,19 +34,41 @@ import {
   releaseVethSlot,
   computeVethMcpIp,
 } from "../../extensions/mcp-netns";
+import { isPreviewSpawnHelperPresent } from "./preview-spawn";
 
 /** The bridge gateway IP — the ONLY source allowed to reach a preview
  *  dev server's port (the proxy connects from here). Fixed by the
  *  br-ezcorp-mcp bridge on 10.42.0.0/24. */
 export const PREVIEW_BRIDGE_GATEWAY = "10.42.0.1";
 
+/**
+ * The isolation MODE the host can offer for dynamic previews, in
+ * precedence order (Phase 3 REDESIGN — extends D2 with a portable tier):
+ *
+ *   - `netns`  — the hardened tier. Per-conversation network namespace
+ *                (veth + nftables ingress/egress). Strongest cross-site +
+ *                egress isolation. Requires netns + CAP_NET_ADMIN, which
+ *                are UNAVAILABLE on standard Docker on this host.
+ *   - `uid`    — the portable tier. Per-conversation preview uid + the
+ *                setuid-root spawn helper + .ezcorp/data chmod 0700.
+ *                Strong fs-isolation + uid attribution; weaker cross-site
+ *                loopback + egress containment. Works with ZERO container
+ *                posture change — the default on this host.
+ *   - `static` — fail-closed. No dynamic previews; static still serves.
+ */
+export type PreviewMode = "netns" | "uid" | "static";
+
 export interface PreviewCapabilities {
   /** Static previews work on EVERY host (no netns needed) — always true. */
   static: boolean;
-  /** Dynamic previews require netns + CAP_NET_ADMIN. D2: fail-closed. */
+  /** Dynamic previews available in SOME mode (netns or uid). When false,
+   *  mode is `static` (fail-closed). */
   dynamic: boolean;
-  /** Human-readable reason dynamic is unavailable (null when available).
-   *  Surfaced to the user + logged (no silent degradation per policy). */
+  /** The selected isolation mode (precedence netns > uid > static). */
+  mode: PreviewMode;
+  /** Human-readable reason dynamic is unavailable / why this mode was
+   *  picked (null when the hardened netns mode is active). Surfaced to the
+   *  user + logged (no silent degradation per policy). */
   reason: string | null;
 }
 
@@ -66,16 +88,52 @@ export function previewCapabilities(): PreviewCapabilities {
   return capabilitiesCache;
 }
 
-function computePreviewCapabilities(): PreviewCapabilities {
-  const netns = probeNetnsAvailability();
-  if (!netns.available) {
-    return { static: true, dynamic: false, reason: netns.reason ?? "user+mount namespace unavailable" };
+/**
+ * Probes injected for tests. Production uses the live netns/veth probes
+ * and the setuid-helper presence check. Keeping them as parameters lets
+ * each precedence branch (netns→uid→static) be exercised deterministically.
+ */
+export function computePreviewCapabilities(
+  deps: {
+    probeNetns?: () => { available: boolean; reason?: string | null };
+    probeVeth?: () => { available: boolean; reason?: string | null };
+    helperPresent?: () => boolean;
+  } = {},
+): PreviewCapabilities {
+  const probeNetns = deps.probeNetns ?? probeNetnsAvailability;
+  const probeVeth = deps.probeVeth ?? probeVethCapability;
+  const helperPresent = deps.helperPresent ?? (() => isPreviewSpawnHelperPresent());
+
+  // ── Tier 1: hardened netns mode (strongest). ──
+  const netns = probeNetns();
+  if (netns.available) {
+    const veth = probeVeth();
+    if (veth.available) {
+      return { static: true, dynamic: true, mode: "netns", reason: null };
+    }
+    // netns present but veth/CAP_NET_ADMIN missing — fall through to uid.
   }
-  const veth = probeVethCapability();
-  if (!veth.available) {
-    return { static: true, dynamic: false, reason: veth.reason ?? "veth / CAP_NET_ADMIN unavailable" };
+  const netnsReason = !netns.available
+    ? netns.reason ?? "user+mount namespace unavailable"
+    : "veth / CAP_NET_ADMIN unavailable";
+
+  // ── Tier 2: portable uid mode. ──
+  if (helperPresent()) {
+    return {
+      static: true,
+      dynamic: true,
+      mode: "uid",
+      reason: `netns hardened mode unavailable (${netnsReason}); using portable uid mode`,
+    };
   }
-  return { static: true, dynamic: true, reason: null };
+
+  // ── Tier 3: static-only (fail-closed). ──
+  return {
+    static: true,
+    dynamic: false,
+    mode: "static",
+    reason: `dynamic previews disabled: ${netnsReason}; setuid spawn helper not present/functional`,
+  };
 }
 
 /** Test-only: drop the cached capabilities so a test can re-probe. */
@@ -120,7 +178,9 @@ export function allocatePreviewNetns(conversationId: string): PreviewNetnsAlloca
   const existing = allocations.get(conversationId);
   if (existing) return existing;
 
-  if (!previewCapabilities().dynamic) return null;
+  // netns allocation is ONLY for the hardened netns mode — uid mode uses
+  // the uid pool (preview-uid-pool.ts), static mode allocates nothing.
+  if (previewCapabilities().mode !== "netns") return null;
 
   const slot = allocVethSlot();
   if (slot === null) return null; // pool exhausted

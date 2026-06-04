@@ -23,6 +23,8 @@
 	import EzToolResultCard from "$lib/components/ez/EzToolResultCard.svelte";
 	import { parseInstallCardResult } from "./ez-install-card-logic.js";
 	import { parseProposeCardResult } from "./ez-propose-card-logic.js";
+	import PreviewConsentCard from "./PreviewConsentCard.svelte";
+	import { parseConsentCardResult } from "./preview-consent-card-logic.js";
 
 	let { toolCall, conversationId, messageId, onsendmessage, mode = 'inline' }: { toolCall: ToolCallState; conversationId?: string; messageId?: string; onsendmessage?: (message: string) => void; mode?: 'inline' | 'dock' } = $props();
 
@@ -53,6 +55,13 @@
 			: toolCall.cardType === 'ez-install'
 				? parseInstallCardResult(toolCall.output)
 				: parseProposeCardResult(toolCall.output),
+	);
+
+	// Secure Preview Phase 2 — the expose-consent card parses its
+	// {conversationId, port, title, summary} payload; a malformed/streaming
+	// payload returns null so the router degrades to DefaultCard.
+	let consentCardData = $derived(
+		cardName === 'PreviewConsentCard' ? parseConsentCardResult(toolCall.output) : null,
 	);
 
 	// Noisy dev-command cards (Bash, grep/glob, Edit/Write diffs) collapse to a
@@ -103,6 +112,8 @@
 	<ImageGenCard {toolCall} {conversationId} {messageId} {onsendmessage} />
 {:else if cardName === 'EzToolResultCard' && ezCardResult}
 	<EzToolResultCard result={ezCardResult} toolName={toolCall.toolName} />
+{:else if cardName === 'PreviewConsentCard' && consentCardData}
+	<PreviewConsentCard data={consentCardData} />
 {:else}
 	<DefaultCard {toolCall} />
 {/if}

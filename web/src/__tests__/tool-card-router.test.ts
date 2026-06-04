@@ -18,6 +18,10 @@ describe("getCardComponentName", () => {
 		expect(getCardComponentName("unknown-type", false)).toBe("DefaultCard");
 	});
 
+	test("maps 'ez-preview-consent' cardType to PreviewConsentCard (Secure Preview Phase 2)", () => {
+		expect(getCardComponentName("ez-preview-consent", false)).toBe("PreviewConsentCard");
+	});
+
 	test("maps undefined cardType to DefaultCard", () => {
 		expect(getCardComponentName(undefined, false)).toBe("DefaultCard");
 	});

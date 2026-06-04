@@ -50,6 +50,23 @@ let embedWorkerStartMock = mock(() => Promise.resolve<boolean>(true));
 let embedWorkerStopMock = mock(() => {});
 let lastEmbedWorkerInstance: object | undefined;
 
+// PreviewPortWatcher stub instrumentation (Phase 2 — Secure Preview).
+// Same capture-mock pattern as the daemons above: the bootstrap reads
+// `new PreviewPortWatcher({...})` then `.start()`. The REAL watcher would
+// acquire a PID lockfile and arm its own setInterval — neither belongs in
+// this wiring suite (its per-class coverage lives in
+// src/__tests__/preview-port-watcher.test.ts). The stub's start() resolves
+// true and registers NO interval, so the `intervalCalls` length assertions
+// stay at 4. Per-test swaps to `previewWatcherStartMock` cover the
+// failure-isolation paths (start() returns false; start() throws). The
+// source (NetnsPortSource) and consent router (decideOnDetection) the
+// bootstrap also imports are stubbed to inert no-ops so neither pulls in
+// the DB / netns graph.
+let previewWatcherCtorMock = mock(() => {});
+let previewWatcherStartMock = mock(() => Promise.resolve<boolean>(true));
+let previewWatcherStopMock = mock(() => {});
+let lastPreviewWatcherInstance: object | undefined;
+
 // Logger spies. The structured logger writes JSON via process.stdout/stderr.write,
 // bypassing console.* shims, so we mock the logger module itself and assert on
 // (msg, fields) call shape. `child()` returns the same spy object so calls made
@@ -144,6 +161,30 @@ function installModuleMocks(): void {
       stop() { embedWorkerStopMock(); }
     },
   }));
+  // Phase 2 (Secure Preview): stub the PreviewPortWatcher + its injected
+  // deps. The watcher's own lifecycle/detection coverage lives in
+  // src/__tests__/preview-port-watcher.test.ts; standing the real daemon
+  // up here would grab a lockfile and arm a 5th setInterval (breaking the
+  // intervalCalls length assertions). NetnsPortSource + decideOnDetection
+  // are stubbed inert so the bootstrap's `new NetnsPortSource()` and the
+  // onDetected closure don't reach the DB / netns probes.
+  mock.module("../runtime/preview/preview-port-watcher", () => ({
+    PreviewPortWatcher: class {
+      constructor() {
+        previewWatcherCtorMock();
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        lastPreviewWatcherInstance = this;
+      }
+      start() { return previewWatcherStartMock(); }
+      stop() { previewWatcherStopMock(); }
+    },
+  }));
+  mock.module("../runtime/preview/preview-port-source", () => ({
+    NetnsPortSource: class {},
+  }));
+  mock.module("../runtime/preview/preview-consent", () => ({
+    decideOnDetection: () => Promise.resolve({ kind: "skipped", reason: "stub" }),
+  }));
   mock.module("../logger", () => ({ logger: loggerSpy }));
 }
 
@@ -173,6 +214,10 @@ beforeEach(async () => {
   embedWorkerStartMock = mock(() => Promise.resolve<boolean>(true));
   embedWorkerStopMock = mock(() => {});
   lastEmbedWorkerInstance = undefined;
+  previewWatcherCtorMock = mock(() => {});
+  previewWatcherStartMock = mock(() => Promise.resolve<boolean>(true));
+  previewWatcherStopMock = mock(() => {});
+  lastPreviewWatcherInstance = undefined;
 
   installModuleMocks();
 
@@ -478,6 +523,86 @@ describe("startBackgroundTimers — EmbedWorker bootstrap", () => {
     mod._resetForTests();
     expect(embedWorkerStopMock).toHaveBeenCalledTimes(2);
     expect(mod._getEmbedWorkerForTests()).toBeUndefined();
+  });
+});
+
+// Phase 2 (Secure Preview) — bootstrap wiring for PreviewPortWatcher.
+// Mirrors the EmbedWorker / HostMaintenanceDaemon blocks: assert the
+// watcher is constructed + started + exposed, plus the two fail-safe
+// branches (start() resolving false; start() rejecting) both drop the
+// handle without crashing boot, AND — the load-bearing assertion from the
+// prior daemon-wiring incident — the new daemon must NOT add a 5th
+// setInterval (its stub registers none), so intervalCalls stays at 4.
+describe("startBackgroundTimers — PreviewPortWatcher bootstrap", () => {
+  test("happy-path bootstrap: PreviewPortWatcher is instantiated, started, and exposed", async () => {
+    installModuleMocks();
+
+    const mod = await import("../startup/background-timers");
+    await mod.startBackgroundTimers();
+
+    expect(previewWatcherCtorMock).toHaveBeenCalledTimes(1);
+    expect(previewWatcherStartMock).toHaveBeenCalledTimes(1);
+    const exposed = mod._getPreviewPortWatcherForTests();
+    expect(exposed).toBeDefined();
+    expect(exposed).toBe(lastPreviewWatcherInstance as never);
+    expect(loggerInfoMock).toHaveBeenCalledWith("PreviewPortWatcher started", undefined);
+    // The watcher adds NO setInterval — interval count is unchanged at 4
+    // (sessions, errors, sdk-capability sweep, compaction).
+    expect(intervalCalls).toHaveLength(4);
+  });
+
+  test("start() resolving false: handle is dropped, no exception bubbles, rest of boot ran", async () => {
+    previewWatcherStartMock = mock(() => Promise.resolve<boolean>(false));
+    installModuleMocks();
+
+    const mod = await import("../startup/background-timers");
+    await mod.startBackgroundTimers();
+
+    expect(previewWatcherCtorMock).toHaveBeenCalledTimes(1);
+    expect(previewWatcherStartMock).toHaveBeenCalledTimes(1);
+    expect(mod._getPreviewPortWatcherForTests()).toBeUndefined();
+    expect(loggerInfoMock).not.toHaveBeenCalledWith("PreviewPortWatcher started", undefined);
+    expect(loggerWarnMock).not.toHaveBeenCalledWith(
+      "Failed to start PreviewPortWatcher",
+      expect.any(Object) as never,
+    );
+    expect(intervalCalls).toHaveLength(4);
+  });
+
+  test("start() rejecting: handle is dropped, log.warn carries the error, no exception bubbles", async () => {
+    const bootErr = new Error("simulated preview-watcher boot failure");
+    previewWatcherStartMock = mock(() => Promise.reject(bootErr));
+    installModuleMocks();
+
+    const mod = await import("../startup/background-timers");
+    await mod.startBackgroundTimers();
+
+    expect(previewWatcherCtorMock).toHaveBeenCalledTimes(1);
+    expect(previewWatcherStartMock).toHaveBeenCalledTimes(1);
+    expect(mod._getPreviewPortWatcherForTests()).toBeUndefined();
+    expect(loggerWarnMock).toHaveBeenCalledWith(
+      "Failed to start PreviewPortWatcher",
+      { error: String(bootErr) },
+    );
+    expect(intervalCalls).toHaveLength(4);
+  });
+
+  test("stopBackgroundTimers() and _resetForTests() tear down the watcher", async () => {
+    installModuleMocks();
+
+    const mod = await import("../startup/background-timers");
+    await mod.startBackgroundTimers();
+    expect(mod._getPreviewPortWatcherForTests()).toBeDefined();
+
+    await mod.stopBackgroundTimers();
+    expect(previewWatcherStopMock).toHaveBeenCalledTimes(1);
+    expect(mod._getPreviewPortWatcherForTests()).toBeUndefined();
+
+    await mod.startBackgroundTimers();
+    expect(mod._getPreviewPortWatcherForTests()).toBeDefined();
+    mod._resetForTests();
+    expect(previewWatcherStopMock).toHaveBeenCalledTimes(2);
+    expect(mod._getPreviewPortWatcherForTests()).toBeUndefined();
   });
 });
 

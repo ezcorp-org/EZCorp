@@ -27,7 +27,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function extractObject(out: unknown): Record<string, unknown> | null {
+/**
+ * Unwrap a tool's `output` into a plain object: parses a JSON string,
+ * defensively unwraps an MCP `{content:[{type:'text',text}]}` envelope,
+ * else returns the object as-is. Shared by the install (`ez-install`)
+ * and propose (`ez-propose`) card parsers so both treat the wire shape
+ * identically. Returns null when nothing object-shaped can be recovered.
+ */
+export function extractEzCardObject(out: unknown): Record<string, unknown> | null {
 	if (out == null) return null;
 	if (typeof out === "string") {
 		try {
@@ -63,7 +70,7 @@ function extractObject(out: unknown): Record<string, unknown> | null {
  * router fall back to DefaultCard (raw JSON), exactly today's behavior.
  */
 export function parseInstallCardResult(output: unknown): EzProposeResult | null {
-	const obj = extractObject(output);
+	const obj = extractEzCardObject(output);
 	if (!obj) return null;
 	if (typeof obj.openUrl !== "string" || obj.openUrl.length === 0) return null;
 	const name = typeof obj.name === "string" ? obj.name : undefined;

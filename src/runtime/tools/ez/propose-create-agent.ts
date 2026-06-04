@@ -25,7 +25,9 @@ export function createProposeCreateAgentTool(ctx: EzToolContext): BuiltinToolDef
     description:
       "Draft a new agent (name, prompt, optional inputSchema and capabilities). Returns a URL the panel renders as 'Open prefilled form' — the user reviews and submits to actually create. This tool never mutates state.",
     category: "ez",
-    cardType: "default",
+    // Routes the `{ draftId, openUrl }` result to EzToolResultCard so the
+    // user gets the "Open prefilled form" button the EZ prompt promises.
+    cardType: "ez-propose",
     parameters: Type.Unsafe({
       type: "object",
       properties: {

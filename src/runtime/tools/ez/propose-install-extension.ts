@@ -28,7 +28,9 @@ export function createProposeInstallExtensionTool(ctx: EzToolContext): BuiltinTo
     description:
       "Search the marketplace for an extension by name or query and return a shortlist plus a URL into the marketplace page. The user installs from there — this tool never mutates state.",
     category: "ez",
-    cardType: "default",
+    // Routes the `{ draftId, openUrl }` result to EzToolResultCard so the
+    // user gets the "Browse extensions" button the EZ prompt promises.
+    cardType: "ez-propose",
     parameters: Type.Unsafe({
       type: "object",
       properties: {

@@ -181,6 +181,13 @@ export interface HandlePreviewRequestDeps {
   readFile: (absPath: string) => Promise<{ body: BodyInit; size: number }>;
   /** Bump last-seen on a served request (best-effort, fire-and-forget). */
   touch?: (id: string, userId: string) => Promise<unknown>;
+  /** DYNAMIC branch (Phase 3a): proxy an HTTP request to the dev server
+   *  pinned at `127.0.0.1:<port>`. Injected so the pure handler is testable
+   *  without a live socket. The impl (dispatch.ts) fetches the upstream and
+   *  returns its Response; it MUST NOT follow redirects (pin the port) and
+   *  MUST connect to exactly `port` on loopback. Throws on a dead upstream;
+   *  the handler maps that to a graceful 502. */
+  proxyDynamic?: (port: number, request: Request, requestPath: string) => Promise<Response>;
 }
 
 /**
@@ -205,6 +212,57 @@ function notFound(): Response {
   return new Response("Not found", { status: 404, headers });
 }
 
+function badGateway(): Response {
+  // The dev server isn't answering (not started yet, crashed, wrong port).
+  // 502 is the honest signal — distinct from 404 (no such preview) so the
+  // user knows the preview EXISTS but the server is down.
+  const headers = baseHeaders();
+  return new Response("Preview server is not responding.", { status: 502, headers });
+}
+
+/**
+ * Hop-by-hop headers that MUST NOT be forwarded across a proxy (RFC 7230
+ * §6.1). The dynamic passthrough strips these from the upstream response
+ * before relaying. (Deeper header sanitation — Set-Cookie domain widening,
+ * framing-header neutralization, cookie-tossing defense — is Phase 3b; see
+ * the TODO in proxyDynamicResponse.)
+ */
+export const HOP_BY_HOP_HEADERS: readonly string[] = [
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+];
+
+/**
+ * Sanitize an upstream dev-server response for relay back to the browser.
+ * Phase 3a does the BASICS: strip hop-by-hop headers + force the
+ * preview-origin security headers (no-referrer / nosniff / no-store) so an
+ * untrusted dev server can't weaken them.
+ *
+ * TODO(Phase 3b): neutralize untrusted `Set-Cookie` domain widening +
+ * framing headers, and prevent cookie-tossing onto sibling preview
+ * origins. Tracked in tasks/preview-port-exposure.md §3.5 + threat model.
+ */
+export function sanitizeUpstreamResponse(upstream: Response): Response {
+  const headers = new Headers(upstream.headers);
+  for (const h of HOP_BY_HOP_HEADERS) headers.delete(h);
+  // Re-assert the preview-origin security headers (don't let the upstream
+  // override them).
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  // NOTE: we keep the upstream Content-Type/Length + body verbatim.
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
+}
+
 /**
  * Serve a request for the preview origin. The caller has already parsed
  * the Host header into `previewId` via `parsePreviewHost`. This function
@@ -217,6 +275,10 @@ export async function handlePreviewRequest(
     previewId: string;
     requestPath: string;
     cookieToken: string | null;
+    /** The original request — required for the DYNAMIC branch (method,
+     *  body, headers are forwarded to the dev server). Optional so the
+     *  static-only callers/tests don't need to construct one. */
+    request?: Request;
   },
   deps: HandlePreviewRequestDeps,
 ): Promise<Response> {
@@ -238,14 +300,26 @@ export async function handlePreviewRequest(
   if (deps.touch) void deps.touch(previewId, claims.userId);
 
   if (row.kind === "dynamic") {
-    // ── Phase 3 STUB — dynamic netns passthrough is NOT wired yet. ──
-    // Wiring connects into the per-conversation netns and fetch-proxies
-    // to row.targetPort with redirect-pinning, WS/HMR + Origin
-    // validation, and response-header sanitation (see §3.5). Returning
-    // 501 here keeps the access layer + routing live for dynamic rows
-    // without exposing an un-hardened passthrough.
-    const headers = baseHeaders();
-    return new Response("Dynamic previews are not available yet.", { status: 501, headers });
+    // ── DYNAMIC branch (Phase 3a) — passthrough to the pinned dev port. ──
+    // The access layer (token + registry + userId match) has already run
+    // above, so we only reach here for an owned, active, unexpired preview.
+    if (!Number.isInteger(row.targetPort) || (row.targetPort ?? 0) <= 0) {
+      return notFound();
+    }
+    if (!deps.proxyDynamic || !opts.request) {
+      // No passthrough wired (static-only deployment / test without it).
+      return badGateway();
+    }
+    // SSRF/port-pin: the impl connects to EXACTLY 127.0.0.1:<targetPort>
+    // and does NOT follow redirects (Phase 3b adds CSWSH origin checks,
+    // DNS-rebind Host recheck, rate limits — see TODO markers).
+    try {
+      const upstream = await deps.proxyDynamic(row.targetPort as number, opts.request, requestPath);
+      return sanitizeUpstreamResponse(upstream);
+    } catch {
+      // Dev server down / connection refused → graceful 502.
+      return badGateway();
+    }
   }
 
   // ── STATIC branch (Phase 1, end-to-end) ──

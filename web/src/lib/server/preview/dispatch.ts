@@ -97,7 +97,7 @@ export async function servePreviewRequest(
   // ── Everything else — token + registry gated serving ──
   const cookieToken = readCookie(request, PREVIEW_COOKIE_NAME);
   return handlePreviewRequest(
-    { previewId, requestPath: url.pathname, cookieToken },
+    { previewId, requestPath: url.pathname, cookieToken, request },
     {
       verifyToken: (t) => verifyPreviewToken(t),
       getServable: (id, userId) => getServablePreview(id, userId),
@@ -110,8 +110,50 @@ export async function servePreviewRequest(
         const file = Bun.file(abs);
         return { body: file.stream() as unknown as BodyInit, size: file.size };
       },
+      proxyDynamic: (port, req, requestPath) =>
+        proxyDynamicFetch(port, req, requestPath),
     },
   );
+}
+
+/**
+ * DYNAMIC passthrough (Phase 3a): forward an HTTP request to the dev server
+ * pinned at `127.0.0.1:<port>`. SSRF defense — the host is HARD-CODED to
+ * loopback and the port is the exact registered `targetPort`; the original
+ * request's URL host/scheme are discarded. `redirect: "manual"` so we never
+ * follow an upstream redirect off the pinned port (no server-side SSRF via
+ * a crafted 3xx Location).
+ *
+ * TODO(Phase 3b): CSWSH Origin validation on WS upgrade, DNS-rebind Host
+ * recheck, per-preview rate/byte limits, deeper header sanitation. The
+ * Phase-3a job is to make dynamic previews RUN with the port pinned + basic
+ * safety (loopback-only, no redirect follow, hop-by-hop strip).
+ */
+export async function proxyDynamicFetch(
+  port: number,
+  request: Request,
+  requestPath: string,
+): Promise<Response> {
+  const incoming = new URL(request.url);
+  // Pin to loopback + the exact port. Preserve path + query verbatim.
+  const target = new URL(`http://127.0.0.1:${port}${requestPath}${incoming.search}`);
+
+  // Forward method + body + most headers, but rewrite Host to the dev
+  // server's loopback authority (some dev servers vhost on Host) and drop
+  // the preview cookie so the untrusted server never sees the access token.
+  const fwdHeaders = new Headers(request.headers);
+  fwdHeaders.set("host", `127.0.0.1:${port}`);
+  fwdHeaders.delete("cookie");
+
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  return fetch(target, {
+    method: request.method,
+    headers: fwdHeaders,
+    body: hasBody ? request.body : undefined,
+    redirect: "manual", // never follow upstream 3xx off the pinned port
+    // @ts-expect-error — Bun/undici stream-body needs duplex:"half".
+    duplex: hasBody ? "half" : undefined,
+  });
 }
 
 /** Minimal Cookie header parser — returns the named cookie value or null. */

@@ -7,6 +7,9 @@ import { getSetting } from "../db/queries/settings";
 import { ScheduleDaemon } from "../extensions/schedule-daemon";
 import { HostMaintenanceDaemon } from "../extensions/host-maintenance-daemon";
 import { EmbedWorker } from "../extensions/embed-worker";
+import { PreviewPortWatcher } from "../runtime/preview/preview-port-watcher";
+import { NetnsPortSource } from "../runtime/preview/preview-port-source";
+import { decideOnDetection } from "../runtime/preview/preview-consent";
 import { logger } from "../logger";
 
 const log = logger.child("startup.timers");
@@ -15,6 +18,7 @@ let started = false;
 let scheduleDaemon: ScheduleDaemon | undefined;
 let permSweepDaemon: HostMaintenanceDaemon | undefined;
 let embedWorker: EmbedWorker | undefined;
+let previewPortWatcher: PreviewPortWatcher | undefined;
 
 /**
  * Intervals + disposers registered by `startBackgroundTimers()`. Tracked
@@ -46,6 +50,14 @@ export function _getPermSweepDaemonForTests(): HostMaintenanceDaemon | undefined
  *  `_getPermSweepDaemonForTests`. */
 export function _getEmbedWorkerForTests(): EmbedWorker | undefined {
   return embedWorker;
+}
+
+/** Test-only handle to the preview-port-watcher singleton — mirrors
+ *  `_getEmbedWorkerForTests`. Lets the watcher's bootstrap wiring be
+ *  asserted (construct + start + handle exposed) and the daemon torn
+ *  down between cases. */
+export function _getPreviewPortWatcherForTests(): PreviewPortWatcher | undefined {
+  return previewPortWatcher;
 }
 
 /**
@@ -198,6 +210,41 @@ export async function startBackgroundTimers(): Promise<void> {
     embedWorker = undefined;
   }
 
+  // Phase 2 (Secure Preview): PreviewPortWatcher — auto-detection of dev
+  // servers that start LISTENing inside a conversation's netns. Sibling to
+  // the daemons above (lockfile, kill switch, interval). The enumeration
+  // source is the capability-gated NetnsPortSource: on a host where dynamic
+  // previews are fail-closed (D2 — the default posture today) it yields
+  // nothing, so the watcher is a logged no-op. `onDetected` routes each
+  // requester-scoped detection through decideOnDetection (always-expose
+  // pref → auto-expose, else surface a consent card). Same fail-safe
+  // contract as HostMaintenanceDaemon/EmbedWorker: log + drop the handle on
+  // a failed start; never block boot. Gated by
+  // EZCORP_DISABLE_PREVIEW_WATCHER=1 (handled inside start()).
+  try {
+    previewPortWatcher = new PreviewPortWatcher({
+      source: new NetnsPortSource(),
+      onDetected: (event) => {
+        // Decision routing is fully testable in preview-consent.test.ts;
+        // here we just drive it and swallow failures so a detection can
+        // never crash the daemon tick. The live SSE-stream surfacing of
+        // the card/URL is the host run-loop's job (Phase 2 frontend).
+        void decideOnDetection(event).catch((e: unknown) =>
+          log.warn("preview detection routing failed", { error: String(e) }),
+        );
+      },
+    });
+    const ok = await previewPortWatcher.start();
+    if (ok) {
+      log.info("PreviewPortWatcher started");
+    } else {
+      previewPortWatcher = undefined;
+    }
+  } catch (e) {
+    log.warn("Failed to start PreviewPortWatcher", { error: String(e) });
+    previewPortWatcher = undefined;
+  }
+
   // Surface coverage audit (opt-in via global:auditIntervalHours,
   // default 0 = disabled — audits make LLM calls so we don't surprise
   // users with cost. On-demand runs via the surface-audit agent always
@@ -281,6 +328,10 @@ export async function stopBackgroundTimers(): Promise<void> {
     try { embedWorker.stop(); } catch (e) { log.warn("EmbedWorker.stop() failed", { error: String(e) }); }
     embedWorker = undefined;
   }
+  if (previewPortWatcher) {
+    try { previewPortWatcher.stop(); } catch (e) { log.warn("PreviewPortWatcher.stop() failed", { error: String(e) }); }
+    previewPortWatcher = undefined;
+  }
 
   // Clear every recurring timer. clearInterval is idempotent — calling it
   // on a fired/cleared timer is a no-op, so we don't need to guard.
@@ -317,6 +368,10 @@ export function _resetForTests(): void {
   if (embedWorker) {
     embedWorker.stop();
     embedWorker = undefined;
+  }
+  if (previewPortWatcher) {
+    previewPortWatcher.stop();
+    previewPortWatcher = undefined;
   }
   for (const handle of intervals) clearInterval(handle);
   intervals.length = 0;

@@ -90,6 +90,48 @@ describe("ToolCardRouter — image-gen-grid routing", () => {
 
 });
 
+describe("ToolCardRouter — ez-preview-consent routing (Secure Preview Phase 2)", () => {
+	test("cardType='ez-preview-consent' mounts PreviewConsentCard (rendered once)", () => {
+		const toolCall: ToolCallState = {
+			id: "tc-consent-1",
+			toolName: "preview_detected",
+			status: "complete",
+			input: {},
+			startedAt: 0,
+			duration: 0,
+			cardType: "ez-preview-consent",
+			output: JSON.stringify({ conversationId: "conv-1", port: 5173 }),
+		};
+
+		const { getAllByTestId, getByTestId } = render(ToolCardRouter, {
+			toolCall,
+			conversationId: "conv-1",
+			messageId: "msg-1",
+		});
+
+		// PreviewConsentCard's root data-testid — proof the router picked it.
+		// Exactly one (no double-render) — guards the prior streaming-card
+		// duplicate-render incident at the router level.
+		expect(getAllByTestId("preview-consent-card")).toHaveLength(1);
+		expect(getByTestId("preview-consent-expose")).toBeInTheDocument();
+	});
+
+	test("malformed payload falls back to DefaultCard (no consent card)", () => {
+		const toolCall: ToolCallState = {
+			id: "tc-consent-2",
+			toolName: "preview_detected",
+			status: "complete",
+			input: {},
+			startedAt: 0,
+			duration: 0,
+			cardType: "ez-preview-consent",
+			output: "not json",
+		};
+		const { queryByTestId } = render(ToolCardRouter, { toolCall, conversationId: "conv-1" });
+		expect(queryByTestId("preview-consent-card")).toBeNull();
+	});
+});
+
 describe("ToolCardRouter — time-clock routing", () => {
 	function timeClockPayload() {
 		return {

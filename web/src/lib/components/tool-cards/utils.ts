@@ -49,6 +49,12 @@ export function getCardComponentName(cardType: string | undefined, permissionPen
 		// EzToolResultCard so the "Open prefilled form" button surfaces
 		// (the EZ system prompt promises exactly that card).
 		case 'ez-propose': return 'EzToolResultCard';
+		// `ez-preview-consent` is the requester-scoped expose-consent card
+		// (Secure Preview Phase 2). The port watcher's preview:detected event
+		// is surfaced into the originating conversation under this cardType so
+		// the [Expose]/[Ignore]/[Always expose] affordances render (a card
+		// without cardType falls through to DefaultCard — prior incident).
+		case 'ez-preview-consent': return 'PreviewConsentCard';
 		default: return 'DefaultCard';
 	}
 }

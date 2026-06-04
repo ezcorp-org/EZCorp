@@ -1082,3 +1082,59 @@ export const extensionScheduleFires = pgTable("extension_schedule_fires", {
 
 export type ExtensionScheduleFire = typeof extensionScheduleFires.$inferSelect;
 export type NewExtensionScheduleFire = typeof extensionScheduleFires.$inferInsert;
+
+// ── Secure User-Site Preview / Port Exposure (Phase 1) ──────────────
+//
+// The preview registry. One row per exposed site (static or dynamic).
+// Drives the `*.preview.<host>` reverse proxy's access layer: every
+// request loads the row by its opaque, unguessable `id` (the subdomain
+// label) and asserts `__ezpreview` token.userId === row.userId AND the
+// row is not expired/revoked. This is one of THREE independent
+// requester-only layers (attribution via netns, consent routing,
+// access via token+registry) — see tasks/preview-port-exposure.md §1.
+//
+// `id` is the subdomain label AND the primary key — a 26-char Crockford
+// base32 string from 128 bits of CSPRNG entropy (no enumeration; D4
+// wildcard-subdomain routing makes the label the origin). `kind`
+// discriminates `static` (served from `.ezcorp/sites/<id>/`, Phase 1)
+// from `dynamic` (netns passthrough to `targetPort`, Phase 3). Exactly
+// one of `targetPort` / `staticPath` is meaningful per kind; both are
+// nullable so the column set covers both branches without a CHECK that
+// PGlite and external Postgres would need to agree on.
+//
+// `status` ∈ {'active','revoked','expired'} is the coarse lifecycle
+// flag the proxy reads first; `revokedAt` / `expiresAt` carry the
+// precise timestamps. `lastSeenAt` is bumped by the proxy on each
+// served request (liveness signal for the Phase 4 idle reaper).
+//
+// Indexed by `userId` (the revocation UI lists a user's previews) and
+// `conversationId` (reaping on conversation close). FKs SET NULL so a
+// deleted user/conversation orphans-but-keeps the row for audit; the
+// proxy's access check then fails closed (userId mismatch).
+
+export const previewSessions = pgTable("preview_sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+  conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  /** The per-conversation network namespace id this preview's dynamic
+   *  server lives in (Phase 3). NULL for static previews. */
+  netnsId: text("netns_id"),
+  kind: text("kind").notNull().$type<"static" | "dynamic">(),
+  /** Dynamic only — the port the dev server listens on inside the netns. */
+  targetPort: integer("target_port"),
+  /** Static only — absolute path to the served site root
+   *  (`.ezcorp/sites/<id>/`). Stored so the proxy doesn't have to
+   *  re-derive it; still re-validated against the realpath jail. */
+  staticPath: text("static_path"),
+  status: text("status").notNull().default("active").$type<"active" | "revoked" | "expired">(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+}, (table) => [
+  index("idx_preview_sessions_user").on(table.userId),
+  index("idx_preview_sessions_conversation").on(table.conversationId),
+]);
+
+export type PreviewSession = typeof previewSessions.$inferSelect;
+export type NewPreviewSession = typeof previewSessions.$inferInsert;

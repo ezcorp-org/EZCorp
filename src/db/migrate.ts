@@ -1380,4 +1380,34 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
       ON marketplace_listings
       USING GIN (to_tsvector('english', name || ' ' || description))
   `);
+
+  // ── Secure User-Site Preview / Port Exposure (Phase 1) ────────────
+  // The preview registry. One row per exposed site. `id` is BOTH the
+  // primary key AND the `*.preview.<host>` subdomain label — a 26-char
+  // Crockford base32 string from 128 bits CSPRNG entropy (unguessable,
+  // no enumeration). FKs ON DELETE SET NULL so a deleted user /
+  // conversation orphans the row for audit while the proxy's
+  // userId-match access check fails closed. Indexed by user_id (the
+  // revocation UI) + conversation_id (reaping on conversation close).
+  // See tasks/preview-port-exposure.md §3.4. Idempotent (CREATE IF NOT
+  // EXISTS); columns cover both the static (`static_path`) and dynamic
+  // (`target_port`, Phase 3) branches without a CHECK constraint.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS preview_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      netns_id TEXT,
+      kind TEXT NOT NULL,
+      target_port INTEGER,
+      static_path TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+      last_seen_at TIMESTAMP WITH TIME ZONE,
+      revoked_at TIMESTAMP WITH TIME ZONE
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_preview_sessions_user ON preview_sessions(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_preview_sessions_conversation ON preview_sessions(conversation_id)`);
 }

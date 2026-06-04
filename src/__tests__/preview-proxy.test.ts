@@ -20,6 +20,8 @@ import {
   resolveStaticFile,
   handlePreviewRequest,
   contentTypeFor,
+  sanitizeUpstreamResponse,
+  HOP_BY_HOP_HEADERS,
   type HandlePreviewRequestDeps,
   type PreviewRegistryRow,
 } from "../runtime/preview/preview-proxy";
@@ -65,6 +67,29 @@ describe("parsePreviewHost", () => {
   test("rejects null/empty inputs", () => {
     expect(parsePreviewHost(null, APP_HOST)).toBeNull();
     expect(parsePreviewHost(`${VALID_ID}.preview.${APP_HOST}`, "")).toBeNull();
+  });
+});
+
+describe("sanitizeUpstreamResponse (dynamic passthrough)", () => {
+  test("strips every hop-by-hop header", () => {
+    const headers = new Headers({ "Content-Type": "text/html" });
+    for (const h of HOP_BY_HOP_HEADERS) headers.set(h, "x");
+    const out = sanitizeUpstreamResponse(new Response("body", { status: 200, headers }));
+    for (const h of HOP_BY_HOP_HEADERS) expect(out.headers.get(h)).toBeNull();
+    expect(out.headers.get("Content-Type")).toBe("text/html");
+  });
+
+  test("re-asserts the preview-origin security headers over the upstream", () => {
+    const out = sanitizeUpstreamResponse(
+      new Response("b", { status: 200, headers: { "Referrer-Policy": "unsafe-url", "X-Content-Type-Options": "off" } }),
+    );
+    expect(out.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(out.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+
+  test("preserves status + statusText", () => {
+    const out = sanitizeUpstreamResponse(new Response("nf", { status: 404, statusText: "Not Found" }));
+    expect(out.status).toBe(404);
   });
 });
 
@@ -190,13 +215,75 @@ describe("handlePreviewRequest", () => {
     expect(res.status).toBe(404);
   });
 
-  test("dynamic kind returns the Phase-3 501 stub", async () => {
-    const dynRow: PreviewRegistryRow = { id: VALID_ID, userId: "u1", kind: "dynamic", staticPath: null, targetPort: 5173 };
+  const dynRow: PreviewRegistryRow = {
+    id: VALID_ID, userId: "u1", kind: "dynamic", staticPath: null, targetPort: 5173,
+  };
+
+  test("dynamic kind: proxies to the pinned port + sanitizes upstream headers", async () => {
+    let pinnedPort = -1;
     const res = await handlePreviewRequest(
-      { previewId: VALID_ID, requestPath: "/", cookieToken: "good" },
+      { previewId: VALID_ID, requestPath: "/app.js", cookieToken: "good", request: new Request("http://x.preview.localhost/app.js") },
+      deps({
+        getServable: async () => dynRow,
+        proxyDynamic: async (port) => {
+          pinnedPort = port;
+          // Upstream sets a hop-by-hop header + tries to weaken security.
+          return new Response("ok", {
+            status: 200,
+            headers: {
+              "transfer-encoding": "chunked",
+              "Referrer-Policy": "unsafe-url",
+              "Content-Type": "application/javascript",
+            },
+          });
+        },
+      }),
+    );
+    expect(pinnedPort).toBe(5173);
+    expect(res.status).toBe(200);
+    // hop-by-hop stripped, security header re-asserted.
+    expect(res.headers.get("transfer-encoding")).toBeNull();
+    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Content-Type")).toBe("application/javascript");
+  });
+
+  test("dynamic kind: still enforces token + registry gates (404 on no token)", async () => {
+    const res = await handlePreviewRequest(
+      { previewId: VALID_ID, requestPath: "/", cookieToken: null, request: new Request("http://x/") },
+      deps({ getServable: async () => dynRow, proxyDynamic: async () => new Response("nope") }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("dynamic kind: dev server down → graceful 502", async () => {
+    const res = await handlePreviewRequest(
+      { previewId: VALID_ID, requestPath: "/", cookieToken: "good", request: new Request("http://x/") },
+      deps({
+        getServable: async () => dynRow,
+        proxyDynamic: async () => {
+          throw new Error("ECONNREFUSED");
+        },
+      }),
+    );
+    expect(res.status).toBe(502);
+  });
+
+  test("dynamic kind: no proxyDynamic dep wired → 502 (static-only deploy)", async () => {
+    const res = await handlePreviewRequest(
+      { previewId: VALID_ID, requestPath: "/", cookieToken: "good", request: new Request("http://x/") },
       deps({ getServable: async () => dynRow }),
     );
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(502);
+  });
+
+  test("dynamic kind: missing/invalid targetPort → opaque 404", async () => {
+    const badPortRow: PreviewRegistryRow = { ...dynRow, targetPort: 0 };
+    const res = await handlePreviewRequest(
+      { previewId: VALID_ID, requestPath: "/", cookieToken: "good", request: new Request("http://x/") },
+      deps({ getServable: async () => badPortRow, proxyDynamic: async () => new Response("x") }),
+    );
+    expect(res.status).toBe(404);
   });
 
   test("touch is called best-effort on a served (authorized) request", async () => {

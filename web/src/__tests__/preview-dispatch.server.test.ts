@@ -184,3 +184,82 @@ describe("servePreviewRequest serving path", () => {
     expect(verifyPreviewToken).toHaveBeenCalledWith("sometoken");
   });
 });
+
+describe("servePreviewRequest dynamic passthrough (Phase 3a)", () => {
+  test("proxies an authorized dynamic preview to the pinned dev port (port-pin + cookie strip)", async () => {
+    verifyPreviewToken.mockResolvedValue({ previewId: VALID_ID, userId: "u1" });
+    getServablePreview.mockResolvedValue({
+      id: VALID_ID, userId: "u1", kind: "dynamic", staticPath: null, targetPort: 5173,
+    });
+    // Intercept the loopback fetch the passthrough makes.
+    let fetched: { url: string; host: string | null; cookie: string | null } | null = null;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const h = new Headers(init?.headers);
+      fetched = { url: String(input), host: h.get("host"), cookie: h.get("cookie") };
+      return new Response("<h1>dev</h1>", { status: 200, headers: { "Content-Type": "text/html" } });
+    }) as typeof fetch;
+    try {
+      const req = new Request(`http://${VALID_ID}.preview.ezcorp.example.com/app.js?v=1`, {
+        headers: { cookie: "__ezpreview=tok; other=keep" },
+      });
+      const res = await servePreviewRequest(req, { previewId: VALID_ID });
+      expect(res.status).toBe(200);
+      expect(fetched).not.toBeNull();
+      // Pinned to loopback:5173 with the path + query preserved.
+      expect(fetched!.url).toBe("http://127.0.0.1:5173/app.js?v=1");
+      expect(fetched!.host).toBe("127.0.0.1:5173");
+      // The preview access cookie is NEVER forwarded to the untrusted dev server.
+      expect(fetched!.cookie).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("dev server down → graceful 502", async () => {
+    verifyPreviewToken.mockResolvedValue({ previewId: VALID_ID, userId: "u1" });
+    getServablePreview.mockResolvedValue({
+      id: VALID_ID, userId: "u1", kind: "dynamic", staticPath: null, targetPort: 5173,
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    try {
+      const req = new Request(`http://${VALID_ID}.preview.ezcorp.example.com/`, {
+        headers: { cookie: "__ezpreview=tok" },
+      });
+      const res = await servePreviewRequest(req, { previewId: VALID_ID });
+      expect(res.status).toBe(502);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("proxyDynamicFetch (loopback port-pin)", () => {
+  test("pins host+port to 127.0.0.1, manual redirect, strips cookie, preserves query", async () => {
+    const { proxyDynamicFetch } = await import("$lib/server/preview/dispatch");
+    const realFetch = globalThis.fetch;
+    let captured: { url: string; init: any } | null = null;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      captured = { url: typeof input === "string" ? input : input.toString(), init };
+      return new Response("ok");
+    }) as typeof fetch;
+    try {
+      const req = new Request("http://attacker.example.com/path?q=1", {
+        method: "GET",
+        headers: { cookie: "__ezpreview=secret", "x-keep": "1" },
+      });
+      await proxyDynamicFetch(8080, req, "/path");
+      expect(captured!.url).toBe("http://127.0.0.1:8080/path?q=1");
+      expect(captured!.init.redirect).toBe("manual");
+      const h = new Headers(captured!.init.headers);
+      expect(h.get("cookie")).toBeNull();
+      expect(h.get("host")).toBe("127.0.0.1:8080");
+      expect(h.get("x-keep")).toBe("1");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

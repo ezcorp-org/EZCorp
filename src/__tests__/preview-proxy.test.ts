@@ -53,6 +53,10 @@ describe("parsePreviewHost", () => {
     expect(parsePreviewHost(`extra.${VALID_ID}.preview.${APP_HOST}`, APP_HOST)).toBeNull();
   });
 
+  test("rejects a trailing-dot (absolute) FQDN — must not match the suffix", () => {
+    expect(parsePreviewHost(`${VALID_ID}.preview.${APP_HOST}.`, APP_HOST)).toBeNull();
+  });
+
   test("rejects a malformed preview id label", () => {
     expect(parsePreviewHost(`short.preview.${APP_HOST}`, APP_HOST)).toBeNull();
     expect(parsePreviewHost(`${"i".repeat(26)}.preview.${APP_HOST}`, APP_HOST)).toBeNull(); // ambiguous letters

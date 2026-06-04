@@ -8,7 +8,7 @@
  * auth gate, ownership gate, the code -> cookie swap, and the cookie-read
  * serving path — without a DB or live socket.
  */
-import { test, expect, describe, vi, beforeEach } from "vitest";
+import { test, expect, describe, vi, beforeEach, afterEach } from "vitest";
 
 // Registry mock.
 const getServablePreview = vi.fn();
@@ -44,6 +44,7 @@ vi.mock("$server/runtime/preview/preview-token", async () => {
 
 const { POST } = await import("../routes/api/preview/[id]/token/+server");
 const { matchPreviewOrigin, servePreviewRequest } = await import("$lib/server/preview/dispatch");
+const { PREVIEW_TOKEN_TTL_SECONDS } = await import("$server/runtime/preview/preview-token");
 
 const VALID_ID = "abcdefghjkmnpqrstvwxyz0123";
 const user = { id: "u1", email: "u@x", name: "u", role: "member" as const };
@@ -51,6 +52,13 @@ const user = { id: "u1", email: "u@x", name: "u", role: "member" as const };
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.EZCORP_PREVIEW_APP_HOST = "ezcorp.example.com";
+  // FORCE_SECURE_COOKIES is toggled per-test below; make sure it never
+  // leaks ACROSS tests/describe blocks (e.g. into matchPreviewOrigin).
+  delete process.env.FORCE_SECURE_COOKIES;
+});
+
+afterEach(() => {
+  delete process.env.FORCE_SECURE_COOKIES;
 });
 
 describe("POST /api/preview/:id/token", () => {
@@ -131,6 +139,29 @@ describe("servePreviewRequest /__open handoff", () => {
     const req = new Request(`http://${VALID_ID}.preview.ezcorp.example.com/__open?c=x`);
     const res = await servePreviewRequest(req, { previewId: VALID_ID });
     expect(res.status).toBe(404);
+  });
+
+  test("sets `; Secure` + Max-Age=TTL when FORCE_SECURE_COOKIES is on", async () => {
+    process.env.FORCE_SECURE_COOKIES = "true";
+    redeemOneTimeCode.mockReturnValue({ previewId: VALID_ID, userId: "u1" });
+    const req = new Request(`http://${VALID_ID}.preview.ezcorp.example.com/__open?c=the-code`);
+    const res = await servePreviewRequest(req, { previewId: VALID_ID });
+    expect(res.status).toBe(302);
+    const setCookie = res.headers.get("Set-Cookie") ?? "";
+    expect(setCookie).toContain("; Secure");
+    // Max-Age tracks the token TTL constant (don't hardcode the number).
+    expect(setCookie).toContain(`Max-Age=${PREVIEW_TOKEN_TTL_SECONDS}`);
+  });
+
+  test("omits `; Secure` when FORCE_SECURE_COOKIES is unset", async () => {
+    // (beforeEach already deletes it; assert the negative branch explicitly.)
+    redeemOneTimeCode.mockReturnValue({ previewId: VALID_ID, userId: "u1" });
+    const req = new Request(`http://${VALID_ID}.preview.ezcorp.example.com/__open?c=the-code`);
+    const res = await servePreviewRequest(req, { previewId: VALID_ID });
+    expect(res.status).toBe(302);
+    const setCookie = res.headers.get("Set-Cookie") ?? "";
+    expect(setCookie).not.toContain("; Secure");
+    expect(setCookie).toContain(`Max-Age=${PREVIEW_TOKEN_TTL_SECONDS}`);
   });
 });
 

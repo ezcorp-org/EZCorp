@@ -32,6 +32,7 @@
  */
 
 import { resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 
 export interface PreviewJailInput {
   /** The conversation's writable work dir (e.g. a per-conv tmp workdir
@@ -101,6 +102,29 @@ export function assertOutsideDataDir(path: string, projectRoot: string): void {
 }
 
 /**
+ * Canonicalize a host path with `realpath` (mirrors the double-realpath
+ * approach in `preview-proxy.ts`) so the data-dir exclusion compares
+ * REAL paths, not lexical strings. A `workDir` that is a symlink (or has
+ * a symlinked ancestor) pointing into `.ezcorp/data` defeats the lexical
+ * `resolve()`-prefix check — bwrap would then `--bind` the real target,
+ * exposing the DB/secret inside the jail. Resolving the link first closes
+ * that escape.
+ *
+ * Fail CLOSED: if the path does not exist (so its real target can't be
+ * known), throw rather than silently binding an unverified path. The
+ * launcher is expected to create the work dir before building the argv.
+ */
+export function canonicalizeJailPath(path: string, label: string): string {
+  try {
+    return realpathSync(resolve(path));
+  } catch {
+    throw new Error(
+      `preview jail: ${label} does not exist or is not resolvable (fail-closed): ${path}`,
+    );
+  }
+}
+
+/**
  * Build the bwrap argv for an untrusted preview process. PURE — returns
  * the full argument vector (excluding the leading `bwrap`); the caller /
  * launcher prepends `bwrap` and execs.
@@ -121,12 +145,18 @@ export function buildPreviewJailBwrapArgs(input: PreviewJailInput): string[] {
   if (!input.projectRoot) throw new Error("preview jail: projectRoot is required");
   if (!input.command) throw new Error("preview jail: command is required");
 
-  const workDir = resolve(input.workDir);
-  // Fail closed if the work dir would expose the data dir.
+  // Canonicalize via realpath BEFORE the exclusion assertion: a symlinked
+  // workDir (or a symlinked ancestor) pointing into `.ezcorp/data` would
+  // pass the lexical prefix check yet bind the real DB/secret dir. Resolve
+  // the link first, then assert on the REAL path. Fails closed if missing.
+  const workDir = canonicalizeJailPath(input.workDir, "workDir");
   assertOutsideDataDir(workDir, input.projectRoot);
 
-  const roDirs = input.roSystemDirs ?? DEFAULT_RO_SYSTEM_DIRS;
-  // Defense-in-depth: refuse any RO dir that overlaps the data dir.
+  const inputRoDirs = input.roSystemDirs ?? DEFAULT_RO_SYSTEM_DIRS;
+  // Defense-in-depth: canonicalize each RO dir too (fail-closed if a dir
+  // doesn't exist) and refuse any that overlaps the data dir after the
+  // symlink is resolved.
+  const roDirs = inputRoDirs.map((d) => canonicalizeJailPath(d, "roSystemDir"));
   for (const d of roDirs) assertOutsideDataDir(d, input.projectRoot);
 
   const args: string[] = [

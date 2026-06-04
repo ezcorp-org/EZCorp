@@ -1,4 +1,6 @@
 import { and, eq, lt, gt, desc } from "drizzle-orm";
+import { resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 import { getDb } from "../connection";
 import { previewSessions } from "../schema";
 import type { PreviewSession } from "../schema";
@@ -58,6 +60,62 @@ export function isValidPreviewId(id: string): boolean {
   return PREVIEW_ID_REGEX.test(id);
 }
 
+/**
+ * The on-disk root every static preview MUST live under:
+ * `<projectRoot>/.ezcorp/sites/`. Derived from `EZCORP_PROJECT_ROOT`
+ * (falling back to `process.cwd()`), the same inputs `getProjectRoot()`
+ * uses — kept env-derived here so the DB-queries layer doesn't pull in
+ * the heavier `extensions/bundled` graph. Tests inject a temp root.
+ */
+export function previewSitesRoot(projectRoot?: string): string {
+  const root = projectRoot ?? process.env.EZCORP_PROJECT_ROOT ?? process.cwd();
+  return resolve(root, ".ezcorp", "sites");
+}
+
+/**
+ * Trust-boundary guard: a `kind:"static"` preview's `staticPath` MUST
+ * resolve under the sites root `.ezcorp/sites/` (each preview's served
+ * tree is `.ezcorp/sites/<id>/`). This makes the schema comment's
+ * invariant load-bearing — the proxy re-validates against the realpath
+ * jail, but we reject an out-of-bounds path at the point it FIRST enters
+ * the DB so a bad row can never be persisted (e.g. `/etc` or a path that
+ * symlinks into `.ezcorp/data`). Mirrors the proxy's realpath-based
+ * containment check (`resolveStaticFile`).
+ *
+ * The id is minted inside `createPreviewSession`, so the caller can't
+ * pre-pin the per-id subdir; the enforceable boundary at registration
+ * time is the sites root. (`<id>` precision is enforced by the proxy at
+ * serve time, which knows the row.)
+ *
+ * Fails CLOSED: the path must exist (so realpath can canonicalize it) AND
+ * realpath under the sites root. Throws otherwise.
+ */
+export function assertUnderSitesRoot(staticPath: string, projectRoot?: string): void {
+  let realRoot: string;
+  try {
+    // realpath the sites root so the prefix compares canonical paths
+    // (defends against the root itself being a symlink).
+    realRoot = realpathSync(previewSitesRoot(projectRoot));
+  } catch {
+    throw new Error(
+      `preview: sites root does not exist; refusing to register a static preview (fail-closed)`,
+    );
+  }
+  let realTarget: string;
+  try {
+    realTarget = realpathSync(resolve(staticPath));
+  } catch {
+    throw new Error(
+      `preview: staticPath does not exist or is not resolvable (fail-closed): ${staticPath}`,
+    );
+  }
+  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) {
+    throw new Error(
+      `preview: staticPath must resolve under ${realRoot}; refusing out-of-bounds path: ${staticPath}`,
+    );
+  }
+}
+
 export async function createPreviewSession(data: {
   userId: string;
   conversationId: string;
@@ -70,6 +128,9 @@ export async function createPreviewSession(data: {
   netnsId?: string | null;
   /** Override TTL (ms). Default 24h. */
   ttlMs?: number;
+  /** Test/host override for the project root the sites-root guard derives
+   *  `.ezcorp/sites/` from. Defaults to env/cwd. */
+  projectRoot?: string;
 }): Promise<PreviewSession> {
   if (!data.userId) throw new Error("userId is required");
   if (!data.conversationId) throw new Error("conversationId is required");
@@ -79,12 +140,18 @@ export async function createPreviewSession(data: {
   if (data.kind === "dynamic" && (data.targetPort == null || data.targetPort <= 0)) {
     throw new Error("a positive targetPort is required for a dynamic preview");
   }
+  // Mint the id first so the static containment check can pin to the
+  // per-id sites subdir (`.ezcorp/sites/<id>/`).
+  const id = generatePreviewId();
+  if (data.kind === "static") {
+    assertUnderSitesRoot(data.staticPath!, data.projectRoot);
+  }
   const now = new Date();
   const expiresAt = new Date(now.getTime() + (data.ttlMs ?? TWENTY_FOUR_HOURS_MS));
   const rows = await getDb()
     .insert(previewSessions)
     .values({
-      id: generatePreviewId(),
+      id,
       userId: data.userId,
       conversationId: data.conversationId,
       kind: data.kind,

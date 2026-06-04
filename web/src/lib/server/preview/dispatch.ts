@@ -1,7 +1,3 @@
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import { Readable } from "node:stream";
-import type { ReadableStream } from "node:stream/web";
 import {
   parsePreviewHost,
   handlePreviewRequest,
@@ -107,10 +103,12 @@ export async function servePreviewRequest(
       getServable: (id, userId) => getServablePreview(id, userId),
       touch: (id, userId) => touchPreview(id, userId).catch(() => undefined),
       readFile: async (abs) => {
-        const info = await stat(abs);
-        const nodeStream = createReadStream(abs);
-        const web = Readable.toWeb(nodeStream) as ReadableStream;
-        return { body: web as unknown as BodyInit, size: info.size };
+        // Stream straight off disk via Bun.file (project convention — no
+        // node:fs createReadStream / Readable.toWeb bridge). `.size`
+        // backs Content-Length; `.stream()` is a WHATWG ReadableStream
+        // that `new Response(...)` accepts directly.
+        const file = Bun.file(abs);
+        return { body: file.stream() as unknown as BodyInit, size: file.size };
       },
     },
   );

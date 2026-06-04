@@ -10,20 +10,60 @@
  *  - a private tmpfs at /tmp with --size BEFORE --tmpfs
  *  - the builder fails CLOSED if asked to bind the data dir, a path under
  *    it, or an ancestor of it (incl. "/")
+ *  - the builder REALPATHs the work dir before the exclusion check, so a
+ *    symlink (or symlinked ancestor) pointing into .ezcorp/data is caught
+ *  - a non-existent work/RO dir fails closed (throws) rather than binding
+ *    an unverified path
  *  - assertJailArgsSafe rejects a tampered argv
+ *
+ * NOTE: the builder now canonicalizes paths with realpath + fails closed
+ * on missing dirs, so these tests use REAL temp fixtures (not fictional
+ * /srv paths). Bind assertions compare against the realpath of the input.
  */
-import { test, expect, describe } from "bun:test";
-import { resolve } from "node:path";
+import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   buildPreviewJailBwrapArgs,
   assertJailArgsSafe,
   assertOutsideDataDir,
   forbiddenDataDir,
+  canonicalizeJailPath,
   DEFAULT_RO_SYSTEM_DIRS,
 } from "../extensions/preview-jail";
 
-const ROOT = "/srv/project";
-const WORK = "/srv/project/.ezcorp/sites/conv-1";
+// Real on-disk fixtures: a project root, its .ezcorp/{data,sites/conv-1},
+// and a small set of RO dirs the builder can canonicalize.
+let ROOT: string; // realpath of the project root
+let WORK: string; // <root>/.ezcorp/sites/conv-1 (real, writable)
+let RO1: string; // real RO dir
+let RO2: string; // real RO dir
+let DATA: string; // <root>/.ezcorp/data
+let symlinkIntoData: string; // a symlink whose target is under DATA
+
+beforeAll(async () => {
+  const base = realpathSync(await mkdtemp(join(tmpdir(), "ezjail-")));
+  ROOT = join(base, "project");
+  DATA = join(ROOT, ".ezcorp", "data");
+  WORK = join(ROOT, ".ezcorp", "sites", "conv-1");
+  RO1 = join(base, "ro1");
+  RO2 = join(base, "ro2");
+  await mkdir(WORK, { recursive: true });
+  await mkdir(DATA, { recursive: true });
+  await mkdir(RO1, { recursive: true });
+  await mkdir(RO2, { recursive: true });
+  // A symlink that LEXICALLY sits under .ezcorp/sites but REALLY points
+  // into .ezcorp/data — the escape the realpath canonicalization defends
+  // against.
+  symlinkIntoData = join(ROOT, ".ezcorp", "sites", "sneaky");
+  await symlink(DATA, symlinkIntoData);
+});
+
+afterAll(async () => {
+  await rm(ROOT, { recursive: true, force: true }).catch(() => {});
+});
 
 function build(over: Partial<Parameters<typeof buildPreviewJailBwrapArgs>[0]> = {}) {
   return buildPreviewJailBwrapArgs({
@@ -31,7 +71,7 @@ function build(over: Partial<Parameters<typeof buildPreviewJailBwrapArgs>[0]> = 
     projectRoot: ROOT,
     command: "bun",
     args: ["run", "dev"],
-    roSystemDirs: ["/usr", "/bin", "/lib"],
+    roSystemDirs: [RO1, RO2],
     ...over,
   });
 }
@@ -51,6 +91,18 @@ describe("forbiddenDataDir / assertOutsideDataDir", () => {
   test("allows a sibling path", () => {
     expect(() => assertOutsideDataDir(resolve(ROOT, ".ezcorp/sites/x"), ROOT)).not.toThrow();
     expect(() => assertOutsideDataDir("/usr", ROOT)).not.toThrow();
+  });
+});
+
+describe("canonicalizeJailPath", () => {
+  test("resolves a real path through symlinks", () => {
+    expect(canonicalizeJailPath(WORK, "workDir")).toBe(realpathSync(WORK));
+    // The sneaky symlink canonicalizes to its real target under .ezcorp/data.
+    expect(canonicalizeJailPath(symlinkIntoData, "workDir")).toBe(realpathSync(DATA));
+  });
+
+  test("fails closed for a non-existent path", () => {
+    expect(() => canonicalizeJailPath(join(ROOT, "nope"), "workDir")).toThrow(/fail-closed/);
   });
 });
 
@@ -80,7 +132,7 @@ describe("buildPreviewJailBwrapArgs", () => {
     expect(() => assertJailArgsSafe(args, ROOT)).not.toThrow();
   });
 
-  test("the work dir is the ONLY rw --bind; system dirs are --ro-bind", () => {
+  test("the work dir is the ONLY rw --bind (realpath'd); system dirs are --ro-bind", () => {
     const args = build();
     const rwBinds: string[] = [];
     const roBinds: string[] = [];
@@ -88,8 +140,8 @@ describe("buildPreviewJailBwrapArgs", () => {
       if (args[i] === "--bind") rwBinds.push(args[i + 1]!);
       if (args[i] === "--ro-bind") roBinds.push(args[i + 1]!);
     }
-    expect(rwBinds).toEqual([resolve(WORK)]);
-    expect(roBinds).toEqual(["/usr", "/bin", "/lib"]);
+    expect(rwBinds).toEqual([realpathSync(WORK)]);
+    expect(roBinds).toEqual([realpathSync(RO1), realpathSync(RO2)]);
   });
 
   test("sets a private tmpfs at /tmp with --size BEFORE --tmpfs", () => {
@@ -102,13 +154,13 @@ describe("buildPreviewJailBwrapArgs", () => {
     expect(args[tmpfsIdx + 1]).toBe("/tmp");
   });
 
-  test("includes hardening flags + chdir into the work dir", () => {
+  test("includes hardening flags + chdir into the (realpath'd) work dir", () => {
     const args = build();
     expect(args).toContain("--unshare-all");
     expect(args).toContain("--die-with-parent");
     expect(args).toContain("--new-session");
     const chdirIdx = args.indexOf("--chdir");
-    expect(args[chdirIdx + 1]).toBe(resolve(WORK));
+    expect(args[chdirIdx + 1]).toBe(realpathSync(WORK));
   });
 
   test("appends --seccomp <fd> only when provided", () => {
@@ -124,22 +176,48 @@ describe("buildPreviewJailBwrapArgs", () => {
     expect(args.slice(dd)).toEqual(["--", "bun", "run", "dev"]);
   });
 
-  test("uses the default RO system dir list when none given", () => {
-    const args = build({ roSystemDirs: undefined });
+  test("uses the default RO system dir list (filtered to existing dirs) when none given", () => {
+    // The default list contains dirs that may not exist on every host
+    // (NixOS lacks /sbin, /lib). Pass only the subset that exists so the
+    // fail-closed canonicalization can resolve them — exactly what the
+    // launcher does in production.
+    const existing = DEFAULT_RO_SYSTEM_DIRS.filter((d) => {
+      try {
+        realpathSync(d);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const args = build({ roSystemDirs: existing });
     const roBinds: string[] = [];
     for (let i = 0; i < args.length; i++) if (args[i] === "--ro-bind") roBinds.push(args[i + 1]!);
-    expect(roBinds).toEqual([...DEFAULT_RO_SYSTEM_DIRS]);
+    expect(roBinds).toEqual(existing.map((d) => realpathSync(d)));
   });
 
   test("fails closed when the work dir IS the data dir / under it / an ancestor", () => {
-    expect(() => build({ workDir: resolve(ROOT, ".ezcorp/data") })).toThrow();
-    expect(() => build({ workDir: resolve(ROOT, ".ezcorp/data/x") })).toThrow();
-    expect(() => build({ workDir: "/" })).toThrow();
+    expect(() => build({ workDir: DATA })).toThrow();
     expect(() => build({ workDir: ROOT })).toThrow();
+    expect(() => build({ workDir: "/" })).toThrow();
+  });
+
+  test("fails closed when the work dir is a SYMLINK into .ezcorp/data (realpath escape)", () => {
+    // Lexically `symlinkIntoData` sits under .ezcorp/sites (would pass the
+    // old string-prefix check); its realpath is under .ezcorp/data, so the
+    // canonicalize-before-assert step must reject it.
+    expect(() => build({ workDir: symlinkIntoData })).toThrow();
+  });
+
+  test("fails closed when the work dir does not exist", () => {
+    expect(() => build({ workDir: join(ROOT, "missing-workdir") })).toThrow(/fail-closed/);
   });
 
   test("fails closed when a RO dir overlaps the data dir", () => {
-    expect(() => build({ roSystemDirs: ["/usr", resolve(ROOT, ".ezcorp/data")] })).toThrow();
+    expect(() => build({ roSystemDirs: [RO1, DATA] })).toThrow();
+  });
+
+  test("fails closed when a RO dir does not exist", () => {
+    expect(() => build({ roSystemDirs: [RO1, join(ROOT, "no-such-ro")] })).toThrow(/fail-closed/);
   });
 
   test("rejects empty required inputs", () => {

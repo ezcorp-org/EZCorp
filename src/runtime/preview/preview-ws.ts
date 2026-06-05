@@ -23,12 +23,52 @@
  * unit-tested without a live socket. Keeping it here (next to the HTTP
  * passthrough) makes the two paths share one access model — no drift.
  *
- * TODO(Phase 3b): CSWSH Origin validation (reject cross-site upgrade
- * Origins) + token re-check on the upgrade frame + per-preview rate limits.
- * Phase 3a does the access gate + port pin; the Origin allowlist is 3b.
+ * Phase 3b: CSWSH Origin validation — a WS upgrade carries an `Origin`
+ * header the browser sets to the page that opened the socket. We REQUIRE it
+ * to be the SAME preview origin (`<id>.preview.<appHost>`) the upgrade is
+ * for; a cross-site Origin (the app, another preview, an attacker page) is
+ * rejected before any bridge is opened. This is the cross-site WebSocket
+ * hijacking defense — the token alone isn't enough because a malicious page
+ * could ride the victim's `__ezpreview` cookie on a same-site-Lax request.
  */
 
 import type { PreviewRegistryRow, PreviewTokenClaims } from "./preview-proxy";
+
+/** The fixed infix that marks a preview origin host (mirrors
+ *  preview-proxy.ts PREVIEW_HOST_INFIX). Duplicated as a const here to keep
+ *  this module free of an import cycle with the HTTP proxy. */
+const PREVIEW_HOST_INFIX = ".preview.";
+
+/**
+ * Validate a WS-upgrade `Origin` header against the preview the upgrade is
+ * for (CSWSH defense). The Origin's host MUST be exactly
+ * `<previewId>.preview.<appHost>` — same id, same app host. Returns false
+ * for a missing/malformed Origin, a wrong scheme-host, a different preview
+ * id, the app origin itself, or a deeper-subdomain rebind.
+ *
+ * Pure + string-only so the allow/deny matrix is unit-tested without a
+ * socket. `appHost` is the bare app host (no scheme/port); the Origin's port
+ * is ignored (dev uses :5173/:3000, the host label is what matters).
+ */
+export function isAllowedPreviewOrigin(
+  origin: string | null,
+  previewId: string,
+  appHost: string | null,
+): boolean {
+  if (!origin || !appHost) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  // Only http/https origins (ws clients send the page's http(s) origin).
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  const host = parsed.hostname.toLowerCase();
+  const bareApp = appHost.split(":")[0]!.toLowerCase();
+  const expected = `${previewId.toLowerCase()}${PREVIEW_HOST_INFIX}${bareApp}`;
+  return host === expected;
+}
 
 /**
  * Is this request a WebSocket upgrade? Per RFC 6455: `Upgrade: websocket`
@@ -65,6 +105,12 @@ export interface DecideWebSocketUpgradeInput {
   search?: string;
   /** The `__ezpreview` cookie value (null when absent). */
   cookieToken: string | null;
+  /** The `Origin` header (CSWSH defense — Phase 3b). Validated against the
+   *  preview origin; a cross-site Origin is rejected. */
+  origin?: string | null;
+  /** The bare app host (no scheme/port) backing `*.preview.<host>`. Required
+   *  for the Origin check; when null the Origin gate fails closed. */
+  appHost?: string | null;
 }
 
 export interface DecideWebSocketUpgradeDeps {
@@ -92,6 +138,12 @@ export async function decideWebSocketUpgrade(
   const { previewId, requestPath, cookieToken } = input;
 
   if (!deps.isValidPreviewId(previewId)) return { accept: false, reason: "bad id" };
+  // CSWSH defense (Phase 3b): the upgrade Origin must be THIS preview origin.
+  // Run it FIRST — a cross-site page must be rejected before we even consult
+  // the token (which it might be riding via the same-site-Lax cookie).
+  if (!isAllowedPreviewOrigin(input.origin ?? null, previewId, input.appHost ?? null)) {
+    return { accept: false, reason: "cross-site origin" };
+  }
   if (!cookieToken) return { accept: false, reason: "no token" };
 
   const claims = await deps.verifyToken(cookieToken);

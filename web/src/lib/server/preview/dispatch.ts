@@ -15,6 +15,7 @@ import {
   getServablePreview,
   touchPreview,
 } from "$server/db/queries/preview-sessions";
+import { tryBridgePreviewWebSocket } from "./ws-bridge";
 
 // ── Preview-origin dispatch glue (SvelteKit side) ──────────────────────
 //
@@ -54,15 +55,29 @@ export function matchPreviewOrigin(request: Request): ParsedPreviewHost | null {
 
 /**
  * Serve a request that has already been matched to the preview origin.
- * Handles `/__open` (code -> cookie swap) and otherwise delegates to the
- * static/dynamic handler.
+ * Handles `/__open` (code -> cookie swap), a WS-upgrade bridge (HMR), and
+ * otherwise delegates to the static/dynamic handler.
+ *
+ * `platform` is the svelte-adapter-bun `event.platform` (the live Bun server +
+ * raw request) — required only for the WS bridge; absent under vite dev (the
+ * bridge then answers 426). Optional so static-only callers/tests don't need
+ * to construct it.
  */
 export async function servePreviewRequest(
   request: Request,
   parsed: ParsedPreviewHost,
+  platform?: { server?: { upgrade(req: unknown, opts?: { data?: unknown }): boolean }; request?: unknown },
 ): Promise<Response> {
   const url = new URL(request.url);
   const previewId = parsed.previewId;
+
+  // ── WebSocket / HMR upgrade bridge (Phase 3b) ──
+  // Run BEFORE /__open + the HTTP path: an upgrade request is a distinct
+  // protocol handoff. The bridge runs the access gate + CSWSH Origin check
+  // and pins the upstream to loopback. Returns null when this is NOT an
+  // upgrade (fall through to HTTP).
+  const wsResponse = await tryBridgePreviewWebSocket(request, previewId, appHost(), platform);
+  if (wsResponse) return wsResponse;
 
   // ── /__open?c=<code> — one-time code -> host-only cookie swap ──
   if (url.pathname === "/__open") {

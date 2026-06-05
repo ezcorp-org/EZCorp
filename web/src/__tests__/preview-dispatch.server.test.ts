@@ -249,13 +249,28 @@ describe("proxyDynamicFetch (loopback port-pin)", () => {
     try {
       const req = new Request("http://attacker.example.com/path?q=1", {
         method: "GET",
-        headers: { cookie: "__ezpreview=secret", "x-keep": "1" },
+        headers: {
+          cookie: "__ezpreview=secret",
+          authorization: "Bearer app-secret",
+          "x-forwarded-for": "1.2.3.4",
+          "x-forwarded-host": "evil",
+          forwarded: "for=1.2.3.4",
+          "x-ezcorp-internal": "leak",
+          "x-keep": "1",
+        },
       });
       await proxyDynamicFetch(8080, req, "/path");
       expect(captured!.url).toBe("http://127.0.0.1:8080/path?q=1");
       expect(captured!.init.redirect).toBe("manual");
       const h = new Headers(captured!.init.headers);
+      // Inbound sanitation (Phase 3b): credentials + forwarded + internal gone.
       expect(h.get("cookie")).toBeNull();
+      expect(h.get("authorization")).toBeNull();
+      expect(h.get("x-forwarded-for")).toBeNull();
+      expect(h.get("x-forwarded-host")).toBeNull();
+      expect(h.get("forwarded")).toBeNull();
+      expect(h.get("x-ezcorp-internal")).toBeNull();
+      // Host pinned to loopback; an unrelated safe header survives.
       expect(h.get("host")).toBe("127.0.0.1:8080");
       expect(h.get("x-keep")).toBe("1");
     } finally {

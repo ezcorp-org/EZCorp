@@ -239,18 +239,106 @@ export const HOP_BY_HOP_HEADERS: readonly string[] = [
 ];
 
 /**
- * Sanitize an upstream dev-server response for relay back to the browser.
- * Phase 3a does the BASICS: strip hop-by-hop headers + force the
- * preview-origin security headers (no-referrer / nosniff / no-store) so an
- * untrusted dev server can't weaken them.
+ * INBOUND header sanitation (Phase 3b). Before forwarding a request to the
+ * UNTRUSTED dev server we strip everything that could (a) leak the user's app
+ * credentials / session into the sandbox, or (b) let the dev server trust a
+ * spoofable proxy header. We forward only a SAFE minimal set — the dev server
+ * gets enough to render (method/body/content negotiation) but never the
+ * EZCorp identity surface.
  *
- * TODO(Phase 3b): neutralize untrusted `Set-Cookie` domain widening +
- * framing headers, and prevent cookie-tossing onto sibling preview
- * origins. Tracked in tasks/preview-port-exposure.md §3.5 + threat model.
+ * Stripped:
+ *   - `cookie` — the `__ezpreview` access token (already dropped in 3a;
+ *     re-asserted here so the strip set is one source of truth).
+ *   - `authorization`, `proxy-authorization` — app/proxy credentials.
+ *   - `x-forwarded-*`, `forwarded`, `x-real-ip` — spoofable origin/IP claims
+ *     the untrusted server must not be able to trust or echo.
+ *   - any `x-ezcorp-*` / `x-ez-*` internal header — never crosses the trust
+ *     boundary.
+ *   - the hop-by-hop set (re-set by fetch anyway, but explicit).
+ *
+ * The `host` header is intentionally NOT preserved here — the caller rewrites
+ * it to the loopback authority (`127.0.0.1:<port>`) so vhost'd dev servers
+ * resolve. Everything else (Accept, Content-Type, User-Agent, etc.) passes.
+ */
+export function sanitizeInboundHeaders(incoming: Headers): Headers {
+  const out = new Headers(incoming);
+  const strip = [
+    "cookie",
+    "authorization",
+    "proxy-authorization",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-forwarded-server",
+    "x-real-ip",
+    ...HOP_BY_HOP_HEADERS,
+  ];
+  for (const h of strip) out.delete(h);
+  // Drop ANY internal EZCorp header (prefix match — can't enumerate them all).
+  for (const key of [...out.keys()]) {
+    const k = key.toLowerCase();
+    if (k.startsWith("x-ezcorp-") || k.startsWith("x-ez-")) out.delete(key);
+  }
+  return out;
+}
+
+/**
+ * Neutralize a single upstream `Set-Cookie` value so an untrusted dev server
+ * cannot widen a cookie onto the parent app domain or a sibling preview
+ * origin (cookie-tossing / cookie-fixation defense). We STRIP the `Domain=`
+ * attribute entirely — a cookie with no Domain is host-only on the exact
+ * preview subdomain, which is the only scope we permit. `Path`, `Max-Age`,
+ * `Secure`, `HttpOnly`, `SameSite` are preserved (they don't cross origins).
+ *
+ * Pure + string-only so it is unit-testable against fixture cookie strings.
+ */
+export function neutralizeSetCookieDomain(value: string): string {
+  // Split on ';' into attributes, drop any `Domain=...` (case-insensitive),
+  // re-join. The name=value pair is always the first segment.
+  return value
+    .split(";")
+    .filter((seg) => !/^\s*domain\s*=/i.test(seg))
+    .join(";")
+    .trim();
+}
+
+/**
+ * Sanitize an upstream dev-server response for relay back to the browser
+ * (Phase 3a basics + Phase 3b hardening):
+ *   - strip hop-by-hop headers (RFC 7230);
+ *   - re-assert the preview-origin security headers (nosniff / no-referrer)
+ *     so the untrusted server can't weaken them;
+ *   - NEUTRALIZE every `Set-Cookie` Domain attribute so an untrusted response
+ *     can't set a cookie on the parent app domain or a sibling preview origin
+ *     (cookie-tossing defense);
+ *   - DROP framing headers (`X-Frame-Options`) from the untrusted response —
+ *     we don't let it dictate framing of the preview origin; the preview is
+ *     never embedded in the app chrome, and a conflicting/duplicate XFO from
+ *     an untrusted source is only a footgun.
+ *
+ * `Headers` collapses multiple Set-Cookie into one on `.get`, so we use
+ * `getSetCookie()` (WHATWG) to neutralize each individually, then re-append.
  */
 export function sanitizeUpstreamResponse(upstream: Response): Response {
   const headers = new Headers(upstream.headers);
   for (const h of HOP_BY_HOP_HEADERS) headers.delete(h);
+
+  // ── Set-Cookie domain neutralization ──
+  // Read every Set-Cookie BEFORE deleting, neutralize each, then re-add.
+  const setCookies =
+    typeof upstream.headers.getSetCookie === "function" ? upstream.headers.getSetCookie() : [];
+  headers.delete("set-cookie");
+  for (const raw of setCookies) {
+    const neutralized = neutralizeSetCookieDomain(raw);
+    if (neutralized.length > 0) headers.append("set-cookie", neutralized);
+  }
+
+  // ── Framing headers — drop the untrusted server's XFO (we control framing
+  // of the preview origin; the served site is never embedded in app chrome). ──
+  headers.delete("x-frame-options");
+
   // Re-assert the preview-origin security headers (don't let the upstream
   // override them).
   headers.set("X-Content-Type-Options", "nosniff");

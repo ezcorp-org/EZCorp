@@ -21,6 +21,8 @@ import {
   handlePreviewRequest,
   contentTypeFor,
   sanitizeUpstreamResponse,
+  sanitizeInboundHeaders,
+  neutralizeSetCookieDomain,
   HOP_BY_HOP_HEADERS,
   type HandlePreviewRequestDeps,
   type PreviewRegistryRow,
@@ -90,6 +92,97 @@ describe("sanitizeUpstreamResponse (dynamic passthrough)", () => {
   test("preserves status + statusText", () => {
     const out = sanitizeUpstreamResponse(new Response("nf", { status: 404, statusText: "Not Found" }));
     expect(out.status).toBe(404);
+  });
+
+  test("neutralizes Set-Cookie Domain widening (cookie-tossing defense)", () => {
+    const headers = new Headers();
+    headers.append("Set-Cookie", "sid=abc; Domain=.example.com; Path=/; HttpOnly");
+    const out = sanitizeUpstreamResponse(new Response("b", { status: 200, headers }));
+    const cookies = out.headers.getSetCookie();
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]!.toLowerCase()).not.toContain("domain=");
+    // Non-domain attributes survive (host-only on the preview subdomain).
+    expect(cookies[0]).toContain("sid=abc");
+    expect(cookies[0]).toContain("HttpOnly");
+  });
+
+  test("neutralizes Domain on EVERY Set-Cookie (multi-cookie response)", () => {
+    const headers = new Headers();
+    headers.append("Set-Cookie", "a=1; Domain=.evil.com");
+    headers.append("Set-Cookie", "b=2; Domain=example.com; Path=/x");
+    const out = sanitizeUpstreamResponse(new Response("b", { status: 200, headers }));
+    const cookies = out.headers.getSetCookie();
+    expect(cookies).toHaveLength(2);
+    for (const c of cookies) expect(c.toLowerCase()).not.toContain("domain=");
+  });
+
+  test("drops the untrusted server's X-Frame-Options", () => {
+    const out = sanitizeUpstreamResponse(
+      new Response("b", { status: 200, headers: { "X-Frame-Options": "DENY" } }),
+    );
+    expect(out.headers.get("x-frame-options")).toBeNull();
+  });
+});
+
+describe("neutralizeSetCookieDomain", () => {
+  test("strips Domain= (case-insensitive) keeping the rest", () => {
+    expect(neutralizeSetCookieDomain("x=1; Domain=.a.com; Path=/")).toBe("x=1; Path=/");
+    expect(neutralizeSetCookieDomain("x=1; domain=a.com")).toBe("x=1");
+    expect(neutralizeSetCookieDomain("x=1; DOMAIN=a.com; Secure")).toBe("x=1; Secure");
+  });
+
+  test("a cookie with no Domain is returned unchanged", () => {
+    expect(neutralizeSetCookieDomain("x=1; Path=/; HttpOnly")).toBe("x=1; Path=/; HttpOnly");
+  });
+});
+
+describe("sanitizeInboundHeaders (forwarded to untrusted dev server)", () => {
+  test("strips credentials + forwarded + internal headers", () => {
+    const inc = new Headers({
+      cookie: "__ezpreview=tok",
+      authorization: "Bearer secret",
+      "proxy-authorization": "x",
+      forwarded: "for=1.2.3.4",
+      "x-forwarded-for": "1.2.3.4",
+      "x-forwarded-host": "evil",
+      "x-forwarded-proto": "https",
+      "x-forwarded-port": "443",
+      "x-real-ip": "1.2.3.4",
+      "x-ezcorp-internal": "secret",
+      "x-ez-user": "u1",
+      connection: "keep-alive",
+      // safe headers that must survive:
+      accept: "text/html",
+      "content-type": "application/json",
+      "user-agent": "ua",
+    });
+    const out = sanitizeInboundHeaders(inc);
+    for (const h of [
+      "cookie",
+      "authorization",
+      "proxy-authorization",
+      "forwarded",
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-proto",
+      "x-forwarded-port",
+      "x-real-ip",
+      "x-ezcorp-internal",
+      "x-ez-user",
+      "connection",
+    ]) {
+      expect(out.get(h)).toBeNull();
+    }
+    // Safe headers preserved.
+    expect(out.get("accept")).toBe("text/html");
+    expect(out.get("content-type")).toBe("application/json");
+    expect(out.get("user-agent")).toBe("ua");
+  });
+
+  test("does not mutate the input Headers", () => {
+    const inc = new Headers({ authorization: "Bearer x" });
+    sanitizeInboundHeaders(inc);
+    expect(inc.get("authorization")).toBe("Bearer x");
   });
 });
 

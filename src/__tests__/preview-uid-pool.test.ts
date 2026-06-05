@@ -284,4 +284,53 @@ describe("enforceDataDirLockdown — the keystone", () => {
   test("previewDataDir resolves under <root>/.ezcorp/data", () => {
     expect(previewDataDir("/srv/app")).toBe("/srv/app/.ezcorp/data");
   });
+
+  test("default fs seams: real mkdir(absent) + chmod + stat lock down a temp dir to 0700", async () => {
+    const fs = await import("node:fs/promises");
+    const { statSync } = await import("node:fs");
+    const root = await fs.mkdtemp("/tmp/prev-uid-lockdown-");
+    try {
+      // No statFn/mkdirFn/chmodFn injected → the DEFAULT closures run: the
+      // data dir is absent, so the default mkdirFn creates it 0700, the
+      // default chmodFn re-applies 0700, and the default statFn re-stats.
+      const res = enforceDataDirLockdown(root);
+      expect(res.ok).toBe(true);
+      expect(res.reason).toBeNull();
+      // The real dir now exists at 0700, owned by us.
+      const s = statSync(`${root}/.ezcorp/data`);
+      expect(s.mode & 0o777).toBe(0o700);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default fs seams: an already-present dir takes the chmod-existing path", async () => {
+    const fs = await import("node:fs/promises");
+    const root = await fs.mkdtemp("/tmp/prev-uid-existing-");
+    try {
+      // Pre-create the data dir so the default statFn succeeds first time and
+      // the mkdir branch is skipped — the default chmodFn + re-stat still run.
+      await fs.mkdir(`${root}/.ezcorp/data`, { recursive: true, mode: 0o700 });
+      const res = enforceDataDirLockdown(root);
+      expect(res.ok).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a throwing post-chmod re-stat fails closed (re-stat catch arm)", () => {
+    let statCalls = 0;
+    const res = enforceDataDirLockdown("/proj", {
+      // First stat (existence probe) succeeds; the post-chmod re-stat throws.
+      statFn: () => {
+        statCalls++;
+        if (statCalls >= 2) throw new Error("re-stat exploded");
+        return { mode: 0o40700, uid: APP_UID };
+      },
+      chmodFn: () => {},
+      getuidFn: () => APP_UID,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toContain("re-stat failed");
+  });
 });

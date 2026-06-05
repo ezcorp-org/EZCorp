@@ -349,6 +349,32 @@ describe("handlePreviewRequest", () => {
     expect(res.status).toBe(404);
   });
 
+  test("dynamic kind: over the rate limit → 429 (before touching upstream)", async () => {
+    let proxied = false;
+    const res = await handlePreviewRequest(
+      { previewId: VALID_ID, requestPath: "/", cookieToken: "good", request: new Request("http://x/") },
+      deps({
+        getServable: async () => dynRow,
+        checkRate: () => false, // over cap
+        proxyDynamic: async () => { proxied = true; return new Response("ok"); },
+      }),
+    );
+    expect(res.status).toBe(429);
+    expect(proxied).toBe(false); // never reached the untrusted upstream
+  });
+
+  test("dynamic kind: under the rate limit → proxies normally", async () => {
+    const res = await handlePreviewRequest(
+      { previewId: VALID_ID, requestPath: "/", cookieToken: "good", request: new Request("http://x/") },
+      deps({
+        getServable: async () => dynRow,
+        checkRate: () => true,
+        proxyDynamic: async () => new Response("ok", { status: 200 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
   test("dynamic kind: dev server down → graceful 502", async () => {
     const res = await handlePreviewRequest(
       { previewId: VALID_ID, requestPath: "/", cookieToken: "good", request: new Request("http://x/") },

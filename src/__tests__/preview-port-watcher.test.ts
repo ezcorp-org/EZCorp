@@ -303,3 +303,111 @@ describe("StaticPortSource", () => {
     expect(s.listListeners("d")).toEqual([]);
   });
 });
+
+describe("PreviewPortWatcher — idle reaping (Phase 3b)", () => {
+  let source: StaticPortSource;
+  beforeEach(() => {
+    source = new StaticPortSource();
+  });
+
+  test("reaps a conversation that had a listener then went idle for idleReapTicks", async () => {
+    const reaped: string[] = [];
+    const w = new PreviewPortWatcher({
+      source,
+      onDetected: () => {},
+      stabilizeTicks: 1,
+      skipLockfile: true,
+      idleReapTicks: 2,
+      onIdleReap: (c) => { reaped.push(c); },
+    });
+    w.watch("conv1", "userA");
+    source.set("conv1", [5173]);
+    await w.tickOnce(); // listener seen → everListened, idleTicks=0
+    source.set("conv1", []); // dev server gone
+    await w.tickOnce(); // idleTicks=1
+    expect(reaped).toHaveLength(0);
+    await w.tickOnce(); // idleTicks=2 → reap
+    expect(reaped).toEqual(["conv1"]);
+    // After reaping, the watch is dropped (no longer polled).
+    expect(w.watchedCount()).toBe(0);
+  });
+
+  test("does NOT reap a conversation that never bound a port (still starting up)", async () => {
+    const reaped: string[] = [];
+    const w = new PreviewPortWatcher({
+      source,
+      onDetected: () => {},
+      stabilizeTicks: 1,
+      skipLockfile: true,
+      idleReapTicks: 1,
+      onIdleReap: (c) => { reaped.push(c); },
+    });
+    w.watch("conv1", "userA");
+    source.set("conv1", []); // never binds
+    await w.tickOnce();
+    await w.tickOnce();
+    await w.tickOnce();
+    expect(reaped).toHaveLength(0);
+    expect(w.watchedCount()).toBe(1); // still watched (might bind later)
+  });
+
+  test("idle counter resets when the listener comes back", async () => {
+    const reaped: string[] = [];
+    const w = new PreviewPortWatcher({
+      source,
+      onDetected: () => {},
+      stabilizeTicks: 1,
+      skipLockfile: true,
+      idleReapTicks: 2,
+      onIdleReap: (c) => { reaped.push(c); },
+    });
+    w.watch("conv1", "userA");
+    source.set("conv1", [5173]);
+    await w.tickOnce(); // seen
+    source.set("conv1", []);
+    await w.tickOnce(); // idleTicks=1
+    source.set("conv1", [5173]); // back!
+    await w.tickOnce(); // idleTicks reset to 0
+    source.set("conv1", []);
+    await w.tickOnce(); // idleTicks=1 again (not 2)
+    expect(reaped).toHaveLength(0);
+  });
+
+  test("idle reaping disabled (idleReapTicks=0) never reaps", async () => {
+    const reaped: string[] = [];
+    const w = new PreviewPortWatcher({
+      source,
+      onDetected: () => {},
+      stabilizeTicks: 1,
+      skipLockfile: true,
+      idleReapTicks: 0,
+      onIdleReap: (c) => { reaped.push(c); },
+    });
+    w.watch("conv1", "userA");
+    source.set("conv1", [5173]);
+    await w.tickOnce();
+    source.set("conv1", []);
+    await w.tickOnce();
+    await w.tickOnce();
+    await w.tickOnce();
+    expect(reaped).toHaveLength(0);
+    expect(w.watchedCount()).toBe(1);
+  });
+
+  test("a throwing onIdleReap is swallowed + the watch is still dropped", async () => {
+    const w = new PreviewPortWatcher({
+      source,
+      onDetected: () => {},
+      stabilizeTicks: 1,
+      skipLockfile: true,
+      idleReapTicks: 1,
+      onIdleReap: () => { throw new Error("reap boom"); },
+    });
+    w.watch("conv1", "userA");
+    source.set("conv1", [5173]);
+    await w.tickOnce(); // seen
+    source.set("conv1", []);
+    await expect(w.tickOnce()).resolves.toBeUndefined(); // idleTicks=1 → reap, no throw
+    expect(w.watchedCount()).toBe(0);
+  });
+});

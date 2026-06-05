@@ -43,7 +43,9 @@ vi.mock("$server/runtime/preview/preview-token", async () => {
 });
 
 const { POST } = await import("../routes/api/preview/[id]/token/+server");
-const { matchPreviewOrigin, servePreviewRequest } = await import("$lib/server/preview/dispatch");
+const { matchPreviewOrigin, servePreviewRequest, meterResponseBody } = await import(
+  "$lib/server/preview/dispatch"
+);
 const { PREVIEW_TOKEN_TTL_SECONDS } = await import("$server/runtime/preview/preview-token");
 
 const VALID_ID = "abcdefghjkmnpqrstvwxyz0123";
@@ -276,5 +278,57 @@ describe("proxyDynamicFetch (loopback port-pin)", () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+});
+
+describe("meterResponseBody (per-preview byte budget)", () => {
+  function streamOf(...chunks: string[]): ReadableStream<Uint8Array> {
+    const enc = new TextEncoder();
+    let i = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (i < chunks.length) controller.enqueue(enc.encode(chunks[i++]));
+        else controller.close();
+      },
+    });
+  }
+  async function drain(stream: ReadableStream<Uint8Array>): Promise<{ bytes: number; errored: boolean }> {
+    const reader = stream.getReader();
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+      }
+      return { bytes, errored: false };
+    } catch {
+      return { bytes, errored: true };
+    }
+  }
+
+  test("passes through chunks while under budget", async () => {
+    const quota = { allowBytes: () => true };
+    const out = meterResponseBody(streamOf("aaa", "bbb"), "p1", quota);
+    const r = await drain(out);
+    expect(r.errored).toBe(false);
+    expect(r.bytes).toBe(6);
+  });
+
+  test("errors the stream when a chunk exceeds the budget", async () => {
+    let calls = 0;
+    const quota = { allowBytes: () => { calls++; return calls === 1; } };
+    const out = meterResponseBody(streamOf("aaa", "bbb"), "p1", quota);
+    const r = await drain(out);
+    expect(r.errored).toBe(true);
+    expect(r.bytes).toBe(3);
+  });
+
+  test("charges the preview id passed in", async () => {
+    const seen: string[] = [];
+    const quota = { allowBytes: (id: string) => { seen.push(id); return true; } };
+    const out = meterResponseBody(streamOf("x"), "preview-xyz", quota);
+    await drain(out);
+    expect(seen).toEqual(["preview-xyz"]);
   });
 });

@@ -97,6 +97,12 @@ interface WatchedConversation {
   /** ports already emitted this up-cycle (dedup). Cleared per-port when
    *  the port disappears so a restart re-notifies. */
   emitted: Set<number>;
+  /** Consecutive ticks with ZERO listeners — drives idle reaping (Phase 3b).
+   *  Reset to 0 whenever any listener is seen. */
+  idleTicks: number;
+  /** True once at least one listener has EVER been seen — so a conversation
+   *  that's still spinning up its dev server isn't reaped before it binds. */
+  everListened: boolean;
 }
 
 export interface PreviewPortWatcherOptions {
@@ -116,6 +122,21 @@ export interface PreviewPortWatcherOptions {
   skipLockfile?: boolean;
   /** Override the lockfile path for tests. */
   lockfilePath?: string;
+  /**
+   * Idle reaping (Phase 3b). When set, a conversation that HAD a listener but
+   * has then gone `idleReapTicks` consecutive ticks with ZERO listeners is
+   * reaped via `onIdleReap` (kill proc + revoke preview + drop watch). Omit
+   * (or 0) to disable idle reaping — the watcher then only detects, never
+   * reaps. A conversation that never bound a port is NOT reaped on idle (it
+   * may still be starting up); explicit conversation-close reaping handles
+   * that case out-of-band.
+   */
+  idleReapTicks?: number;
+  /** Called when a watched conversation has been idle for `idleReapTicks`.
+   *  The handler reaps the conversation (preview-reaper). After it runs the
+   *  watcher drops the watch automatically. Errors are swallowed (a reap
+   *  failure can't crash the daemon tick). */
+  onIdleReap?: (conversationId: string) => void | Promise<void>;
 }
 
 // ── PreviewPortWatcher class ─────────────────────────────────────────
@@ -128,6 +149,8 @@ export class PreviewPortWatcher {
   private readonly infraPorts: Set<number>;
   private readonly skipLockfile: boolean;
   private readonly lockfilePath: string;
+  private readonly idleReapTicks: number;
+  private readonly onIdleReap?: (conversationId: string) => void | Promise<void>;
 
   private timer?: ReturnType<typeof setInterval>;
   private lockfileOwned = false;
@@ -143,6 +166,8 @@ export class PreviewPortWatcher {
     this.infraPorts = new Set<number>([...DEFAULT_INFRA_PORTS, ...(options.infraPorts ?? [])]);
     this.skipLockfile = options.skipLockfile ?? false;
     this.lockfilePath = options.lockfilePath ?? DEFAULT_LOCKFILE_PATH;
+    this.idleReapTicks = Math.max(0, options.idleReapTicks ?? 0);
+    this.onIdleReap = options.onIdleReap;
   }
 
   /**
@@ -158,7 +183,13 @@ export class PreviewPortWatcher {
       existing.userId = userId;
       return;
     }
-    this.watched.set(conversationId, { userId, seen: new Map(), emitted: new Set() });
+    this.watched.set(conversationId, {
+      userId,
+      seen: new Map(),
+      emitted: new Set(),
+      idleTicks: 0,
+      everListened: false,
+    });
   }
 
   /** Stop watching a conversation (reaped on conversation close / stop).
@@ -262,9 +293,47 @@ export class PreviewPortWatcher {
             state.emitted.delete(port);
           }
         }
+
+        // ── Idle reaping (Phase 3b) ──
+        // Track consecutive zero-listener ticks. A conversation that HAD a
+        // dev server but has now gone quiet for `idleReapTicks` is reaped
+        // (proc killed + preview revoked + watch dropped). A conversation
+        // that has NEVER bound a port is left alone (still spinning up).
+        if (currentPorts.size > 0) {
+          state.everListened = true;
+          state.idleTicks = 0;
+        } else if (state.everListened) {
+          state.idleTicks++;
+          if (this.idleReapTicks > 0 && this.onIdleReap && state.idleTicks >= this.idleReapTicks) {
+            await this.reapIdle(conversationId);
+          }
+        }
       }
     } finally {
       this._ticking = false;
+    }
+  }
+
+  /**
+   * Reap an idle conversation: invoke `onIdleReap` (kill proc + revoke
+   * preview) then drop the watch so the daemon stops polling it. Swallows
+   * handler errors — a reap failure must never crash the tick.
+   */
+  private async reapIdle(conversationId: string): Promise<void> {
+    log.info("preview conversation idle — reaping", {
+      conversationId,
+      idleReapTicks: this.idleReapTicks,
+    });
+    try {
+      await this.onIdleReap?.(conversationId);
+    } catch (err) {
+      log.warn("preview-port-watcher: idle reap handler threw", {
+        conversationId,
+        error: String((err as Error)?.message ?? err),
+      });
+    } finally {
+      // Always drop the watch — a reaped conversation is no longer polled.
+      this.watched.delete(conversationId);
     }
   }
 

@@ -169,6 +169,32 @@ describe("spawnPreviewServer", () => {
     ).toThrow(/allowlisted preview range/);
     expect(spawned).toBe(false);
   });
+
+  test("default spawner: real Bun.spawn launches the helper path + captures pid/pgid", async () => {
+    // No `spawn` injected → the DEFAULT closure runs Bun.spawn for real. We
+    // point helperPath at a throwaway no-op executable (NOT the live setuid
+    // helper — the privilege drop itself is the only Docker-gated part). This
+    // exercises the closure's Bun.spawn call + the pid/pgid/uid/kill mapping.
+    const fs = await import("node:fs/promises");
+    const dir = await fs.mkdtemp("/tmp/prev-spawn-helper-");
+    const helper = `${dir}/noop-helper`;
+    await Bun.write(helper, "#!/bin/sh\nexit 0\n");
+    await fs.chmod(helper, 0o755);
+    try {
+      const proc = spawnPreviewServer(
+        { uid: 90007, workDir: dir, command: "ignored", args: ["x"] },
+        { helperPath: helper },
+      );
+      expect(proc.pid).toBeGreaterThan(0);
+      expect(proc.pgid).toBe(proc.pid); // helper setsid → pgid===pid mapping
+      expect(proc.uid).toBe(90007);
+      const code = await proc.exited;
+      expect(code).toBe(0);
+      proc.kill(); // exercises the mapped kill() (already-exited → no-op)
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("buildPreviewKillArgv — setuid helper --kill mode argv", () => {
@@ -234,6 +260,24 @@ describe("killPreviewProcess — confirmed-kill via the helper", () => {
     });
     expect(ok).toBe(false);
     expect(spawned).toBe(false);
+  });
+
+  test("default spawner: real Bun.spawn of the --kill helper resolves on its exit code", async () => {
+    // No `spawn` injected → the DEFAULT closure runs Bun.spawn for real. Point
+    // helperPath at a throwaway no-op exe (exit 0) so the helper-invocation
+    // closure + the exit-code → confirmed mapping run host-side. (The real
+    // cross-uid signal is the only Docker-gated part.)
+    const fs = await import("node:fs/promises");
+    const dir = await fs.mkdtemp("/tmp/prev-kill-helper-");
+    const helper = `${dir}/noop-kill`;
+    await Bun.write(helper, "#!/bin/sh\nexit 0\n");
+    await fs.chmod(helper, 0o755);
+    try {
+      const ok = await killPreviewProcess(90001, 4242, { helperPath: helper });
+      expect(ok).toBe(true); // exit 0 → confirmed
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1,6 +1,7 @@
 import {
   parsePreviewHost,
   handlePreviewRequest,
+  sanitizeInboundHeaders,
   type ParsedPreviewHost,
 } from "$server/runtime/preview/preview-proxy";
 import {
@@ -138,12 +139,13 @@ export async function proxyDynamicFetch(
   // Pin to loopback + the exact port. Preserve path + query verbatim.
   const target = new URL(`http://127.0.0.1:${port}${requestPath}${incoming.search}`);
 
-  // Forward method + body + most headers, but rewrite Host to the dev
-  // server's loopback authority (some dev servers vhost on Host) and drop
-  // the preview cookie so the untrusted server never sees the access token.
-  const fwdHeaders = new Headers(request.headers);
+  // INBOUND sanitation (Phase 3b): strip the preview cookie, app/proxy
+  // credentials (Authorization), and every spoofable X-Forwarded-* /
+  // Forwarded / internal EZCorp header before forwarding to the untrusted
+  // dev server. Then rewrite Host to the loopback authority so vhost'd dev
+  // servers resolve.
+  const fwdHeaders = sanitizeInboundHeaders(request.headers);
   fwdHeaders.set("host", `127.0.0.1:${port}`);
-  fwdHeaders.delete("cookie");
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   return fetch(target, {

@@ -21,6 +21,7 @@ import {
   getSessionCookieName,
 } from "$lib/server/auth/session-cookie";
 import { matchPreviewOrigin, servePreviewRequest } from "$lib/server/preview/dispatch";
+import { createPreviewWebSocketHandler } from "$lib/server/preview/ws-bridge";
 
 const log = logger.child("hooks.server");
 
@@ -279,7 +280,10 @@ export const handle: Handle = async ({ event, resolve }) => {
   // Disabled (no-op) unless EZCORP_PREVIEW_APP_HOST is configured.
   const previewMatch = matchPreviewOrigin(request);
   if (previewMatch) {
-    return servePreviewRequest(request, previewMatch);
+    // Pass `event.platform` (svelte-adapter-bun: live Bun server + raw
+    // request) so a preview WS/HMR upgrade can be bridged. Undefined under
+    // vite dev — the bridge then answers 426 for upgrades, serves HTTP fine.
+    return servePreviewRequest(request, previewMatch, event.platform as never);
   }
 
   // OPTIONS preflight
@@ -633,3 +637,15 @@ export const handleError: HandleServerError = ({ error, status, message }) => {
 // (svelte-adapter-bun), across all access topologies (localhost,
 // tailscale HTTPS, LAN), and avoids Bun's broken node:http upgrade
 // handoff that made vite-level WS proxying impossible.
+//
+// ── Secure-preview WS/HMR bridge (Phase 3b) ───────────────────────────
+// The app itself uses SSE (above), but dynamic PREVIEWS need a real WS relay
+// so vite/bun HMR works through the `<id>.preview.<host>` origin. The Handle
+// hook calls `tryBridgePreviewWebSocket`, which runs the access gate + CSWSH
+// Origin check and then `event.platform.server.upgrade(...)` with the pinned
+// loopback upstream as socket data. svelte-adapter-bun routes accepted
+// sockets to THIS exported `websocket` handler, which opens the upstream and
+// relays frames. Only sockets tagged `__preview` are bridged; this is a no-op
+// in vite dev (no Bun server to upgrade). Live path is Docker-verified.
+
+export const websocket = createPreviewWebSocketHandler();

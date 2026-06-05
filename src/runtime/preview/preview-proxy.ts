@@ -67,7 +67,15 @@ export function parsePreviewHost(host: string | null, appHost: string): ParsedPr
  * `requestPath` is the URL pathname (e.g. "/", "/assets/app.js"). A
  * trailing "/" or empty path resolves to "index.html".
  */
-export async function resolveStaticFile(root: string, requestPath: string): Promise<string | null> {
+export async function resolveStaticFile(
+  root: string,
+  requestPath: string,
+  /** Injected for tests: the final existence/type stat of the resolved target.
+   *  Defaults to the real `fs.stat`. Lets a test exercise the post-realpath
+   *  stat-failure catch (a TOCTOU race where the file vanishes between the
+   *  symlink-escape realpath check and the stat) without an actual race. */
+  statFn: (p: string) => Promise<{ isFile(): boolean }> = stat,
+): Promise<string | null> {
   // Decode once; reject control bytes + explicit `..` segments early.
   let decoded: string;
   try {
@@ -118,7 +126,7 @@ export async function resolveStaticFile(root: string, requestPath: string): Prom
 
   let info;
   try {
-    info = await stat(realTarget);
+    info = await statFn(realTarget);
   } catch {
     return null;
   }

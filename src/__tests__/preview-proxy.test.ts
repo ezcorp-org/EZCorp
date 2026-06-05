@@ -236,6 +236,13 @@ describe("resolveStaticFile", () => {
     expect(await resolveStaticFile(root, "/%2e%2e/secret/passwd")).toBeNull();
   });
 
+  test("rejects a malformed percent-encoding (decodeURIComponent throws)", async () => {
+    // A lone '%' (or '%zz') makes decodeURIComponent throw — the early catch
+    // must return null, never leak the raw path or throw.
+    expect(await resolveStaticFile(root, "/%")).toBeNull();
+    expect(await resolveStaticFile(root, "/bad%zz")).toBeNull();
+  });
+
   test("rejects a symlink escaping the jail", async () => {
     expect(await resolveStaticFile(root, "/escape")).toBeNull();
   });
@@ -247,6 +254,16 @@ describe("resolveStaticFile", () => {
 
   test("returns null when the root itself does not exist", async () => {
     expect(await resolveStaticFile(join(root, "does-not-exist"), "/index.html")).toBeNull();
+  });
+
+  test("returns null when the post-realpath stat throws (TOCTOU read-race catch)", async () => {
+    // The target passes every lexical + realpath/symlink-escape guard, but the
+    // final stat throws (file vanished after resolution). The injected statFn
+    // seam reproduces that race deterministically; the guard must answer null.
+    const res = await resolveStaticFile(root, "/index.html", () => {
+      throw new Error("ENOENT — vanished between realpath and stat");
+    });
+    expect(res).toBeNull();
   });
 });
 
@@ -306,6 +323,29 @@ describe("handlePreviewRequest", () => {
   test("404 on a malformed previewId", async () => {
     const res = await handlePreviewRequest({ previewId: "bad", requestPath: "/", cookieToken: "good" }, deps());
     expect(res.status).toBe(404);
+  });
+
+  test("static branch: a readFile that throws after path resolution → 404 (read-race catch)", async () => {
+    // Use a REAL static root so resolveStaticFile returns a non-null path,
+    // then inject a readFile that throws (file vanished between resolve+read).
+    // The handler must catch and answer one opaque 404, never 500.
+    const base = await mkdtemp(join(tmpdir(), "ezprev-read-"));
+    await writeFile(join(base, "index.html"), "<h1>hi</h1>");
+    const realRow: PreviewRegistryRow = {
+      id: VALID_ID, userId: "u1", kind: "static", staticPath: base, targetPort: null,
+    };
+    try {
+      const res = await handlePreviewRequest(
+        { previewId: VALID_ID, requestPath: "/index.html", cookieToken: "good" },
+        deps({
+          getServable: async () => realRow,
+          readFile: async () => { throw new Error("ENOENT — vanished"); },
+        }),
+      );
+      expect(res.status).toBe(404);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   const dynRow: PreviewRegistryRow = {

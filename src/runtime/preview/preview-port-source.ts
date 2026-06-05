@@ -212,9 +212,9 @@ export function parseProcNetTcp(content: string): ProcListenSocket[] {
  * returns their concatenated content. A missing file (e.g. no ipv6) is
  * tolerated — its content is simply empty.
  */
-function defaultProcReader(): string {
+function defaultProcReader(paths: readonly string[] = ["/proc/net/tcp", "/proc/net/tcp6"]): string {
   let combined = "";
-  for (const path of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+  for (const path of paths) {
     try {
       combined += readFileSync(path, "utf8");
       combined += "\n";
@@ -267,3 +267,13 @@ export class ProcPortSource implements PreviewPortSource {
     return [...ports].map((port) => ({ port }));
   }
 }
+
+/**
+ * Test-only export: the default `/proc/net/tcp{,6}` reader used when
+ * `ProcPortSource` is constructed without an injected `readProc`. Exposed so
+ * the live (host-readable) read + the missing-file tolerance are gated;
+ * production constructs it implicitly.
+ */
+export const _previewPortSourceInternals = {
+  defaultProcReader,
+};

@@ -3,7 +3,11 @@
  * rolling byte budget, per-preview-id isolation, injected clock.
  */
 import { test, expect, describe } from "bun:test";
-import { createPreviewQuota } from "../runtime/preview/preview-rate-limit";
+import {
+  createPreviewQuota,
+  getPreviewQuota,
+  _resetPreviewQuotaForTests,
+} from "../runtime/preview/preview-rate-limit";
 
 describe("createPreviewQuota — request rate", () => {
   test("allows up to the per-second cap, then rejects", () => {
@@ -75,5 +79,18 @@ describe("createPreviewQuota — byte budget", () => {
     expect(q.allowBytes("p1", 1)).toBe(false);
     q.forget("p1");
     expect(q.allowBytes("p1", 100)).toBe(true); // fresh after forget
+  });
+});
+
+describe("getPreviewQuota — process singleton", () => {
+  test("lazily creates one shared quota; reset rebuilds it", () => {
+    _resetPreviewQuotaForTests();
+    const a = getPreviewQuota();
+    const b = getPreviewQuota();
+    expect(a).toBe(b); // same instance across calls (singleton)
+    _resetPreviewQuotaForTests();
+    const c = getPreviewQuota();
+    expect(c).not.toBe(a); // a fresh instance after reset
+    _resetPreviewQuotaForTests();
   });
 });

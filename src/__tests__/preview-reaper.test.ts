@@ -9,7 +9,11 @@
  * integrity fix: an unconfirmed kill can leave a live orphan owning the uid,
  * so the uid MUST NOT be returned to the allocatable pool.
  */
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { setupTestDb, closeTestDb, mockDbConnection } from "./helpers/test-pglite";
+
+mockDbConnection();
+
 import { reapPreviewConversation } from "../runtime/preview/preview-reaper";
 
 function deps(over: Record<string, unknown> = {}) {
@@ -110,5 +114,69 @@ describe("reapPreviewConversation", () => {
     expect(res.previewsRevoked).toBe(3); // revoke still counted
     expect(res.uidReleased).toBe(true);
     expect(calls.unwatched).toEqual(["conv-f"]);
+  });
+
+  test("a throwing uid-release is swallowed; the sweep continues", async () => {
+    const { d, calls } = deps({
+      reapUid: () => { throw new Error("uid boom"); },
+    });
+    const res = await reapPreviewConversation("conv-u", d);
+    // The throw is caught — uidReleased stays false, but later steps still run.
+    expect(res.uidReleased).toBe(false);
+    expect(calls.netns).toEqual(["conv-u"]);
+    expect(calls.unwatched).toEqual(["conv-u"]);
+  });
+
+  test("a throwing uid-quarantine is swallowed (unconfirmed-kill path)", async () => {
+    const { d, calls } = deps({
+      killProcesses: async () => ({ killed: 1, unconfirmed: 1 }),
+      quarantineUid: () => { throw new Error("quarantine boom"); },
+    });
+    const res = await reapPreviewConversation("conv-qx", d);
+    expect(res.uidQuarantined).toBe(false); // throw → stays false
+    expect(calls.netns).toEqual(["conv-qx"]);
+    expect(calls.unwatched).toEqual(["conv-qx"]);
+  });
+
+  test("a throwing netns-reap is swallowed; unwatch still runs", async () => {
+    const { d, calls } = deps({
+      reapNetns: () => { throw new Error("netns boom"); },
+    });
+    const res = await reapPreviewConversation("conv-n", d);
+    expect(res.uidReleased).toBe(true);
+    expect(calls.unwatched).toEqual(["conv-n"]); // unwatch still ran
+  });
+
+  test("a throwing unwatch is swallowed; the reap still resolves", async () => {
+    const { d } = deps({
+      unwatch: () => { throw new Error("unwatch boom"); },
+    });
+    const res = await reapPreviewConversation("conv-w", d);
+    expect(res.uidReleased).toBe(true); // everything prior still applied
+  });
+});
+
+describe("reapPreviewConversation — default (live) revoke seam", () => {
+  beforeAll(async () => {
+    await setupTestDb();
+  });
+  afterAll(async () => {
+    await closeTestDb();
+  });
+
+  test("with NO injected revokePreviews it imports + runs the live DB query", async () => {
+    // Omitting revokePreviews exercises the default dynamic-import arm that
+    // calls reapPreviewIdsForConversation. With an empty registry the
+    // conversation has no active rows → 0 revoked, but the live query path ran.
+    const res = await reapPreviewConversation("conv-no-rows", {
+      killProcesses: async () => ({ killed: 0, unconfirmed: 0 }),
+      reapUid: () => true,
+      quarantineUid: () => true,
+      reapNetns: () => false,
+      unwatch: () => {},
+      // forgetQuota omitted too → exercises its default (no ids to forget).
+    });
+    expect(res.previewsRevoked).toBe(0);
+    expect(res.uidReleased).toBe(true);
   });
 });

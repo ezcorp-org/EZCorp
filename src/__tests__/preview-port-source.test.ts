@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  _previewPortSourceInternals,
   parseProcNetTcp,
   ProcPortSource,
   StaticPortSource,
@@ -120,5 +121,35 @@ describe("StaticPortSource (regression — still works)", () => {
     src.set("conv-A", [5173, 8080]);
     expect(src.listListeners("conv-A")).toEqual([{ port: 5173 }, { port: 8080 }]);
     expect(src.listListeners("unknown")).toEqual([]);
+  });
+});
+
+describe("defaultProcReader (the implicit /proc reader)", () => {
+  const { defaultProcReader } = _previewPortSourceInternals;
+
+  test("reads the real /proc/net/tcp on this Linux host", () => {
+    // The default reads /proc/net/tcp{,6}; on any Linux host /proc/net/tcp
+    // exists and its header row begins with "sl". This exercises the live
+    // readFileSync success path of the default reader.
+    const content = defaultProcReader();
+    expect(content.length).toBeGreaterThan(0);
+    expect(content).toContain("sl");
+    // What it returns must be parseable by parseProcNetTcp without throwing.
+    expect(() => parseProcNetTcp(content)).not.toThrow();
+  });
+
+  test("tolerates a missing file (catch arm) — returns empty for a bogus path", () => {
+    // A path that cannot exist exercises the readFileSync catch (the tcp6-
+    // absent-on-ipv4-only-hosts tolerance). No throw; empty result.
+    const content = defaultProcReader(["/proc/does-not-exist/net/tcp"]);
+    expect(content).toBe("");
+  });
+
+  test("ProcPortSource with NO injected reader uses the real /proc (default seam)", () => {
+    // Constructing ProcPortSource() with no readProc wires defaultProcReader.
+    // No preview uids are allocated in this test process, so the uid→conv
+    // resolver maps nothing here → empty, but the default reader DID run.
+    const src = new ProcPortSource();
+    expect(src.listListeners("conv-never-allocated")).toEqual([]);
   });
 });

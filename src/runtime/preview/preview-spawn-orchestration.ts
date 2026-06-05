@@ -50,6 +50,60 @@ export type LaunchPreviewResult =
   | { ok: true; uid: number; process: PreviewProcess }
   | { ok: false; reason: string };
 
+/**
+ * Live registry of dev-server processes launched per conversation, so the
+ * reaper can kill them on conversation close / idle. A conversation may
+ * launch more than one (a restart, a second port), so we keep a set. Reaping
+ * kills + clears them.
+ */
+const conversationProcesses = new Map<string, Set<PreviewProcess>>();
+
+/** Track a launched process under its conversation (for the reaper). */
+function trackProcess(conversationId: string, proc: PreviewProcess): void {
+  let set = conversationProcesses.get(conversationId);
+  if (!set) {
+    set = new Set();
+    conversationProcesses.set(conversationId, set);
+  }
+  set.add(proc);
+  // Drop it from the registry when it exits on its own.
+  void proc.exited.then(() => {
+    conversationProcesses.get(conversationId)?.delete(proc);
+  }).catch(() => {});
+}
+
+/** Number of live processes tracked for a conversation (test/observability). */
+export function trackedProcessCount(conversationId: string): number {
+  return conversationProcesses.get(conversationId)?.size ?? 0;
+}
+
+/**
+ * Kill + forget every tracked dev-server process for a conversation. Returns
+ * the count killed. Idempotent — an unknown conversation is a no-op (0).
+ * Kill failures (EPERM on a foreign preview uid; already-dead) are swallowed
+ * — the process's own self-exit / the container teardown reaps it regardless.
+ */
+export function killConversationProcesses(conversationId: string): number {
+  const set = conversationProcesses.get(conversationId);
+  if (!set) return 0;
+  let killed = 0;
+  for (const proc of set) {
+    try {
+      proc.kill();
+      killed++;
+    } catch {
+      // EPERM (foreign-uid) / already dead — fine.
+    }
+  }
+  conversationProcesses.delete(conversationId);
+  return killed;
+}
+
+/** Test-only: clear the process registry. */
+export function _resetPreviewProcessesForTests(): void {
+  conversationProcesses.clear();
+}
+
 export interface LaunchPreviewDeps {
   /** The watcher to register the conversation with (so the new LISTEN
    *  socket is detected). Optional — when absent, detection is skipped but
@@ -100,6 +154,10 @@ export function launchPreviewDevServer(
     reapPreviewUid(conversationId);
     return { ok: false, reason: `spawn failed: ${(err as Error)?.message ?? String(err)}` };
   }
+
+  // Track the process under its conversation so the reaper can kill it on
+  // conversation close / idle.
+  trackProcess(conversationId, proc);
 
   log.info("preview dev server launched as preview uid", {
     conversationId,

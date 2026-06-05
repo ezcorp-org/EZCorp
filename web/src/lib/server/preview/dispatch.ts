@@ -16,6 +16,7 @@ import {
   touchPreview,
 } from "$server/db/queries/preview-sessions";
 import { tryBridgePreviewWebSocket } from "./ws-bridge";
+import { getPreviewQuota } from "$server/runtime/preview/preview-rate-limit";
 
 // ── Preview-origin dispatch glue (SvelteKit side) ──────────────────────
 //
@@ -127,7 +128,10 @@ export async function servePreviewRequest(
         return { body: file.stream() as unknown as BodyInit, size: file.size };
       },
       proxyDynamic: (port, req, requestPath) =>
-        proxyDynamicFetch(port, req, requestPath),
+        proxyDynamicFetch(port, req, requestPath, previewId),
+      // Per-preview request rate limit (Phase 3b) — the process-wide quota
+      // singleton; over-cap → 429.
+      checkRate: (id) => getPreviewQuota().allowRequest(id),
     },
   );
 }
@@ -140,15 +144,17 @@ export async function servePreviewRequest(
  * follow an upstream redirect off the pinned port (no server-side SSRF via
  * a crafted 3xx Location).
  *
- * TODO(Phase 3b): CSWSH Origin validation on WS upgrade, DNS-rebind Host
- * recheck, per-preview rate/byte limits, deeper header sanitation. The
- * Phase-3a job is to make dynamic previews RUN with the port pinned + basic
- * safety (loopback-only, no redirect follow, hop-by-hop strip).
+ * Phase 3b: inbound header sanitation (above), + per-preview BYTE budgeting —
+ * the upstream response body is metered through the quota; an over-budget
+ * preview's stream is cut (the body errors) so an untrusted server can't
+ * exfil/stream unbounded bytes through us. The request RATE cap is enforced
+ * earlier (handlePreviewRequest's `checkRate` → 429).
  */
 export async function proxyDynamicFetch(
   port: number,
   request: Request,
   requestPath: string,
+  previewId?: string,
 ): Promise<Response> {
   const incoming = new URL(request.url);
   // Pin to loopback + the exact port. Preserve path + query verbatim.
@@ -163,13 +169,58 @@ export async function proxyDynamicFetch(
   fwdHeaders.set("host", `127.0.0.1:${port}`);
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  return fetch(target, {
+  const upstream = await fetch(target, {
     method: request.method,
     headers: fwdHeaders,
     body: hasBody ? request.body : undefined,
     redirect: "manual", // never follow upstream 3xx off the pinned port
     // @ts-expect-error — Bun/undici stream-body needs duplex:"half".
     duplex: hasBody ? "half" : undefined,
+  });
+
+  // Per-preview BYTE budget (Phase 3b): meter the response body. When the
+  // preview exhausts its rolling budget the stream is cut (errored) so an
+  // untrusted server can't stream unbounded bytes through the proxy. No
+  // previewId / no body → passthrough unchanged.
+  if (!previewId || !upstream.body) return upstream;
+  const quota = getPreviewQuota();
+  const metered = meterResponseBody(upstream.body, previewId, quota);
+  return new Response(metered, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+  });
+}
+
+/**
+ * Wrap a response body stream so each chunk is charged against the preview's
+ * byte budget; over-budget errors the stream (the browser sees a truncated
+ * load — honest signal, no silent unbounded pass-through). Pure over the
+ * injected quota.
+ */
+export function meterResponseBody(
+  body: ReadableStream<Uint8Array>,
+  previewId: string,
+  quota: { allowBytes(id: string, bytes: number): boolean },
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      if (!quota.allowBytes(previewId, value.byteLength)) {
+        controller.error(new Error("preview byte budget exhausted"));
+        await reader.cancel().catch(() => {});
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      void reader.cancel(reason).catch(() => {});
+    },
   });
 }
 

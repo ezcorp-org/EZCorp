@@ -277,6 +277,16 @@ export async function startBackgroundTimers(): Promise<void> {
       source: caps.mode === "uid" ? "ProcPortSource" : "NetnsPortSource",
       dataDirLocked: lockdown.ok,
     });
+    // Idle reaping (Phase 3b): a conversation whose dev server has gone quiet
+    // for IDLE_REAP_TICKS consecutive ticks is reaped (proc killed + preview
+    // revoked + watch dropped). Default ~30 ticks ≈ 60s at the 2s cadence;
+    // overridable via EZCORP_PREVIEW_IDLE_REAP_TICKS. 0 disables idle reaping.
+    const idleReapTicks = (() => {
+      const raw = process.env.EZCORP_PREVIEW_IDLE_REAP_TICKS;
+      if (raw === undefined || raw === "") return 30;
+      const n = Math.floor(Number(raw));
+      return Number.isFinite(n) && n >= 0 ? n : 30;
+    })();
     previewPortWatcher = new PreviewPortWatcher({
       source,
       onDetected: (event) => {
@@ -287,6 +297,17 @@ export async function startBackgroundTimers(): Promise<void> {
           getBus: getRegisteredPreviewBus,
           appHost: () => process.env.EZCORP_PREVIEW_APP_HOST ?? null,
           secure: () => process.env.FORCE_SECURE_COOKIES === "true",
+        });
+      },
+      idleReapTicks,
+      onIdleReap: (conversationId) => {
+        // Lazy-import the reaper so the watcher module stays free of the DB +
+        // process-registry graph at construction time.
+        void (async () => {
+          const { reapPreviewConversation } = await import("../runtime/preview/preview-reaper");
+          await reapPreviewConversation(conversationId);
+        })().catch((e: unknown) => {
+          log.warn("preview idle reap failed", { conversationId, error: String(e) });
         });
       },
     });

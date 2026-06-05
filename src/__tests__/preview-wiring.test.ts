@@ -12,7 +12,12 @@ import {
   getRegisteredPreviewBus,
   _resetPreviewBusForTests,
 } from "../runtime/preview/preview-bus-registry";
-import { launchPreviewDevServer } from "../runtime/preview/preview-spawn-orchestration";
+import {
+  launchPreviewDevServer,
+  killConversationProcesses,
+  trackedProcessCount,
+  _resetPreviewProcessesForTests,
+} from "../runtime/preview/preview-spawn-orchestration";
 import { _resetPreviewUidPoolForTests } from "../runtime/preview/preview-uid-pool";
 import { PREVIEW_CONSENT_CARD_TYPE } from "../runtime/preview/preview-consent";
 import type { PreviewDetectedEvent } from "../runtime/preview/preview-port-watcher";
@@ -22,6 +27,7 @@ const EVENT: PreviewDetectedEvent = { userId: "u1", conversationId: "conv-1", po
 beforeEach(() => {
   _resetPreviewBusForTests();
   _resetPreviewUidPoolForTests();
+  _resetPreviewProcessesForTests();
 });
 
 describe("buildPreviewOpenUrl", () => {
@@ -190,5 +196,37 @@ describe("launchPreviewDevServer (spawn orchestration)", () => {
   test("validates required inputs", () => {
     expect(launchPreviewDevServer({ conversationId: "", userId: "u", workDir: "/w", command: "x" }).ok).toBe(false);
     expect(launchPreviewDevServer({ conversationId: "c", userId: "u", workDir: "", command: "x" }).ok).toBe(false);
+  });
+
+  test("tracks the launched process + killConversationProcesses kills it", () => {
+    let killed = 0;
+    const res = launchPreviewDevServer(
+      { conversationId: "conv-kill", userId: "u1", workDir: "/w", command: "bun", args: ["dev"] },
+      {
+        capabilities: () => ({ mode: "uid" }),
+        spawn: () => ({ pid: 1, kill: () => { killed++; }, exited: new Promise(() => {}) }),
+      },
+    );
+    expect(res.ok).toBe(true);
+    expect(trackedProcessCount("conv-kill")).toBe(1);
+    const n = killConversationProcesses("conv-kill");
+    expect(n).toBe(1);
+    expect(killed).toBe(1);
+    expect(trackedProcessCount("conv-kill")).toBe(0);
+    // Idempotent — reaping again is a no-op.
+    expect(killConversationProcesses("conv-kill")).toBe(0);
+  });
+
+  test("killConversationProcesses swallows a kill that throws (foreign uid)", () => {
+    launchPreviewDevServer(
+      { conversationId: "conv-eperm", userId: "u1", workDir: "/w", command: "bun" },
+      {
+        capabilities: () => ({ mode: "uid" }),
+        spawn: () => ({ pid: 2, kill: () => { throw new Error("EPERM"); }, exited: new Promise(() => {}) }),
+      },
+    );
+    // Does not throw; the registry is cleared regardless.
+    expect(() => killConversationProcesses("conv-eperm")).not.toThrow();
+    expect(trackedProcessCount("conv-eperm")).toBe(0);
   });
 });

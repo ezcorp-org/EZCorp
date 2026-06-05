@@ -188,6 +188,12 @@ export interface HandlePreviewRequestDeps {
    *  MUST connect to exactly `port` on loopback. Throws on a dead upstream;
    *  the handler maps that to a graceful 502. */
   proxyDynamic?: (port: number, request: Request, requestPath: string) => Promise<Response>;
+  /** Per-preview request rate check (Phase 3b). Returns false when the
+   *  preview has exceeded its per-second request cap → the handler answers
+   *  429. Injected so the pure handler is testable; the dispatch wires the
+   *  process-wide quota singleton. Omitted ⇒ no rate limiting (static-only
+   *  callers / tests that don't exercise it). */
+  checkRate?: (previewId: string) => boolean;
 }
 
 /**
@@ -218,6 +224,13 @@ function badGateway(): Response {
   // user knows the preview EXISTS but the server is down.
   const headers = baseHeaders();
   return new Response("Preview server is not responding.", { status: 502, headers });
+}
+
+function tooManyRequests(): Response {
+  // The preview exceeded its per-second request cap (Phase 3b quota). 429 is
+  // the honest signal — distinct from 502 (server down) / 404 (no preview).
+  const headers = baseHeaders();
+  return new Response("Too many requests.", { status: 429, headers });
 }
 
 /**
@@ -393,6 +406,11 @@ export async function handlePreviewRequest(
     // above, so we only reach here for an owned, active, unexpired preview.
     if (!Number.isInteger(row.targetPort) || (row.targetPort ?? 0) <= 0) {
       return notFound();
+    }
+    // Per-preview rate limit (Phase 3b): reject + 429 over the per-second cap
+    // BEFORE we touch the untrusted upstream.
+    if (deps.checkRate && !deps.checkRate(previewId)) {
+      return tooManyRequests();
     }
     if (!deps.proxyDynamic || !opts.request) {
       // No passthrough wired (static-only deployment / test without it).

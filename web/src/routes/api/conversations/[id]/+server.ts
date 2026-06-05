@@ -69,6 +69,21 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
   // Resolve project root before the cascade nukes the conversation row.
   const project = await getProject(conv.projectId);
 
+  // Secure-preview reaping (Phase 3b): kill any dev-server process running
+  // under this conversation's preview uid + release the uid + drop the
+  // watcher's watch BEFORE the cascade. The preview_sessions rows cascade
+  // via FK, but the untrusted PROCESS won't stop itself — reap it explicitly.
+  try {
+    const { reapPreviewConversation } = await import("$server/runtime/preview/preview-reaper");
+    const { getPreviewPortWatcher } = await import("$server/startup/background-timers");
+    await reapPreviewConversation(params.id, { unwatch: (c) => getPreviewPortWatcher()?.unwatch(c) });
+  } catch (err) {
+    log.warn("preview reap on conversation delete failed", {
+      conversationId: params.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const deleted = await convQueries.deleteConversation(params.id);
   if (!deleted) return errorJson(404, "Not found");
 

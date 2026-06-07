@@ -356,6 +356,91 @@ describe("modes extensionIds round-trip", () => {
   });
 });
 
+// ── extensionTools round-trip ─────────────────────────────────────────
+//
+// modes.extensionTools narrows an attached extension's contribution to a
+// chosen subset of tools. The DB column is `extension_tools JSONB` so unset
+// === null. Existing rows (and modes attached without per-tool selection)
+// stay null, which the executor reads as "all tools for every attached
+// extension".
+
+describe("modes extensionTools round-trip", () => {
+  test("createMode persists extensionTools map and getMode returns it", async () => {
+    const mode = await createMode({
+      name: "Tool Subset",
+      slug: "tool-subset-" + Date.now(),
+      systemPromptInstruction: "Only some tools.",
+      extensionIds: ["ext-a", "ext-b"],
+      extensionTools: { "ext-a": ["tool_1", "tool_2"] },
+    });
+    expect(mode.extensionTools).toEqual({ "ext-a": ["tool_1", "tool_2"] });
+    const fetched = await getMode(mode.id);
+    expect(fetched!.extensionTools).toEqual({ "ext-a": ["tool_1", "tool_2"] });
+  });
+
+  test("createMode without extensionTools defaults to null", async () => {
+    const mode = await createMode({
+      name: "No Subset",
+      slug: "no-subset-" + Date.now(),
+      systemPromptInstruction: "All tools by default.",
+      extensionIds: ["ext-a"],
+    });
+    expect(mode.extensionTools).toBeNull();
+    const fetched = await getMode(mode.id);
+    expect(fetched!.extensionTools).toBeNull();
+  });
+
+  test("updateMode replaces the extensionTools map", async () => {
+    const mode = await createMode({
+      name: "Swap Subset",
+      slug: "swap-subset-" + Date.now(),
+      systemPromptInstruction: "Will swap subset.",
+      extensionIds: ["ext-a"],
+      extensionTools: { "ext-a": ["old_tool"] },
+    });
+    const updated = await updateMode(mode.id, {
+      extensionTools: { "ext-a": ["new_tool_1", "new_tool_2"] },
+    });
+    expect(updated!.extensionTools).toEqual({ "ext-a": ["new_tool_1", "new_tool_2"] });
+    const fetched = await getMode(mode.id);
+    expect(fetched!.extensionTools).toEqual({ "ext-a": ["new_tool_1", "new_tool_2"] });
+  });
+
+  test("updateMode WITHOUT extensionTools key leaves the existing map untouched", async () => {
+    const mode = await createMode({
+      name: "Partial Subset Source",
+      slug: "partial-subset-" + Date.now(),
+      systemPromptInstruction: "Keep subset.",
+      extensionIds: ["ext-a"],
+      extensionTools: { "ext-a": ["keep_tool"] },
+    });
+    const updated = await updateMode(mode.id, { name: "Partial Subset Renamed" });
+    expect(updated!.name).toBe("Partial Subset Renamed");
+    expect(updated!.extensionTools).toEqual({ "ext-a": ["keep_tool"] });
+  });
+
+  test("updateMode with extensionTools=null resets to null", async () => {
+    const mode = await createMode({
+      name: "Reset Subset",
+      slug: "reset-subset-" + Date.now(),
+      systemPromptInstruction: "Will reset subset.",
+      extensionIds: ["ext-a"],
+      extensionTools: { "ext-a": ["x"] },
+    });
+    const reset = await updateMode(mode.id, { extensionTools: null });
+    expect(reset!.extensionTools).toBeNull();
+    const fetched = await getMode(mode.id);
+    expect(fetched!.extensionTools).toBeNull();
+  });
+
+  test("seeded built-in modes have extensionTools=null", async () => {
+    const plan = await getMode("builtin-plan");
+    const review = await getMode("builtin-code-review");
+    expect(plan!.extensionTools).toBeNull();
+    expect(review!.extensionTools).toBeNull();
+  });
+});
+
 // ── Conversation modeId FK ────────────────────────────────────────────
 
 describe("conversation modeId", () => {

@@ -41,6 +41,9 @@ export async function createMode(data: {
   /** When non-empty, the runtime expands the union of these extensions'
    *  tool names into the effective allowlist (overrides toolRestriction). */
   extensionIds?: string[] | null;
+  /** Per-extension tool subset (extension id → selected tool names). Absent /
+   *  empty for an attached extension means all its tools. */
+  extensionTools?: Record<string, string[]> | null;
   userId?: string | null;
 }): Promise<DbMode> {
   const now = new Date();
@@ -59,6 +62,7 @@ export async function createMode(data: {
     toolRestriction: (data.toolRestriction ?? "all") as "all" | "read-only" | "none" | "allowlist",
     allowedTools: data.allowedTools ?? null,
     extensionIds: data.extensionIds ?? null,
+    extensionTools: data.extensionTools ?? null,
     builtin: false,
     userId: data.userId ?? null,
     createdAt: now,
@@ -82,6 +86,7 @@ export async function updateMode(id: string, data: Partial<{
   toolRestriction: "all" | "read-only" | "none" | "allowlist";
   allowedTools: string[] | null;
   extensionIds: string[] | null;
+  extensionTools: Record<string, string[]> | null;
 }>): Promise<DbMode | undefined> {
   const existing = await getMode(id);
   if (!existing || existing.builtin) return undefined;

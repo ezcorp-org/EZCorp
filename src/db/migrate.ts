@@ -1410,4 +1410,11 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_preview_sessions_user ON preview_sessions(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_preview_sessions_conversation ON preview_sessions(conversation_id)`);
+
+  // Per-extension tool subset for modes. Keyed by extension id → selected tool
+  // names. An extension attached via extension_ids but absent here (or mapped
+  // to an empty array) contributes ALL its tools; a non-empty array narrows
+  // the contribution. NULL for existing rows preserves prior all-tools
+  // behaviour (see src/runtime/executor.ts). Idempotent.
+  await db.execute(sql`ALTER TABLE modes ADD COLUMN IF NOT EXISTS extension_tools JSONB`);
 }

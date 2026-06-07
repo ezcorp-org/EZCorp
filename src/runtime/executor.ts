@@ -534,10 +534,23 @@ export class AgentExecutor {
           const extensionIds = mode.extensionIds ?? [];
           if (extensionIds.length > 0) {
             const registry = ExtensionRegistry.getInstance();
+            // Per-extension tool subset: an extension absent from this map (or
+            // mapped to an empty array) contributes ALL its tools; a non-empty
+            // array narrows it to just those tools. Match defensively against
+            // both the namespaced name and the original (unnamespaced) name so
+            // the UI can persist either form; the allowlist set itself always
+            // carries the namespaced name applyToolFilters filters on.
+            const perTool = mode.extensionTools ?? {};
             const allowed = new Set<string>();
             for (const extId of extensionIds) {
+              const subset = perTool[extId];
               for (const t of registry.getToolsForExtension(extId)) {
-                allowed.add(t.name);
+                if (
+                  !subset || subset.length === 0 ||
+                  subset.includes(t.name) || subset.includes(t.originalName)
+                ) {
+                  allowed.add(t.name);
+                }
               }
             }
             ctx.agentTools = applyToolFilters(ctx.agentTools, ctx.builtinToolDefsMap, {

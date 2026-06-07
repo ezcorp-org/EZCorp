@@ -351,6 +351,10 @@ export interface Mode {
 	temperature: number | null;
 	toolRestriction: "all" | "read-only" | "none";
 	extensionIds: string[] | null;
+	/** Per-extension tool subset (extension id → selected tool names). A key
+	 *  absent here (or mapped to an empty array) means all of that extension's
+	 *  tools are available to the mode. */
+	extensionTools: Record<string, string[]> | null;
 	builtin: boolean;
 }
 

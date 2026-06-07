@@ -472,6 +472,12 @@ export const modes = pgTable("modes", {
    *  the effective allowlist (see src/runtime/executor.ts). When empty/null,
    *  the toolRestriction + allowedTools fallback continues to govern. */
   extensionIds: text("extension_ids").array(),
+  /** Per-extension tool subset. Keyed by extension id; the value is the list
+   *  of selected tool names for that extension. An extension present in
+   *  extensionIds but absent here (or mapped to an empty array) contributes
+   *  ALL its tools (backward-compatible default); a non-empty array narrows
+   *  the contribution to just those tools. See src/runtime/executor.ts. */
+  extensionTools: jsonb("extension_tools").$type<Record<string, string[]>>(),
   builtin: boolean("builtin").notNull().default(false),
   userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

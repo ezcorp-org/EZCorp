@@ -13,6 +13,9 @@ export const createModeSchema = z.object({
   temperature: z.number().int().min(0).max(100).nullable().optional(),
   toolRestriction: z.enum(["all", "read-only", "none"]).optional(),
   extensionIds: z.array(z.string().max(200)).max(100).optional(),
+  /** Per-extension tool subset (extension id → selected tool names). Keys not
+   *  present (or empty arrays) mean "all tools" for that extension. */
+  extensionTools: z.record(z.string().max(200), z.array(z.string().max(200)).max(500)).optional(),
 });
 
 export const updateModeSchema = createModeSchema.partial();

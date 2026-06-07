@@ -652,6 +652,7 @@ describe("makeLoadMessages.loadMessages", () => {
 			temperature: null,
 			toolRestriction: "all",
 			extensionIds: null,
+			extensionTools: null,
 			builtin: false,
 		};
 		backgroundFetchMock.mockImplementation(async (key: string) => {
@@ -669,7 +670,7 @@ describe("makeLoadMessages.loadMessages", () => {
 			id: "mode-x", name: "X", slug: "x", icon: null, description: "",
 			systemPromptInstruction: "", instructionPosition: "append",
 			preferredModel: null, preferredProvider: null, preferredThinkingLevel: null,
-			temperature: null, toolRestriction: "all", extensionIds: null, builtin: false,
+			temperature: null, toolRestriction: "all", extensionIds: null, extensionTools: null, builtin: false,
 		};
 		backgroundFetchMock.mockImplementation(async (key: string) => {
 			if (key.startsWith("messages-all:")) return jsonResponse([]);

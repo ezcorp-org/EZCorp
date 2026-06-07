@@ -225,6 +225,73 @@ describe("POST /api/modes", () => {
     const res = await createPOST(event);
     expect(res.status).toBe(400);
   });
+
+  // ── extensionTools (per-tool subset) round-trip ────────────────────
+
+  test("creates a mode with extensionTools and round-trips via GET", async () => {
+    const event = createMockEvent({
+      method: "POST",
+      url: "http://localhost/api/modes",
+      user: USER,
+      body: {
+        name: "Tool Subset Mode",
+        slug: "tool-subset-mode-" + Date.now(),
+        systemPromptInstruction: "Only some tools.",
+        extensionIds: ["ext-a"],
+        extensionTools: { "ext-a": ["tool_1", "tool_2"] },
+      },
+    });
+    const res = await createPOST(event);
+    expect(res.status).toBe(201);
+    const created = await jsonFromResponse(res);
+    expect(created.extensionTools).toEqual({ "ext-a": ["tool_1", "tool_2"] });
+
+    const getRes = await detailGET(
+      createMockEvent({
+        url: `http://localhost/api/modes/${created.id}`,
+        user: USER,
+        params: { id: created.id },
+      }),
+    );
+    const fetched = await jsonFromResponse(getRes);
+    expect(fetched.extensionTools).toEqual({ "ext-a": ["tool_1", "tool_2"] });
+  });
+
+  test("creates a mode without extensionTools (back-compat: returns null)", async () => {
+    const res = await createPOST(
+      createMockEvent({
+        method: "POST",
+        url: "http://localhost/api/modes",
+        user: USER,
+        body: {
+          name: "No Subset Mode",
+          slug: "no-subset-mode-" + Date.now(),
+          systemPromptInstruction: "All tools.",
+          extensionIds: ["ext-a"],
+        },
+      }),
+    );
+    expect(res.status).toBe(201);
+    const created = await jsonFromResponse(res);
+    expect(created.extensionTools).toBeNull();
+  });
+
+  test("rejects extensionTools with a non-array value", async () => {
+    const res = await createPOST(
+      createMockEvent({
+        method: "POST",
+        url: "http://localhost/api/modes",
+        user: USER,
+        body: {
+          name: "Bad Subset Mode",
+          slug: "bad-subset-mode-" + Date.now(),
+          systemPromptInstruction: "Bad shape.",
+          extensionTools: { "ext-a": "not-an-array" },
+        },
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── GET /api/modes/[id] ────────────────────────────────────────
@@ -448,6 +515,71 @@ describe("PUT /api/modes/[id]", () => {
     const updated = await jsonFromResponse(putRes);
     expect(updated.name).toBe("Partial Update Renamed");
     expect(updated.extensionIds).toEqual(["keep-1", "keep-2"]);
+  });
+
+  test("PUT replaces extensionTools and round-trips via GET", async () => {
+    const created = await jsonFromResponse(
+      await createPOST(
+        createMockEvent({
+          method: "POST",
+          url: "http://localhost/api/modes",
+          user: USER,
+          body: {
+            name: "PUT Subset Mode",
+            slug: "put-subset-mode-" + Date.now(),
+            systemPromptInstruction: "Original subset.",
+            extensionIds: ["ext-a"],
+            extensionTools: { "ext-a": ["old_tool"] },
+          },
+        }),
+      ),
+    );
+
+    const putRes = await updatePUT(
+      createMockEvent({
+        method: "PUT",
+        url: `http://localhost/api/modes/${created.id}`,
+        user: USER,
+        params: { id: created.id },
+        body: { extensionTools: { "ext-a": ["new_tool"] } },
+      }),
+    );
+    expect(putRes.status).toBe(200);
+    const updated = await jsonFromResponse(putRes);
+    expect(updated.extensionTools).toEqual({ "ext-a": ["new_tool"] });
+  });
+
+  test("PUT without extensionTools key leaves the subset untouched", async () => {
+    const created = await jsonFromResponse(
+      await createPOST(
+        createMockEvent({
+          method: "POST",
+          url: "http://localhost/api/modes",
+          user: USER,
+          body: {
+            name: "Partial Subset Mode",
+            slug: "partial-subset-mode-" + Date.now(),
+            systemPromptInstruction: "Keep subset.",
+            extensionIds: ["ext-a"],
+            extensionTools: { "ext-a": ["keep_tool"] },
+          },
+        }),
+      ),
+    );
+
+    const putRes = await updatePUT(
+      createMockEvent({
+        method: "PUT",
+        url: `http://localhost/api/modes/${created.id}`,
+        user: USER,
+        params: { id: created.id },
+        body: { name: "Partial Subset Renamed" },
+      }),
+    );
+    expect(putRes.status).toBe(200);
+    const updated = await jsonFromResponse(putRes);
+    expect(updated.name).toBe("Partial Subset Renamed");
+    expect(updated.extensionTools).toEqual({ "ext-a": ["keep_tool"] });
   });
 
   test("PUT rejects extensionIds with non-string entries (400)", async () => {
@@ -758,6 +890,39 @@ describe("modes schema validation", () => {
       name: "Valid",
       slug: "x".repeat(51),
       systemPromptInstruction: "test",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("createModeSchema accepts extensionTools record of string arrays", async () => {
+    const { createModeSchema } = await import("../../web/src/routes/api/modes/schema");
+    const result = createModeSchema.safeParse({
+      name: "Test",
+      slug: "test",
+      systemPromptInstruction: "test",
+      extensionTools: { "ext-a": ["t1", "t2"], "ext-b": [] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("createModeSchema rejects extensionTools whose value is not an array", async () => {
+    const { createModeSchema } = await import("../../web/src/routes/api/modes/schema");
+    const result = createModeSchema.safeParse({
+      name: "Test",
+      slug: "test",
+      systemPromptInstruction: "test",
+      extensionTools: { "ext-a": "nope" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("createModeSchema rejects extensionTools array with non-string entries", async () => {
+    const { createModeSchema } = await import("../../web/src/routes/api/modes/schema");
+    const result = createModeSchema.safeParse({
+      name: "Test",
+      slug: "test",
+      systemPromptInstruction: "test",
+      extensionTools: { "ext-a": ["ok", 5] },
     });
     expect(result.success).toBe(false);
   });

@@ -477,6 +477,133 @@ describe("executor mode.extensionIds → allowlist filter", () => {
     expect(getToolsForExtensionCalls).toContain("ext-missing");
   });
 
+  // ── Per-tool subset (mode.extensionTools) ─────────────────────────
+  //
+  // extensionTools narrows an attached extension's contribution to a
+  // chosen subset. Absent key / empty array = all tools (back-compat).
+
+  test("extensionTools subset narrows an extension to the chosen tools", async () => {
+    agentToolsMap.set(agentConfigId, [
+      TOOL_DEF("ext-x__tool_a"),
+      TOOL_DEF("ext-x__tool_b"),
+      TOOL_DEF("ext-x__tool_c"),
+    ]);
+    extensionToolsMap.set("ext-sub", [
+      TOOL_DEF("ext-x__tool_a"),
+      TOOL_DEF("ext-x__tool_b"),
+      TOOL_DEF("ext-x__tool_c"),
+    ]);
+
+    const mode = await createMode({
+      name: "Subset Mode",
+      slug: "subset-mode-" + Date.now(),
+      systemPromptInstruction: "Only one tool from the extension.",
+      extensionIds: ["ext-sub"],
+      extensionTools: { "ext-sub": ["ext-x__tool_a"] },
+    });
+
+    const { executor } = createExecutor();
+    await executor.streamChat(topConvId, "do something", {
+      projectId,
+      agentConfigId,
+      modeId: mode.id,
+    });
+
+    const names = nameSet(capturedAgentOpts.initialState.tools);
+    expect(names.has("ext-x__tool_a")).toBe(true);
+    // tool_b and tool_c are exposed by the extension but NOT selected.
+    expect(names.has("ext-x__tool_b")).toBe(false);
+    expect(names.has("ext-x__tool_c")).toBe(false);
+  });
+
+  test("extensionTools empty array for an attached extension = all its tools", async () => {
+    agentToolsMap.set(agentConfigId, [TOOL_DEF("p_tool"), TOOL_DEF("q_tool")]);
+    extensionToolsMap.set("ext-empty", [TOOL_DEF("p_tool"), TOOL_DEF("q_tool")]);
+
+    const mode = await createMode({
+      name: "Empty Subset Mode",
+      slug: "empty-subset-" + Date.now(),
+      systemPromptInstruction: "Empty subset means all.",
+      extensionIds: ["ext-empty"],
+      extensionTools: { "ext-empty": [] },
+    });
+
+    const { executor } = createExecutor();
+    await executor.streamChat(topConvId, "do something", {
+      projectId,
+      agentConfigId,
+      modeId: mode.id,
+    });
+
+    const names = nameSet(capturedAgentOpts.initialState.tools);
+    expect(names.has("p_tool")).toBe(true);
+    expect(names.has("q_tool")).toBe(true);
+  });
+
+  test("extensionTools subset matches the original (unnamespaced) tool name", async () => {
+    // The UI persists manifest.tools[].name (the ORIGINAL, unnamespaced
+    // name), while the registry exposes RegisteredTool.name as namespaced
+    // and RegisteredTool.originalName as the original. The filter must
+    // honor a subset expressed in original names.
+    agentToolsMap.set(agentConfigId, [
+      TOOL_DEF("myext__alpha"),
+      TOOL_DEF("myext__beta"),
+    ]);
+    extensionToolsMap.set("ext-orig", [
+      { name: "myext__alpha", originalName: "alpha", description: "a", inputSchema: { type: "object", properties: {}, required: [] } },
+      { name: "myext__beta", originalName: "beta", description: "b", inputSchema: { type: "object", properties: {}, required: [] } },
+    ] as any);
+
+    const mode = await createMode({
+      name: "Original Name Mode",
+      slug: "orig-name-" + Date.now(),
+      systemPromptInstruction: "Subset by original name.",
+      extensionIds: ["ext-orig"],
+      extensionTools: { "ext-orig": ["alpha"] },
+    });
+
+    const { executor } = createExecutor();
+    await executor.streamChat(topConvId, "do something", {
+      projectId,
+      agentConfigId,
+      modeId: mode.id,
+    });
+
+    const names = nameSet(capturedAgentOpts.initialState.tools);
+    // Matched on originalName 'alpha' → namespaced name survives.
+    expect(names.has("myext__alpha")).toBe(true);
+    expect(names.has("myext__beta")).toBe(false);
+  });
+
+  test("extensionTools key for an unattached extension is ignored", async () => {
+    // A stale subset key (extension not in extensionIds) must not affect
+    // resolution — iteration is driven by extensionIds only.
+    agentToolsMap.set(agentConfigId, [TOOL_DEF("m_tool"), TOOL_DEF("n_tool")]);
+    extensionToolsMap.set("ext-live", [TOOL_DEF("m_tool"), TOOL_DEF("n_tool")]);
+
+    const mode = await createMode({
+      name: "Stale Key Mode",
+      slug: "stale-key-" + Date.now(),
+      systemPromptInstruction: "Stale subset key.",
+      extensionIds: ["ext-live"],
+      extensionTools: { "ext-gone": ["whatever"] },
+    });
+
+    const { executor } = createExecutor();
+    await executor.streamChat(topConvId, "do something", {
+      projectId,
+      agentConfigId,
+      modeId: mode.id,
+    });
+
+    const names = nameSet(capturedAgentOpts.initialState.tools);
+    // ext-live has no subset entry → all its tools survive.
+    expect(names.has("m_tool")).toBe(true);
+    expect(names.has("n_tool")).toBe(true);
+    expect(getToolsForExtensionCalls).toContain("ext-live");
+    expect(getToolsForExtensionCalls).not.toContain("ext-gone");
+  });
+
   test("no modeId option: extensionIds path is never consulted", async () => {
     // Basic sanity — without modeId the entire mode-resolve block is
     // skipped, so getToolsForExtension is never called regardless of

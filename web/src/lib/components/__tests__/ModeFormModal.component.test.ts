@@ -58,9 +58,9 @@ beforeEach(() => {
 			if (url.includes("/api/extensions") && method === "GET") {
 				return new Response(
 					JSON.stringify([
-						{ id: "a", name: "Extension A" },
-						{ id: "b", name: "Extension B" },
-						{ id: "z", name: "Extension Z" },
+						{ id: "a", name: "Extension A", manifest: { tools: [{ name: "summarize" }, { name: "tldr" }] } },
+						{ id: "b", name: "Extension B", manifest: { tools: [{ name: "translate" }] } },
+						{ id: "z", name: "Extension Z", manifest: { tools: [{ name: "zap" }] } },
 					]),
 					{ status: 200, headers: { "content-type": "application/json" } },
 				);
@@ -81,6 +81,7 @@ beforeEach(() => {
 					temperature: null,
 					toolRestriction: "all",
 					extensionIds: body?.extensionIds ?? null,
+					extensionTools: body?.extensionTools ?? null,
 					builtin: false,
 				};
 				return new Response(JSON.stringify(echo), {
@@ -104,6 +105,7 @@ beforeEach(() => {
 					temperature: null,
 					toolRestriction: "all",
 					extensionIds: body?.extensionIds ?? null,
+					extensionTools: body?.extensionTools ?? null,
 					builtin: false,
 				};
 				return new Response(JSON.stringify(echo), {
@@ -135,6 +137,7 @@ function makeMode(overrides: Partial<Mode> = {}): Mode {
 		temperature: null,
 		toolRestriction: "all",
 		extensionIds: null,
+		extensionTools: null,
 		builtin: false,
 		...overrides,
 	};
@@ -370,5 +373,100 @@ describe("ModeFormModal — submit payload", () => {
 		expect(postCall!.body.toolRestriction).toBeUndefined();
 
 		expect(onsaved).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("ModeFormModal — per-tool subset (extensionTools)", () => {
+	test("edit mode renders the per-tool selector; subset checks only selected tools", async () => {
+		const { findByTestId } = render(ModeFormModal, {
+			open: true,
+			editMode: makeMode({
+				id: "subset-target",
+				extensionIds: ["a"],
+				extensionTools: { a: ["summarize"] },
+			}),
+			viewMode: false,
+			onsaved: () => {},
+			onclose: () => {},
+		});
+		const summarize = (await findByTestId("tool-a-summarize")) as HTMLInputElement;
+		const tldr = (await findByTestId("tool-a-tldr")) as HTMLInputElement;
+		expect(summarize.checked).toBe(true);
+		expect(tldr.checked).toBe(false);
+	});
+
+	test("submit (edit) carries the extensionTools subset to the PUT body", async () => {
+		const { findByTestId, container } = render(ModeFormModal, {
+			open: true,
+			editMode: makeMode({
+				id: "subset-put",
+				extensionIds: ["a"],
+				extensionTools: null, // starts as "all tools"
+			}),
+			viewMode: false,
+			onsaved: vi.fn(),
+			onclose: () => {},
+		});
+
+		// Deselect tldr → narrows ext a to [summarize].
+		const tldr = (await findByTestId("tool-a-tldr")) as HTMLInputElement;
+		await fireEvent.click(tldr);
+
+		const submitBtn = container.querySelector("button.bg-blue-600") as HTMLButtonElement;
+		await fireEvent.click(submitBtn);
+		await flush();
+
+		const putCall = fetchCalls.find(
+			(c) => c.method === "PUT" && c.url.includes("/api/modes/subset-put"),
+		);
+		expect(putCall).toBeDefined();
+		expect(putCall!.body.extensionTools).toEqual({ a: ["summarize"] });
+	});
+
+	test("removing an extension prunes its stale subset key from the PUT body", async () => {
+		const { findByLabelText, container } = render(ModeFormModal, {
+			open: true,
+			editMode: makeMode({
+				id: "prune-target",
+				extensionIds: ["a", "b"],
+				extensionTools: { a: ["summarize"], b: ["translate"] },
+			}),
+			viewMode: false,
+			onsaved: vi.fn(),
+			onclose: () => {},
+		});
+
+		// Remove Extension B via its chip × (SelectedPill fires on mousedown).
+		const removeBtn = await findByLabelText("Remove Extension B");
+		await fireEvent.mouseDown(removeBtn);
+
+		const submitBtn = container.querySelector("button.bg-blue-600") as HTMLButtonElement;
+		await fireEvent.click(submitBtn);
+		await flush();
+
+		const putCall = fetchCalls.find(
+			(c) => c.method === "PUT" && c.url.includes("/api/modes/prune-target"),
+		);
+		expect(putCall).toBeDefined();
+		expect(putCall!.body.extensionIds).toEqual(["a"]);
+		// b's subset key must have been pruned.
+		expect(putCall!.body.extensionTools).toEqual({ a: ["summarize"] });
+	});
+
+	test("view (readonly) mode summarizes per-extension tool selection", async () => {
+		const { findByText, queryByTestId } = render(ModeFormModal, {
+			open: true,
+			editMode: makeMode({
+				id: "subset-view",
+				extensionIds: ["a"],
+				extensionTools: { a: ["summarize"] },
+			}),
+			viewMode: true,
+			onsaved: () => {},
+			onclose: () => {},
+		});
+		// Readonly summary text, not an interactive checkbox.
+		expect(await findByText("summarize")).toBeInTheDocument();
+		expect(queryByTestId("tool-a-summarize")).toBeNull();
 	});
 });

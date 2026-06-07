@@ -3,6 +3,7 @@
 	import Tooltip from "$lib/components/Tooltip.svelte";
 	import InfoTooltip from "$lib/components/InfoTooltip.svelte";
 	import ExtensionSearchPicker from "$lib/components/ExtensionSearchPicker.svelte";
+	import ExtensionToolSelector from "$lib/components/ExtensionToolSelector.svelte";
 	import { onMount } from "svelte";
 
 	let {
@@ -27,6 +28,7 @@
 		systemPromptInstruction: "",
 		instructionPosition: "prepend" as "prepend" | "append" | "replace",
 		extensionIds: [] as string[],
+		extensionTools: {} as Record<string, string[]>,
 	});
 
 	// Lookup table for resolving extension IDs → human names in read-only mode.
@@ -71,9 +73,10 @@
 					systemPromptInstruction: editMode.systemPromptInstruction,
 					instructionPosition: editMode.instructionPosition,
 					extensionIds: editMode.extensionIds ?? [],
+					extensionTools: editMode.extensionTools ?? {},
 				};
 			} else {
-				form = { name: "", slug: "", icon: "", description: "", systemPromptInstruction: "", instructionPosition: "prepend", extensionIds: [] };
+				form = { name: "", slug: "", icon: "", description: "", systemPromptInstruction: "", instructionPosition: "prepend", extensionIds: [], extensionTools: {} };
 			}
 		}
 	});
@@ -85,9 +88,20 @@
 	}
 
 	function reset() {
-		form = { name: "", slug: "", icon: "", description: "", systemPromptInstruction: "", instructionPosition: "prepend", extensionIds: [] };
+		form = { name: "", slug: "", icon: "", description: "", systemPromptInstruction: "", instructionPosition: "prepend", extensionIds: [], extensionTools: {} };
 		error = null;
 		saving = false;
+	}
+
+	// Drop per-tool subsets for extensions that are no longer attached, so the
+	// persisted extensionTools map never carries stale keys.
+	function handleExtensionsChange(ids: string[]) {
+		const kept: Record<string, string[]> = {};
+		for (const id of ids) {
+			if (form.extensionTools[id]) kept[id] = form.extensionTools[id];
+		}
+		form.extensionIds = ids;
+		form.extensionTools = kept;
 	}
 
 	function handleClose() {
@@ -206,13 +220,28 @@
 									</span>
 								{/each}
 							</div>
+							<div class="mt-2">
+								<ExtensionToolSelector extensionIds={form.extensionIds} value={form.extensionTools} readonly />
+							</div>
 						{/if}
 					{:else}
 						<ExtensionSearchPicker
 							selected={form.extensionIds}
 							placeholder="Search extensions to attach..."
-							onchange={(ids) => { form.extensionIds = ids; }}
+							onchange={handleExtensionsChange}
 						/>
+						{#if form.extensionIds.length > 0}
+							<p class="mt-2 text-xs text-[var(--color-text-muted)]">
+								Pick specific tools per extension, or leave all checked to grant every tool (including ones added later).
+							</p>
+							<div class="mt-1">
+								<ExtensionToolSelector
+									extensionIds={form.extensionIds}
+									value={form.extensionTools}
+									onchange={(map) => { form.extensionTools = map; }}
+								/>
+							</div>
+						{/if}
 					{/if}
 				</div>
 				<div>

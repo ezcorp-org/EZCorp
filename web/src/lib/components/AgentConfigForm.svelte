@@ -5,6 +5,7 @@
 	import ModelSearchPicker from "$lib/components/ModelSearchPicker.svelte";
 	import ExtensionSearchPicker from "$lib/components/ExtensionSearchPicker.svelte";
 	import ExtensionAttachPicker from "$lib/components/ExtensionAttachPicker.svelte";
+	import ExtensionToolSelector from "$lib/components/ExtensionToolSelector.svelte";
 	import { CURRENT_MODEL_SENTINEL } from "$lib/api";
 
 	let {
@@ -37,6 +38,26 @@
 	let extensions = $state<string[]>(
 		untrack(() => (Array.isArray(initial.extensions) ? (initial.extensions as string[]) : [])),
 	);
+	// Per-extension tool subset (extension id → selected tool names). Absent /
+	// empty for an attached extension means all its tools (see
+	// ExtensionToolSelector + registry.getToolsForAgent).
+	let extensionTools = $state<Record<string, string[]>>(
+		untrack(() => (initial.extensionTools && typeof initial.extensionTools === "object"
+			? (initial.extensionTools as Record<string, string[]>)
+			: {})),
+	);
+
+	// Drop per-tool subsets for extensions that are no longer attached, so the
+	// persisted map never carries stale keys. Used by both the inline picker
+	// and the visual attach-picker modal.
+	function handleExtensionsChange(ids: string[]) {
+		const kept: Record<string, string[]> = {};
+		for (const id of ids) {
+			if (extensionTools[id]) kept[id] = extensionTools[id];
+		}
+		extensions = ids;
+		extensionTools = kept;
+	}
 
 	// Dynamic input schema builder
 	let fields = $state<{ key: string; type: string; label: string; required: boolean }[]>(
@@ -99,6 +120,7 @@
 			...(Object.keys(inputSchema).length > 0 ? { inputSchema } : {}),
 			...(category.trim() ? { category: category.trim() } : {}),
 			extensions,
+			extensionTools,
 		});
 	}
 </script>
@@ -174,7 +196,7 @@
 		<ExtensionSearchPicker
 			selected={extensions}
 			placeholder="Search extensions to attach..."
-			onchange={(ids) => { extensions = ids; }}
+			onchange={handleExtensionsChange}
 		/>
 		<!-- Phase 49.4 — visual modal alternative. Same model + chip
 		     surface as the inline picker; users pick whichever interaction
@@ -191,6 +213,18 @@
 			</svg>
 			Browse extensions
 		</button>
+		{#if extensions.length > 0}
+			<p class="mt-2 text-xs text-[var(--color-text-muted)]">
+				Pick specific tools per extension, or leave all checked to grant every tool (including ones added later).
+			</p>
+			<div class="mt-1">
+				<ExtensionToolSelector
+					extensionIds={extensions}
+					value={extensionTools}
+					onchange={(map) => { extensionTools = map; }}
+				/>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Input Schema Builder -->
@@ -244,5 +278,5 @@
 	open={attachPickerOpen}
 	initialSelected={extensions}
 	onclose={() => (attachPickerOpen = false)}
-	onsubmit={(ids) => { extensions = ids; }}
+	onsubmit={handleExtensionsChange}
 />

@@ -25,7 +25,7 @@ vi.mock("$lib/api", () => ({
 // mount — both pickers share the same endpoint. A single fetch mock
 // services both consumers.
 const installedExtensions = [
-	{ id: "ext-1", name: "summarizer", description: "summarize text", manifest: { tools: [{ name: "summarize" }] } },
+	{ id: "ext-1", name: "summarizer", description: "summarize text", manifest: { tools: [{ name: "summarize" }, { name: "tldr" }] } },
 	{ id: "ext-2", name: "translator", description: "translate prose", manifest: { tools: [{ name: "translate" }] } },
 ];
 
@@ -120,5 +120,65 @@ describe("AgentConfigForm — Phase 49.4 attach picker wiring", () => {
 		await waitFor(() => expect(onsubmit).toHaveBeenCalled());
 		const payload = onsubmit.mock.calls[0]![0] as { extensions: string[] };
 		expect(payload.extensions).toEqual(["ext-1"]);
+	});
+});
+
+describe("AgentConfigForm — per-tool subset (extensionTools)", () => {
+	test("renders the per-tool selector for attached extensions, all checked by default", async () => {
+		const { findByTestId } = render(AgentConfigForm, {
+			initial: { name: "x", prompt: "y", extensions: ["ext-1"] },
+			onsubmit: vi.fn(),
+		});
+		const summarize = (await findByTestId("tool-ext-1-summarize")) as HTMLInputElement;
+		const tldr = (await findByTestId("tool-ext-1-tldr")) as HTMLInputElement;
+		expect(summarize.checked).toBe(true);
+		expect(tldr.checked).toBe(true);
+	});
+
+	test("deselecting a tool carries the subset into the submit payload", async () => {
+		const onsubmit = vi.fn();
+		const { findByTestId } = render(AgentConfigForm, {
+			initial: { name: "x", prompt: "y", extensions: ["ext-1"] },
+			onsubmit,
+		});
+		const tldr = (await findByTestId("tool-ext-1-tldr")) as HTMLInputElement;
+		await fireEvent.click(tldr);
+
+		await fireEvent.submit(document.querySelector("form")!);
+		await waitFor(() => expect(onsubmit).toHaveBeenCalled());
+		const payload = onsubmit.mock.calls[0]![0] as { extensionTools: Record<string, string[]> };
+		expect(payload.extensionTools).toEqual({ "ext-1": ["summarize"] });
+	});
+
+	test("an existing subset pre-checks only the selected tools", async () => {
+		const { findByTestId } = render(AgentConfigForm, {
+			initial: { name: "x", prompt: "y", extensions: ["ext-1"], extensionTools: { "ext-1": ["summarize"] } },
+			onsubmit: vi.fn(),
+		});
+		const summarize = (await findByTestId("tool-ext-1-summarize")) as HTMLInputElement;
+		const tldr = (await findByTestId("tool-ext-1-tldr")) as HTMLInputElement;
+		expect(summarize.checked).toBe(true);
+		expect(tldr.checked).toBe(false);
+	});
+
+	test("removing an extension prunes its stale subset key from the payload", async () => {
+		const onsubmit = vi.fn();
+		const { findByLabelText } = render(AgentConfigForm, {
+			initial: {
+				name: "x", prompt: "y",
+				extensions: ["ext-1", "ext-2"],
+				extensionTools: { "ext-1": ["summarize"], "ext-2": ["translate"] },
+			},
+			onsubmit,
+		});
+		// Remove ext-2 ("translator") via its inline chip × (mousedown handler).
+		const removeBtn = await findByLabelText("Remove translator");
+		await fireEvent.mouseDown(removeBtn);
+
+		await fireEvent.submit(document.querySelector("form")!);
+		await waitFor(() => expect(onsubmit).toHaveBeenCalled());
+		const payload = onsubmit.mock.calls[0]![0] as { extensions: string[]; extensionTools: Record<string, string[]> };
+		expect(payload.extensions).toEqual(["ext-1"]);
+		expect(payload.extensionTools).toEqual({ "ext-1": ["summarize"] });
 	});
 });

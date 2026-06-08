@@ -90,4 +90,45 @@ test.describe("New Agent Page", () => {
 		await page.getByText("Back to Agents").click();
 		await expect(page).toHaveURL("/agents");
 	});
+
+	test("Configure tab: attach extension, deselect a tool → POST body carries extensionTools subset", async ({ page, mockApi }) => {
+		await mockApi({
+			agents: [],
+			extensions: [
+				{ id: "ext-tools", name: "Toolbox", description: "Two tools", manifest: { tools: [{ name: "alpha" }, { name: "beta" }] } },
+			],
+		});
+
+		let postBody: Record<string, unknown> | null = null;
+		page.on("request", (req) => {
+			if (req.method() === "POST" && req.url().endsWith("/api/agent-configs")) {
+				postBody = req.postDataJSON() as Record<string, unknown>;
+			}
+		});
+
+		await page.goto("/agents/new");
+		await page.getByRole("button", { name: "Configure" }).click();
+		await page.getByLabel("Name").fill("tooled-agent");
+		await page.getByLabel("System Prompt").fill("You are a tooled agent.");
+
+		// Attach the extension via the inline picker.
+		const combobox = page.getByTestId("extension-picker-combobox");
+		await combobox.locator("input[role='combobox']").click();
+		const listbox = page.locator("#extension-picker-listbox");
+		await expect(listbox).toBeVisible({ timeout: 2000 });
+		await listbox.getByRole("button").filter({ hasText: "Toolbox" }).click();
+
+		// Per-tool selector appears; both tools checked by default.
+		const beta = page.getByTestId("tool-ext-tools-beta");
+		await expect(beta).toBeChecked();
+		await beta.uncheck();
+		await expect(beta).not.toBeChecked();
+
+		await page.getByRole("button", { name: "Save Agent" }).click();
+		await expect(page).toHaveURL("/agents");
+
+		expect(postBody).not.toBeNull();
+		expect((postBody as any).extensions).toEqual(["ext-tools"]);
+		expect((postBody as any).extensionTools).toEqual({ "ext-tools": ["alpha"] });
+	});
 });

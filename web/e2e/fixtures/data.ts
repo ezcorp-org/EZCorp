@@ -182,6 +182,7 @@ export function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConf
 		capabilities: ["test"],
 		prompt: "You are a test agent.",
 		extensions: null,
+		extensionTools: null,
 		references: null,
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",

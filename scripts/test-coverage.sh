@@ -51,14 +51,18 @@ IDX=0
 for f in "${FILES[@]}"; do
   OUTFILE="$TMPDIR/result_$IDX"
   COVDIR="$TMPDIR/cov_$IDX"
+  # Give DB-heavy suites headroom: setupTestDb() in a beforeAll can exceed bun's
+  # 5s default under --coverage instrumentation + PARALLEL contention, crashing
+  # the shard as "(unnamed)" — which drops any gated file it solely covers to 0%
+  # and fails the gate. EXCLUDE the example e2e shards: their real-subprocess
+  # tests genuinely fail-by-timeout, so a long timeout would balloon the job
+  # ~45min. Keep their 5s fast-fail.
+  case "$f" in
+    docs/extensions/examples/*) TIMEOUT_FLAG="" ;;
+    *) TIMEOUT_FLAG="--timeout 30000" ;;
+  esac
   (
-    # NB: do NOT add a global `--timeout` here — it also extends the many
-    # genuinely-failing e2e subprocess shards (auto-note, extension-author, …)
-    # from a 5s death to a 60s wait, ballooning the job by ~45min. Slow PGlite
-    # setup under --coverage is instead handled per-suite via an explicit
-    # beforeAll() timeout in the affected gated tests (preview-consent /
-    # preview-sessions-queries).
-    OUTPUT=$(bun test --coverage --coverage-reporter=lcov --coverage-dir="$COVDIR" "./$f" 2>&1) || true
+    OUTPUT=$(bun test $TIMEOUT_FLAG --coverage --coverage-reporter=lcov --coverage-dir="$COVDIR" "./$f" 2>&1) || true
     echo "$OUTPUT" > "$OUTFILE"
   ) &
   IDX=$((IDX + 1))

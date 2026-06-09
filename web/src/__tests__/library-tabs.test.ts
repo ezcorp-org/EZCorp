@@ -78,6 +78,12 @@ describe("library-tabs persistence", () => {
 		expect(readActiveTab()).toBe("installed");
 	});
 
+	test("writeActiveTab → readActiveTab round-trip 'mcp'", () => {
+		writeActiveTab("mcp");
+		expect(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)).toBe("mcp");
+		expect(readActiveTab()).toBe("mcp");
+	});
+
 	test("readActiveTab → falls back to 'installed' on unknown value", () => {
 		// Stale key from a hypothetical removed tab.
 		localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, "marketplace");

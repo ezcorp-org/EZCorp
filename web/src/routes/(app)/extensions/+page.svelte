@@ -81,8 +81,17 @@
 	// the active tab.
 	let bundledExtensions = $derived(extensions.filter((e) => e.isBundled === true));
 	let installedExtensions = $derived(extensions.filter((e) => e.isBundled !== true));
+	// MCP extensions are surfaced as their own filter tab (kind === "mcp"),
+	// matching the "MCP · {transport}" badge condition. They also still appear
+	// under Installed/Built-ins per their isBundled flag — the MCP tab is a
+	// focused view, not an exclusive bucket.
+	let mcpExtensions = $derived(extensions.filter((e) => e.manifest?.kind === "mcp"));
 	let visibleExtensions = $derived(
-		activeTab === "builtins" ? bundledExtensions : installedExtensions,
+		activeTab === "builtins"
+			? bundledExtensions
+			: activeTab === "mcp"
+				? mcpExtensions
+				: installedExtensions,
 	);
 
 	// Install form state
@@ -101,6 +110,11 @@
 	let mcpArgs = $state(""); // space-separated on input; converted on submit
 	let mcpUrl = $state("");
 	let mcpHeaders = $state(""); // one "Key: value" per line
+	// Guided-install confirmation: after a successful MCP connect+install the
+	// POST returns the created extension; we surface "Connected · N tools
+	// found" inline (reading manifest.tools.length) instead of silently
+	// appending the card.
+	let mcpInstallResult = $state<{ name: string; toolCount: number } | null>(null);
 
 	// Permission review dialog — open when the admin enables an extension
 	let reviewExt = $state<ExtensionRecord | null>(null);
@@ -283,6 +297,7 @@
 		}
 
 		installing = true;
+		mcpInstallResult = null;
 		try {
 			const res = await fetch("/api/mcp-servers", {
 				method: "POST",
@@ -296,6 +311,14 @@
 			if (!res.ok) {
 				throw new Error(await extractError(res, "MCP install failed"));
 			}
+			// The endpoint returns the freshly-installed extension (connect +
+			// tools/list already ran server-side). Surface the connected tool
+			// count so the user gets explicit confirmation of what was found.
+			const installed = await res.json().catch(() => null);
+			const toolCount = Array.isArray(installed?.manifest?.tools)
+				? installed.manifest.tools.length
+				: 0;
+			mcpInstallResult = { name: mcpName.trim(), toolCount };
 			mcpName = "";
 			mcpDescription = "";
 			mcpCommand = "";
@@ -677,6 +700,28 @@
 						{installing ? "Connecting..." : "Connect"}
 					</button>
 				</div>
+				{#if mcpInstallResult}
+					<div
+						class="flex items-center justify-between rounded-md border border-green-800 bg-green-900/30 px-3 py-2 text-sm text-green-200"
+						data-testid="mcp-install-confirmation"
+					>
+						<span>
+							<span class="font-medium">Connected</span> ·
+							<span data-testid="mcp-install-tool-count">{mcpInstallResult.toolCount}</span>
+							tool{mcpInstallResult.toolCount === 1 ? "" : "s"} found
+							in <span class="font-medium">{mcpInstallResult.name}</span>
+						</span>
+						<button
+							onclick={() => (mcpInstallResult = null)}
+							aria-label="Dismiss confirmation"
+							class="ml-2 rounded p-0.5 text-green-300/80 hover:text-green-100"
+						>
+							<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+							</svg>
+						</button>
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -706,6 +751,16 @@
 			>
 				Built-ins <span class="ml-1 text-xs text-[var(--color-text-muted)]">{bundledExtensions.length}</span>
 			</button>
+			<button
+				role="tab"
+				aria-selected={activeTab === "mcp"}
+				aria-controls="ext-tab-panel"
+				data-testid="ext-tab-mcp"
+				onclick={() => selectTab("mcp")}
+				class="border-b-2 px-3 py-2 text-sm font-medium transition-colors {activeTab === 'mcp' ? 'border-blue-500 text-[var(--color-text-primary)]' : 'border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}"
+			>
+				MCP <span class="ml-1 text-xs text-[var(--color-text-muted)]">{mcpExtensions.length}</span>
+			</button>
 		</div>
 	</div>
 
@@ -714,7 +769,18 @@
 	{#if loading}
 		<SkeletonLoader type="card-grid" count={6} />
 	{:else if visibleExtensions.length === 0}
-		{#if activeTab === "builtins"}
+		{#if activeTab === "mcp"}
+			<EmptyState
+				title="No MCP servers connected"
+				description="Connect a Model Context Protocol server above (stdio, Streamable HTTP, or SSE) to expose its tools to your agents."
+			>
+				{#snippet icon()}
+					<svg class="h-12 w-12 text-[var(--color-text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V7a2 2 0 012-2h14a2 2 0 012 2v3a2 2 0 01-2 2M5 12a2 2 0 00-2 2v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 00-2-2" />
+					</svg>
+				{/snippet}
+			</EmptyState>
+		{:else if activeTab === "builtins"}
 			<EmptyState
 				title="No built-in extensions yet"
 				description="First-party features ship here in v1.3 Phase 53. Until then, use the Installed tab to add your own."

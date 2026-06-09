@@ -20,9 +20,9 @@
 
 export const ACTIVE_TAB_STORAGE_KEY = "ezcorp.extensions.activeTab";
 
-export type LibraryTab = "builtins" | "installed";
+export type LibraryTab = "builtins" | "installed" | "mcp";
 
-const VALID: ReadonlyArray<LibraryTab> = ["builtins", "installed"] as const;
+const VALID: ReadonlyArray<LibraryTab> = ["builtins", "installed", "mcp"] as const;
 
 function isLibraryTab(value: unknown): value is LibraryTab {
   return typeof value === "string" && (VALID as readonly string[]).includes(value);

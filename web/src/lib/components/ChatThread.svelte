@@ -599,14 +599,24 @@
 	// Per-conversation tool scoping (Phase 4/D). The composer's 🔧 Tools
 	// popover narrows the active mode's tools for THIS conversation only.
 	// Persist via updateConversation; optimistically reflect on currentConv so
-	// the popover's count/state update without a refetch.
+	// the popover's count/state update without a refetch. On persistence
+	// failure, roll back the optimistic mutation and surface the error (silent
+	// swallowing would leave the popover showing a scope that never saved —
+	// the next reload would silently revert it).
+	function persistExtensionTools(next: Record<string, string[]> | null) {
+		const prev = currentConv?.extensionTools ?? null;
+		if (currentConv) currentConv = { ...currentConv, extensionTools: next };
+		updateConversation(conversationId, { extensionTools: next }).catch((err) => {
+			if (currentConv) currentConv = { ...currentConv, extensionTools: prev };
+			console.warn("Failed to persist conversation tool scope:", err);
+			addToast({ type: "error", message: "Couldn't save tool selection" });
+		});
+	}
 	function handleExtensionToolsChange(map: Record<string, string[]>) {
-		if (currentConv) currentConv = { ...currentConv, extensionTools: map };
-		updateConversation(conversationId, { extensionTools: map }).catch(() => {});
+		persistExtensionTools(map);
 	}
 	function handleExtensionToolsReset() {
-		if (currentConv) currentConv = { ...currentConv, extensionTools: null };
-		updateConversation(conversationId, { extensionTools: null }).catch(() => {});
+		persistExtensionTools(null);
 	}
 
 	// ── Factory: send-message family (W7) ─────────────────────────────

@@ -112,12 +112,15 @@ describe("ExtensionAttachPicker", () => {
 		};
 		const { findAllByTestId, findByTestId } = render(ExtensionAttachPicker, props);
 		const cards = await findAllByTestId("extension-attach-picker-card");
-		await fireEvent.click(cards[0]!);
+		// The card root is a <div>; the toggle handler lives on its inner
+		// <button> (Phase 1 card→button refactor). `data-selected` still
+		// lives on the card div, so only the click target moves to the button.
+		await fireEvent.click(cards[0]!.querySelector("button")!);
 		expect(cards[0]!.getAttribute("data-selected")).toBe("true");
-		await fireEvent.click(cards[1]!);
+		await fireEvent.click(cards[1]!.querySelector("button")!);
 		expect((await findByTestId("extension-attach-picker-count")).textContent).toContain("2 selected");
 		// Toggle the first one off → count drops to 1.
-		await fireEvent.click(cards[0]!);
+		await fireEvent.click(cards[0]!.querySelector("button")!);
 		expect(cards[0]!.getAttribute("data-selected")).toBe("false");
 		expect((await findByTestId("extension-attach-picker-count")).textContent).toContain("1 selected");
 	});
@@ -136,7 +139,8 @@ describe("ExtensionAttachPicker", () => {
 		};
 		const { findAllByTestId, findByTestId } = render(ExtensionAttachPicker, props);
 		const cards = await findAllByTestId("extension-attach-picker-card");
-		await fireEvent.click(cards[1]!);
+		// Toggle handler lives on the card's inner <button> (Phase 1 refactor).
+		await fireEvent.click(cards[1]!.querySelector("button")!);
 		const submit = await findByTestId("extension-attach-picker-submit");
 		await fireEvent.click(submit);
 		expect(onsubmit).toHaveBeenCalledTimes(1);

@@ -74,8 +74,10 @@ describe("AgentConfigForm — Phase 49.4 attach picker wiring", () => {
 		// Wait for the picker's /api/extensions fetch to resolve and
 		// cards to render.
 		const cards = await findAllByTestId("extension-attach-picker-card");
-		await fireEvent.click(cards[0]!); // ext-1
-		await fireEvent.click(cards[1]!); // ext-2
+		// The card root is a <div>; the toggle handler lives on its inner
+		// <button> (Phase 1 card→button refactor). Click the inner button.
+		await fireEvent.click(cards[0]!.querySelector("button")!); // ext-1
+		await fireEvent.click(cards[1]!.querySelector("button")!); // ext-2
 		await fireEvent.click(await findByTestId("extension-attach-picker-submit"));
 		// Modal closes.
 		await waitFor(() => {
@@ -111,8 +113,9 @@ describe("AgentConfigForm — Phase 49.4 attach picker wiring", () => {
 		await fireEvent.click(await findByTestId("open-extension-attach-picker"));
 		const cards = await findAllByTestId("extension-attach-picker-card");
 		// Toggle ext-1 OFF then ext-2 ON in the modal — but cancel without saving.
-		await fireEvent.click(cards.find((c) => c.getAttribute("data-ext-id") === "ext-1")!);
-		await fireEvent.click(cards.find((c) => c.getAttribute("data-ext-id") === "ext-2")!);
+		// Toggle handler lives on each card's inner <button> (Phase 1 refactor).
+		await fireEvent.click(cards.find((c) => c.getAttribute("data-ext-id") === "ext-1")!.querySelector("button")!);
+		await fireEvent.click(cards.find((c) => c.getAttribute("data-ext-id") === "ext-2")!.querySelector("button")!);
 		await fireEvent.click(await findByText("Cancel"));
 		// Submit the form — initial extensions ["ext-1"] still attached.
 		const form = document.querySelector("form")!;

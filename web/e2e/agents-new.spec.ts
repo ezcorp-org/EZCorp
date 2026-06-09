@@ -131,4 +131,45 @@ test.describe("New Agent Page", () => {
 		expect((postBody as any).extensions).toEqual(["ext-tools"]);
 		expect((postBody as any).extensionTools).toEqual({ "ext-tools": ["alpha"] });
 	});
+
+	test("Configure tab: attach-picker per-card scoping persists into POST body", async ({ page, mockApi }) => {
+		await mockApi({
+			agents: [],
+			extensions: [
+				{ id: "ext-tools", name: "Toolbox", description: "Two tools", manifest: { tools: [{ name: "alpha" }, { name: "beta" }] } },
+			],
+		});
+
+		let postBody: Record<string, unknown> | null = null;
+		page.on("request", (req) => {
+			if (req.method() === "POST" && req.url().endsWith("/api/agent-configs")) {
+				postBody = req.postDataJSON() as Record<string, unknown>;
+			}
+		});
+
+		await page.goto("/agents/new");
+		await page.getByRole("button", { name: "Configure" }).click();
+		await page.getByLabel("Name").fill("picker-scoped-agent");
+		await page.getByLabel("System Prompt").fill("You are a tooled agent.");
+
+		// Open the visual attach picker and select the extension card.
+		await page.getByTestId("open-extension-attach-picker").click();
+		const cardScoped = page.locator('[data-testid="extension-attach-picker-card"][data-ext-id="ext-tools"]');
+		await cardScoped.locator("button").first().click();
+
+		// Expand the per-card tool checklist and deselect "beta".
+		await page.getByTestId("attach-card-tools-toggle-ext-tools").click();
+		const beta = page.getByTestId("attach-card-tool-ext-tools-beta");
+		await expect(beta).toBeChecked();
+		await beta.uncheck();
+
+		// Submit the picker, then save the form.
+		await page.getByTestId("extension-attach-picker-submit").click();
+		await page.getByRole("button", { name: "Save Agent" }).click();
+		await expect(page).toHaveURL("/agents");
+
+		expect(postBody).not.toBeNull();
+		expect((postBody as any).extensions).toEqual(["ext-tools"]);
+		expect((postBody as any).extensionTools).toEqual({ "ext-tools": ["alpha"] });
+	});
 });

@@ -23,6 +23,13 @@
 	import { fuzzyScore } from "$lib/fuzzy-match.js";
 	import BottomSheet from "$lib/components/BottomSheet.svelte";
 	import { useBreakpoint } from "$lib/use-breakpoint.svelte";
+	import {
+		isAllTools,
+		isToolChecked,
+		toggleTool as logicToggleTool,
+		pruneDetached,
+		type ToolScopeMap,
+	} from "$lib/tool-scope-logic";
 
 	interface ExtensionItem {
 		id: string;
@@ -34,13 +41,15 @@
 	let {
 		open,
 		initialSelected = [],
+		initialExtensionTools = {},
 		onclose,
 		onsubmit,
 	}: {
 		open: boolean;
 		initialSelected?: string[];
+		initialExtensionTools?: ToolScopeMap;
 		onclose: () => void;
-		onsubmit: (ids: string[]) => void;
+		onsubmit: (ids: string[], extensionTools: ToolScopeMap) => void;
 	} = $props();
 
 	// Phase 57 UX-01 Wave 2: wrap picker body in BottomSheet on <lg.
@@ -55,14 +64,22 @@
 	// caller's *initial* array, not later updates — Svelte 5 flags
 	// that pattern (state_referenced_locally).
 	let selected = $state<Set<string>>(new Set());
+	// Per-card tool scoping map (extension id → tool-name subset). Mirrors the
+	// `extension_tools` model; driven by the shared `tool-scope-logic` rules.
+	// Absent / empty subset for an attached extension = all tools.
+	let scopeMap = $state<ToolScopeMap>({});
+	// Which cards have their inline tool checklist expanded.
+	let expanded = $state<Set<string>>(new Set());
 	let loaded = $state(false);
 
-	// Re-sync `selected` whenever the modal opens with fresh
+	// Re-sync `selected` + `scopeMap` whenever the modal opens with fresh
 	// `initialSelected`. Without this, opening, deselecting, closing
 	// without submit, then re-opening would persist the deselection.
 	$effect(() => {
 		if (open) {
 			selected = new Set(initialSelected);
+			scopeMap = { ...initialExtensionTools };
+			expanded = new Set();
 		}
 	});
 
@@ -122,8 +139,25 @@
 		selected = next;
 	}
 
+	function toggleExpanded(id: string) {
+		const next = new Set(expanded);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expanded = next;
+	}
+
+	function toolNames(ext: ExtensionItem): string[] {
+		return (ext.manifest?.tools ?? []).map((t) => t.name);
+	}
+
+	function toggleScopeTool(ext: ExtensionItem, toolName: string) {
+		scopeMap = logicToggleTool(scopeMap, ext.id, toolName, toolNames(ext));
+	}
+
 	function handleSubmit() {
-		onsubmit([...selected]);
+		const ids = [...selected];
+		// Drop scoping for any extension that ended up unselected.
+		onsubmit(ids, pruneDetached(scopeMap, ids));
 		onclose();
 	}
 
@@ -215,46 +249,93 @@
 			<div class="grid gap-3 sm:grid-cols-2">
 				{#each filtered() as ext (ext.id)}
 					{@const isSelected = selected.has(ext.id)}
-					<button
-						type="button"
-						onclick={() => toggle(ext.id)}
+					{@const isExpanded = expanded.has(ext.id)}
+					<div
 						data-testid="extension-attach-picker-card"
 						data-ext-id={ext.id}
 						data-selected={isSelected ? "true" : "false"}
-						aria-pressed={isSelected}
-						class="flex flex-col items-start rounded-lg border p-3 text-left transition-colors {isSelected
+						class="flex flex-col rounded-lg border transition-colors {isSelected
 							? 'border-blue-500 bg-blue-900/20'
-							: 'border-[var(--color-border)] bg-[var(--color-surface-secondary)] hover:bg-[var(--color-surface-tertiary)]'}"
-						style="min-height: 88px;"
+							: 'border-[var(--color-border)] bg-[var(--color-surface-secondary)]'}"
 					>
-						<div class="flex w-full items-center gap-2">
-							<span
-								class="flex h-4 w-4 shrink-0 items-center justify-center rounded border {isSelected
-									? 'border-blue-500 bg-blue-600 text-white'
-									: 'border-[var(--color-border)] text-transparent'}"
-							>
-								{#if isSelected}
-									<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-									</svg>
+						<button
+							type="button"
+							onclick={() => toggle(ext.id)}
+							aria-pressed={isSelected}
+							class="flex flex-col items-start rounded-t-lg p-3 text-left transition-colors {isSelected
+								? ''
+								: 'hover:bg-[var(--color-surface-tertiary)]'}"
+							style="min-height: 88px;"
+						>
+							<div class="flex w-full items-center gap-2">
+								<span
+									class="flex h-4 w-4 shrink-0 items-center justify-center rounded border {isSelected
+										? 'border-blue-500 bg-blue-600 text-white'
+										: 'border-[var(--color-border)] text-transparent'}"
+								>
+									{#if isSelected}
+										<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+										</svg>
+									{/if}
+								</span>
+								<span class="truncate text-sm font-medium text-[var(--color-text-primary)]">
+									{ext.name}
+								</span>
+								<span
+									class="ml-auto shrink-0 rounded-full bg-[var(--color-surface-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-muted)]"
+									title="Tool count"
+								>
+									{toolCount(ext)} tools
+								</span>
+							</div>
+							{#if ext.description}
+								<p class="mt-2 line-clamp-2 text-xs text-[var(--color-text-muted)]">
+									{ext.description}
+								</p>
+							{/if}
+						</button>
+
+						<!-- Inline per-card tool scoping — only meaningful once the
+						     extension is selected and exposes tools. Driven by the
+						     shared tool-scope-logic rules. -->
+						{#if isSelected && toolCount(ext) > 0}
+							<div class="border-t border-[var(--color-border)] px-3 py-2">
+								<button
+									type="button"
+									onclick={() => toggleExpanded(ext.id)}
+									data-testid={`attach-card-tools-toggle-${ext.id}`}
+									aria-expanded={isExpanded}
+									class="flex w-full items-center justify-between text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+								>
+									<span class="flex items-center gap-1">
+										<span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span> Tools
+									</span>
+									<span class="text-[var(--color-text-muted)]">
+										{isAllTools(scopeMap, ext.id)
+											? "All tools"
+											: `${scopeMap[ext.id].length} selected`}
+									</span>
+								</button>
+								{#if isExpanded}
+									<div class="mt-2 flex flex-col gap-1">
+										{#each ext.manifest?.tools ?? [] as tool (tool.name)}
+											{@const checked = isToolChecked(scopeMap, ext.id, tool.name)}
+											<label class="flex cursor-pointer items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+												<input
+													type="checkbox"
+													{checked}
+													onchange={() => toggleScopeTool(ext, tool.name)}
+													data-testid={`attach-card-tool-${ext.id}-${tool.name}`}
+												/>
+												<span class="font-mono text-[var(--color-text-primary)]">{tool.name}</span>
+											</label>
+										{/each}
+									</div>
 								{/if}
-							</span>
-							<span class="truncate text-sm font-medium text-[var(--color-text-primary)]">
-								{ext.name}
-							</span>
-							<span
-								class="ml-auto shrink-0 rounded-full bg-[var(--color-surface-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-muted)]"
-								title="Tool count"
-							>
-								{toolCount(ext)} tools
-							</span>
-						</div>
-						{#if ext.description}
-							<p class="mt-2 line-clamp-2 text-xs text-[var(--color-text-muted)]">
-								{ext.description}
-							</p>
+							</div>
 						{/if}
-					</button>
+					</div>
 				{/each}
 			</div>
 		{/if}

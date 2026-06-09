@@ -49,11 +49,14 @@
 
 	// Drop per-tool subsets for extensions that are no longer attached, so the
 	// persisted map never carries stale keys. Used by both the inline picker
-	// and the visual attach-picker modal.
-	function handleExtensionsChange(ids: string[]) {
+	// (ids only) and the visual attach-picker modal (which also threads a
+	// per-card scoping map). When a scoping map is supplied, it takes
+	// precedence over the existing per-tool state for the supplied ids.
+	function handleExtensionsChange(ids: string[], scoped?: Record<string, string[]>) {
+		const base = scoped ?? extensionTools;
 		const kept: Record<string, string[]> = {};
 		for (const id of ids) {
-			if (extensionTools[id]) kept[id] = extensionTools[id];
+			if (base[id]) kept[id] = base[id];
 		}
 		extensions = ids;
 		extensionTools = kept;
@@ -277,6 +280,7 @@
 <ExtensionAttachPicker
 	open={attachPickerOpen}
 	initialSelected={extensions}
+	initialExtensionTools={extensionTools}
 	onclose={() => (attachPickerOpen = false)}
 	onsubmit={handleExtensionsChange}
 />

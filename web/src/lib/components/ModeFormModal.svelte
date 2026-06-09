@@ -3,6 +3,7 @@
 	import Tooltip from "$lib/components/Tooltip.svelte";
 	import InfoTooltip from "$lib/components/InfoTooltip.svelte";
 	import ExtensionSearchPicker from "$lib/components/ExtensionSearchPicker.svelte";
+	import ExtensionAttachPicker from "$lib/components/ExtensionAttachPicker.svelte";
 	import ExtensionToolSelector from "$lib/components/ExtensionToolSelector.svelte";
 	import { onMount } from "svelte";
 
@@ -51,6 +52,10 @@
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 	let isEditing = $state(true);
+	// Visual attach picker (parity with AgentConfigForm). Submitting threads
+	// both the selected ids and the per-card tool-scoping map through
+	// handleExtensionsChange.
+	let attachPickerOpen = $state(false);
 
 	let isExisting = $derived(editMode !== null && editMode !== undefined);
 	let isBuiltin = $derived(Boolean(editMode?.builtin));
@@ -94,11 +99,14 @@
 	}
 
 	// Drop per-tool subsets for extensions that are no longer attached, so the
-	// persisted extensionTools map never carries stale keys.
-	function handleExtensionsChange(ids: string[]) {
+	// persisted extensionTools map never carries stale keys. The inline picker
+	// passes ids only; the visual attach-picker also threads a per-card scoping
+	// map, which (when supplied) takes precedence for the supplied ids.
+	function handleExtensionsChange(ids: string[], scoped?: Record<string, string[]>) {
+		const base = scoped ?? form.extensionTools;
 		const kept: Record<string, string[]> = {};
 		for (const id of ids) {
-			if (form.extensionTools[id]) kept[id] = form.extensionTools[id];
+			if (base[id]) kept[id] = base[id];
 		}
 		form.extensionIds = ids;
 		form.extensionTools = kept;
@@ -230,6 +238,18 @@
 							placeholder="Search extensions to attach..."
 							onchange={handleExtensionsChange}
 						/>
+						<button
+							type="button"
+							onclick={() => (attachPickerOpen = true)}
+							data-testid="open-extension-attach-picker"
+							class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-[var(--color-surface-tertiary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-border)]"
+							style="min-height: 36px;"
+						>
+							<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+							</svg>
+							Browse extensions
+						</button>
 						{#if form.extensionIds.length > 0}
 							<p class="mt-2 text-xs text-[var(--color-text-muted)]">
 								Pick specific tools per extension, or leave all checked to grant every tool (including ones added later).
@@ -286,4 +306,14 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Visual extension attach picker (parity with AgentConfigForm). Mounted
+	     at modal scope so it overlays the form. -->
+	<ExtensionAttachPicker
+		open={attachPickerOpen}
+		initialSelected={form.extensionIds}
+		initialExtensionTools={form.extensionTools}
+		onclose={() => (attachPickerOpen = false)}
+		onsubmit={handleExtensionsChange}
+	/>
 {/if}

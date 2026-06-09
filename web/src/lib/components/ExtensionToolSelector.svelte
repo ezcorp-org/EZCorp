@@ -1,13 +1,17 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import {
+		isAllTools as logicIsAllTools,
+		isToolChecked,
+		selectedLabel as logicSelectedLabel,
+		toggleTool as logicToggleTool,
+		selectAllTools as logicSelectAllTools,
+	} from "$lib/tool-scope-logic";
 
 	// Per-extension tool subset selector. Renders one section per attached
-	// extension with a checklist of its tools. The data model (see
-	// modes.extensionTools / src/runtime/executor.ts) treats a key that is
-	// absent or maps to an empty array as "all tools" (the default, which also
-	// auto-includes tools added to the extension later). Selecting a strict
-	// subset persists that subset; checking every tool collapses back to the
-	// "all tools" default (key removed).
+	// extension with a checklist of its tools. The toggle/collapse rules live
+	// in the shared pure module `$lib/tool-scope-logic` (the data model: a key
+	// absent or mapping to an empty array means "all tools").
 	interface ToolInfo { name: string; description?: string | null }
 	interface ExtInfo { id: string; name: string; tools: ToolInfo[] }
 
@@ -58,42 +62,25 @@
 	}
 
 	function isAllTools(extId: string): boolean {
-		const subset = value[extId];
-		return !subset || subset.length === 0;
+		return logicIsAllTools(value, extId);
 	}
 
 	function isChecked(ext: ExtInfo, toolName: string): boolean {
-		if (isAllTools(ext.id)) return true;
-		return value[ext.id]!.includes(toolName);
+		return isToolChecked(value, ext.id, toolName);
 	}
 
 	function selectedLabel(ext: ExtInfo): string {
-		if (isAllTools(ext.id)) return "All tools";
-		return value[ext.id]!.join(", ");
+		return logicSelectedLabel(value, ext.id);
 	}
 
 	function toggleTool(ext: ExtInfo, toolName: string) {
 		if (readonly) return;
-		const all = toolNames(ext);
-		const current = new Set(isAllTools(ext.id) ? all : value[ext.id]!);
-		if (current.has(toolName)) current.delete(toolName);
-		else current.add(toolName);
-		// Preserve manifest order; drop anything no longer present.
-		const next = all.filter((t) => current.has(t));
-		const map = { ...value };
-		// All-checked or none-checked both collapse to the "all tools" default
-		// (key removed) — an empty selection is meaningless for an attached
-		// extension; remove the extension itself to grant zero tools.
-		if (next.length === 0 || next.length === all.length) delete map[ext.id];
-		else map[ext.id] = next;
-		onchange?.(map);
+		onchange?.(logicToggleTool(value, ext.id, toolName, toolNames(ext)));
 	}
 
 	function selectAll(ext: ExtInfo) {
 		if (readonly) return;
-		const map = { ...value };
-		delete map[ext.id];
-		onchange?.(map);
+		onchange?.(logicSelectAllTools(value, ext.id));
 	}
 </script>
 

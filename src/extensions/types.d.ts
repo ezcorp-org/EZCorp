@@ -113,6 +113,7 @@ export interface ExtensionManifestV2 {
     category?: string;
     checksum?: string;
     packageChecksums?: Record<string, string>;
+    packageChecksumsAlgo?: string;
 }
 export type ExtensionManifest = ExtensionManifestV2;
 export type ExtensionPackageType = "agent" | "extension";

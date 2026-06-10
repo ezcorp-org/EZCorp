@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import {
   computePackageChecksums,
   verifyPackageChecksums,
+  PACKAGE_CHECKSUM_ALGO,
 } from "../extensions/checksum";
 
 describe("computePackageChecksums", () => {
@@ -197,23 +198,52 @@ describe("verifyPackageChecksums", () => {
     // Tamper with the dotfile
     await writeFile(join(tempDir, ".npmrc"), "tampered");
 
-    const result = await verifyPackageChecksums(tempDir, expected);
+    // v2 baseline → dotfiles are covered.
+    const result = await verifyPackageChecksums(tempDir, expected, PACKAGE_CHECKSUM_ALGO);
 
     expect(result.valid).toBe(false);
     expect(result.mismatched).toContain(".npmrc");
   });
 
-  test("detects added dotfile", async () => {
+  test("detects added dotfile (v2 baseline)", async () => {
     await writeFile(join(tempDir, "index.ts"), "code");
     const expected = await computePackageChecksums(tempDir);
 
     // Sneak in a new dotfile after install
     await writeFile(join(tempDir, ".env"), "SECRET=evil");
 
-    const result = await verifyPackageChecksums(tempDir, expected);
+    const result = await verifyPackageChecksums(tempDir, expected, PACKAGE_CHECKSUM_ALGO);
 
     expect(result.valid).toBe(false);
     expect(result.mismatched).toContain(".env");
+  });
+
+  test("LEGACY baseline (no algo) does NOT flag an added dotfile — back-compat for pre-v2 installs", async () => {
+    // Simulate a pre-versioning baseline: recorded WITHOUT dotfiles.
+    await writeFile(join(tempDir, "index.ts"), "code");
+    const legacyExpected = await computePackageChecksums(tempDir, { includeDotfiles: false });
+
+    // A dotfile that existed at install but was never in the old baseline.
+    await writeFile(join(tempDir, ".env"), "PRE_EXISTING=1");
+
+    // Verified with no algo (legacy mode) → the dotfile is ignored, so the
+    // pre-existing install is NOT falsely disabled.
+    const legacy = await verifyPackageChecksums(tempDir, legacyExpected);
+    expect(legacy.valid).toBe(true);
+
+    // But the SAME tree verified as v2 WOULD flag the unrecorded dotfile.
+    const asV2 = await verifyPackageChecksums(tempDir, legacyExpected, PACKAGE_CHECKSUM_ALGO);
+    expect(asV2.valid).toBe(false);
+    expect(asV2.mismatched).toContain(".env");
+  });
+
+  test("LEGACY baseline still catches a modified NON-dotfile", async () => {
+    await writeFile(join(tempDir, "index.ts"), "original");
+    const legacyExpected = await computePackageChecksums(tempDir, { includeDotfiles: false });
+    await writeFile(join(tempDir, "index.ts"), "tampered");
+    const result = await verifyPackageChecksums(tempDir, legacyExpected);
+    expect(result.valid).toBe(false);
+    expect(result.mismatched).toContain("index.ts");
   });
 
   test("still ignores changes inside .git and node_modules", async () => {

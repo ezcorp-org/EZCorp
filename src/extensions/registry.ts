@@ -550,7 +550,7 @@ export class ExtensionRegistry {
       !this.verifiedSessions.has(extensionId) &&
       manifest.packageChecksums
     ) {
-      const result = await verifyPackageChecksums(installPath, manifest.packageChecksums);
+      const result = await verifyPackageChecksums(installPath, manifest.packageChecksums, manifest.packageChecksumsAlgo);
       if (!result.valid) {
         await denyAndDisable(extensionId, "Integrity check failed: files modified since install", installPath);
         this.processes.delete(extensionId);

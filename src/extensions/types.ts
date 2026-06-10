@@ -532,6 +532,10 @@ export interface ExtensionManifestV2 {
   category?: string;
   checksum?: string;
   packageChecksums?: Record<string, string>;
+  /** Algorithm version the `packageChecksums` baseline was recorded with
+   *  (`"v2"` = dotfiles hashed). Absent on pre-versioning installs, which
+   *  are verified in legacy (no-dotfile) mode. */
+  packageChecksumsAlgo?: string;
 
   // ── Phase 4 deputy / orchestration opt-in flags ───────────────────
   /**

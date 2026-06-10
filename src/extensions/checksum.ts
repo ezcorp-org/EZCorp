@@ -34,16 +34,31 @@ const CHECKSUM_EXCLUDE = new Set([
 ]);
 
 /**
+ * Algorithm version stamped on newly-recorded package checksums.
+ * `v2` hashes dotfiles (not in the exclude set); the pre-versioning
+ * baseline ("v1", represented by an absent/non-"v2" tag) skipped ALL
+ * dotfiles. Verify uses the tag to compare a baseline the same way it
+ * was recorded, so the dotfile-coverage upgrade can't retroactively
+ * flag a pre-existing install as "modified".
+ */
+export const PACKAGE_CHECKSUM_ALGO = "v2";
+
+/**
  * Compute SHA-256 checksums for all non-excluded files in a directory.
  * Returns a map of relative paths to hex-encoded SHA-256 hashes.
+ *
+ * `includeDotfiles` defaults to true (the `v2` algorithm). Pass false to
+ * reproduce the legacy (`v1`) scan for verifying an old baseline.
  */
 export async function computePackageChecksums(
   dir: string,
+  opts?: { includeDotfiles?: boolean },
 ): Promise<Record<string, string>> {
+  const includeDotfiles = opts?.includeDotfiles ?? true;
   const checksums: Record<string, string> = {};
   const glob = new Bun.Glob("**/*");
 
-  for await (const relPath of glob.scan({ cwd: dir, dot: true })) {
+  for await (const relPath of glob.scan({ cwd: dir, dot: includeDotfiles })) {
     // Check each path component against exclusion set. Dotfiles NOT in the
     // exclusion set are hashed — they can carry runtime behavior (e.g. a
     // required dotfile or a .env read by the entrypoint) and must be covered
@@ -74,12 +89,19 @@ export interface PackageVerifyResult {
 /**
  * Verify all file checksums in a directory against expected values.
  * Detects modifications (changed hash), additions (new files), and removals (missing files).
+ *
+ * `algo` is the version the baseline was recorded with. A baseline
+ * recorded before dotfile-hashing (absent / not `v2`) is verified WITHOUT
+ * dotfiles so the upgrade doesn't retroactively flag those installs as
+ * "files added"; `v2` baselines are verified with full dotfile coverage.
  */
 export async function verifyPackageChecksums(
   dir: string,
   expected: Record<string, string>,
+  algo?: string,
 ): Promise<PackageVerifyResult> {
-  const current = await computePackageChecksums(dir);
+  const includeDotfiles = algo === PACKAGE_CHECKSUM_ALGO;
+  const current = await computePackageChecksums(dir, { includeDotfiles });
   const mismatched: string[] = [];
 
   // Check for modified or removed files

@@ -6,7 +6,7 @@ import type { ExtensionManifestV2, ExtensionPermissions, InstalledExtension } fr
 import { compareVersions } from "./manifest";
 import { loadManifest } from "./loader";
 import { resolveDependencies, formatDepTree } from "./dependency-resolver";
-import { computeChecksum, verifyChecksum, computePackageChecksums } from "./checksum";
+import { computeChecksum, verifyChecksum, computePackageChecksums, PACKAGE_CHECKSUM_ALGO } from "./checksum";
 import { parseSource } from "./source-parser";
 import { clone, lsRemoteTags, gitExec } from "./git";
 import { ExtensionRegistry } from "./registry";
@@ -257,7 +257,7 @@ export async function installFromLocal(
       const refreshed = await dbUpdateExtension(existing.id, {
         version: manifest.version,
         description: manifest.description || "",
-        manifest: { ...manifest, checksum, packageChecksums },
+        manifest: { ...manifest, checksum, packageChecksums, packageChecksumsAlgo: PACKAGE_CHECKSUM_ALGO },
         installPath: localPath,
         checksumVerified: true,
       });
@@ -304,7 +304,7 @@ export async function installFromLocal(
     name: manifest.name,
     version: manifest.version,
     description: manifest.description || "",
-    manifest: { ...manifest, checksum, packageChecksums },
+    manifest: { ...manifest, checksum, packageChecksums, packageChecksumsAlgo: PACKAGE_CHECKSUM_ALGO },
     source,
     installPath: localPath,
     enabled,
@@ -437,7 +437,7 @@ export async function installFromGitHub(
       name: manifest.name,
       version: manifest.version,
       description: manifest.description || "",
-      manifest: { ...manifest, checksum, packageChecksums },
+      manifest: { ...manifest, checksum, packageChecksums, packageChecksumsAlgo: PACKAGE_CHECKSUM_ALGO },
       source: `github:${repoSpec}@${release.tag_name}`,
       installPath: installDir,
       enabled,

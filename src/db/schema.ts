@@ -1031,7 +1031,12 @@ export const extensionLlmUsage = pgTable("extension_llm_usage", {
   extensionId: text("extension_id").notNull().references(() => extensions.id, { onDelete: "cascade" }),
   day: date("day").notNull(),
   calls: integer("calls").notNull().default(0),
-  outputTokens: integer("output_tokens").notNull().default(0),
+  // TOTAL tokens (input + output) counted toward `maxTokensPerDay`.
+  // DB column stays `output_tokens` for historical compat — it predates
+  // input-token accounting; the field name reflects the real meaning.
+  totalTokens: integer("output_tokens").notNull().default(0),
+  // Cumulative cost in cents for the day — enforces `maxCostCentsPerDay`.
+  costCents: integer("cost_cents").notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.extensionId, table.day] }),

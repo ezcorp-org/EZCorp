@@ -1247,6 +1247,9 @@ Be terse. The user is doing real work and you are a tool, not a friend.',
       PRIMARY KEY (extension_id, day)
     )
   `);
+  // `output_tokens` now records TOTAL tokens (input + output) counted
+  // toward `maxTokensPerDay`; `cost_cents` enforces `maxCostCentsPerDay`.
+  await db.execute(sql`ALTER TABLE extension_llm_usage ADD COLUMN IF NOT EXISTS cost_cents INTEGER NOT NULL DEFAULT 0`);
 
   // (3) extension_memory_writes_daily — same shape, memory-write quota.
   await db.execute(sql`

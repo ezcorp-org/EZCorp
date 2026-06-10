@@ -19,12 +19,20 @@ export interface LlmQuotaConfig {
   maxCallsPerHour: number;
   maxCallsPerDay: number;
   maxTokensPerDay?: number;
+  /** Daily spend ceiling in cents. Enforced against the running
+   *  `dailyCostCents` counter: once cumulative cost reaches the cap,
+   *  further calls are denied. A single in-flight call can push at most
+   *  one call's cost past the cap (we can't know the cost until the
+   *  provider responds), so the overshoot is bounded by one call —
+   *  which the per-call/per-day count caps already bound. */
+  maxCostCentsPerDay?: number;
 }
 
 export type LlmQuotaDenyReason =
   | "calls-per-hour"
   | "calls-per-day"
-  | "tokens-per-day";
+  | "tokens-per-day"
+  | "cost-per-day";
 
 export interface LlmQuotaCheckResult {
   ok: boolean;
@@ -42,13 +50,20 @@ export interface LlmQuota {
     opts?: { tokens?: number },
   ): LlmQuotaCheckResult;
   /** Adjust the `tokens` count post-call once the actual usage is known.
-   *  Pass the delta (actualTokens - prebookedTokens). Negative deltas
-   *  are clamped at zero (we don't refund below zero). */
+   *  Pass the delta (actualTokens - prebookedTokens). The day-token
+   *  counter tracks TOTAL tokens (input + output), so pass the actual
+   *  `inputTokens + outputTokens`. Negative deltas are clamped at zero
+   *  (we don't refund below zero). */
   adjustTokens(extensionId: string, delta: number): void;
+  /** Add the actual cost (cents) of a completed call to the day
+   *  counter. Only called on a successful upstream response; failed
+   *  calls add nothing. Negative input clamps the counter at zero. */
+  addCost(extensionId: string, cents: number): void;
   /** Read-only snapshot for `getBudget()`. */
   budget(extensionId: string, cfg: LlmQuotaConfig): {
     callsRemaining: { hour: number; day: number };
     tokensRemaining: { day: number };
+    costCentsRemaining: { day: number };
   };
   /** Force-flush in-process counters to the DB. Called on shutdown
    *  + by the 60s timer. */
@@ -76,7 +91,8 @@ function todayUtcString(): string {
 interface ExtCounters {
   hourly: number[]; // sorted ms timestamps
   dailyCalls: number;
-  dailyTokens: number;
+  dailyTokens: number; // TOTAL tokens (input + output) counted toward maxTokensPerDay
+  dailyCostCents: number;
   day: string; // YYYY-MM-DD UTC
   dirty: boolean; // set when the in-memory counters diverge from DB
 }
@@ -89,7 +105,7 @@ export function createLlmQuota(): LlmQuota {
     let entry = counters.get(extensionId);
     if (!entry || entry.day !== today) {
       // Day rollover (or first call). New buckets.
-      entry = { hourly: [], dailyCalls: 0, dailyTokens: 0, day: today, dirty: false };
+      entry = { hourly: [], dailyCalls: 0, dailyTokens: 0, dailyCostCents: 0, day: today, dirty: false };
       counters.set(extensionId, entry);
     }
     return entry;
@@ -102,7 +118,7 @@ export function createLlmQuota(): LlmQuota {
   async function hydrateImpl(extensionId: string): Promise<void> {
     const today = todayUtcString();
     let entry = counters.get(extensionId);
-    if (entry && entry.day === today && (entry.dailyCalls > 0 || entry.dailyTokens > 0)) {
+    if (entry && entry.day === today && (entry.dailyCalls > 0 || entry.dailyTokens > 0 || entry.dailyCostCents > 0)) {
       // Already populated for today — don't clobber.
       return;
     }
@@ -113,12 +129,13 @@ export function createLlmQuota(): LlmQuota {
       ));
       const seed = rows[0];
       if (!entry || entry.day !== today) {
-        entry = { hourly: [], dailyCalls: 0, dailyTokens: 0, day: today, dirty: false };
+        entry = { hourly: [], dailyCalls: 0, dailyTokens: 0, dailyCostCents: 0, day: today, dirty: false };
         counters.set(extensionId, entry);
       }
       if (seed) {
         entry.dailyCalls = seed.calls;
-        entry.dailyTokens = seed.outputTokens;
+        entry.dailyTokens = seed.totalTokens;
+        entry.dailyCostCents = seed.costCents;
         // Don't seed `hourly` — the rolling-hour timestamps aren't
         // persisted (intentional: a stale rolling-hour after a long
         // outage is worse than starting fresh).
@@ -146,13 +163,15 @@ export function createLlmQuota(): LlmQuota {
             extensionId,
             day: e.day,
             calls: e.dailyCalls,
-            outputTokens: e.dailyTokens,
+            totalTokens: e.dailyTokens,
+            costCents: e.dailyCostCents,
           })
           .onConflictDoUpdate({
             target: [extensionLlmUsage.extensionId, extensionLlmUsage.day],
             set: {
               calls: e.dailyCalls,
-              outputTokens: e.dailyTokens,
+              totalTokens: e.dailyTokens,
+              costCents: e.dailyCostCents,
               updatedAt: sql`NOW()`,
             },
           });
@@ -196,6 +215,15 @@ export function createLlmQuota(): LlmQuota {
         tomorrow.setUTCHours(24, 0, 0, 0);
         return { ok: false, reason: "tokens-per-day", retryAfterMs: tomorrow.getTime() - now };
       }
+      // Cost gate: deny once cumulative spend has reached the cap. We
+      // can't pre-book a precise cost (provider pricing isn't known
+      // here), so a call already in flight can push at most one call's
+      // cost over — bounded by the count caps above.
+      if (cfg.maxCostCentsPerDay !== undefined && e.dailyCostCents >= cfg.maxCostCentsPerDay) {
+        const tomorrow = new Date();
+        tomorrow.setUTCHours(24, 0, 0, 0);
+        return { ok: false, reason: "cost-per-day", retryAfterMs: tomorrow.getTime() - now };
+      }
 
       e.hourly.push(now);
       e.dailyCalls += 1;
@@ -211,11 +239,21 @@ export function createLlmQuota(): LlmQuota {
       e.dirty = true;
     },
 
+    addCost(extensionId, cents) {
+      const e = counters.get(extensionId);
+      if (!e) return;
+      e.dailyCostCents = Math.max(0, e.dailyCostCents + cents);
+      e.dirty = true;
+    },
+
     budget(extensionId, cfg) {
       const e = getOrInit(extensionId);
       pruneHourly(e, Date.now());
       const day = cfg.maxTokensPerDay !== undefined
         ? Math.max(0, cfg.maxTokensPerDay - e.dailyTokens)
+        : Number.MAX_SAFE_INTEGER;
+      const costDay = cfg.maxCostCentsPerDay !== undefined
+        ? Math.max(0, cfg.maxCostCentsPerDay - e.dailyCostCents)
         : Number.MAX_SAFE_INTEGER;
       return {
         callsRemaining: {
@@ -223,6 +261,7 @@ export function createLlmQuota(): LlmQuota {
           day: Math.max(0, cfg.maxCallsPerDay - e.dailyCalls),
         },
         tokensRemaining: { day },
+        costCentsRemaining: { day: costDay },
       };
     },
 

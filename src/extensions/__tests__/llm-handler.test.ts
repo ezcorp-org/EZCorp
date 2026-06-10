@@ -463,4 +463,47 @@ describe("LlmQuota — counters", () => {
     expect(denied.reason).toBe("calls-per-hour");
     q.dispose();
   });
+
+  test("cost-per-day denies once cumulative spend reaches the cap", async () => {
+    const { createLlmQuota } = await import("../llm-quota");
+    const q = createLlmQuota();
+    const cfg = { maxCallsPerHour: 50, maxCallsPerDay: 50, maxCostCentsPerDay: 100 };
+    // First call: cost counter starts at 0, allowed. Record actual spend.
+    expect(q.consume("ext-cost", cfg).ok).toBe(true);
+    q.addCost("ext-cost", 60);
+    expect(q.budget("ext-cost", cfg).costCentsRemaining.day).toBe(40);
+    // Second call still allowed (40 < 100), pushes cumulative to 130.
+    expect(q.consume("ext-cost", cfg).ok).toBe(true);
+    q.addCost("ext-cost", 70);
+    expect(q.budget("ext-cost", cfg).costCentsRemaining.day).toBe(0);
+    // Now at/over the cap → deny.
+    const denied = q.consume("ext-cost", cfg);
+    expect(denied.ok).toBe(false);
+    expect(denied.reason).toBe("cost-per-day");
+    q.dispose();
+  });
+
+  test("no cost cap → cost counter never blocks; budget reports MAX", async () => {
+    const { createLlmQuota } = await import("../llm-quota");
+    const q = createLlmQuota();
+    const cfg = { maxCallsPerHour: 50, maxCallsPerDay: 50 };
+    expect(q.consume("ext-nocap", cfg).ok).toBe(true);
+    q.addCost("ext-nocap", 100_000);
+    expect(q.consume("ext-nocap", cfg).ok).toBe(true);
+    expect(q.budget("ext-nocap", cfg).costCentsRemaining.day).toBe(Number.MAX_SAFE_INTEGER);
+    q.dispose();
+  });
+
+  test("adjustTokens counts the full input+output total toward the day cap", async () => {
+    const { createLlmQuota } = await import("../llm-quota");
+    const q = createLlmQuota();
+    const cfg = { maxCallsPerHour: 50, maxCallsPerDay: 50, maxTokensPerDay: 1000 };
+    // Pre-book the request's maxTokens (output upper bound).
+    expect(q.consume("ext-tok", cfg, { tokens: 200 }).ok).toBe(true);
+    // Reconcile to actual: input 300 + output 150 = 450 total.
+    // delta = 450 - 200 = 250.
+    q.adjustTokens("ext-tok", (300 + 150) - 200);
+    expect(q.budget("ext-tok", cfg).tokensRemaining.day).toBe(1000 - 450);
+    q.dispose();
+  });
 });

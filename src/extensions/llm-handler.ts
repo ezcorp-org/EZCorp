@@ -159,6 +159,7 @@ export async function handlePiLlmComplete(
       maxCallsPerHour: grantedLlm.maxCallsPerHour,
       maxCallsPerDay: grantedLlm.maxCallsPerDay,
       ...(grantedLlm.maxTokensPerDay !== undefined ? { maxTokensPerDay: grantedLlm.maxTokensPerDay } : {}),
+      ...(grantedLlm.maxCostCentsPerDay !== undefined ? { maxCostCentsPerDay: grantedLlm.maxCostCentsPerDay } : {}),
     });
     return { jsonrpc: "2.0", id: req.id, result: snapshot };
   }
@@ -260,6 +261,7 @@ export async function handlePiLlmComplete(
       maxCallsPerHour: grantedLlm.maxCallsPerHour,
       maxCallsPerDay: grantedLlm.maxCallsPerDay,
       ...(grantedLlm.maxTokensPerDay !== undefined ? { maxTokensPerDay: grantedLlm.maxTokensPerDay } : {}),
+      ...(grantedLlm.maxCostCentsPerDay !== undefined ? { maxCostCentsPerDay: grantedLlm.maxCostCentsPerDay } : {}),
     },
     { tokens: reqMaxTokens },
   );
@@ -365,10 +367,16 @@ export async function handlePiLlmComplete(
   const outputTokens = upstream.usage?.output ?? 0;
   const estCostCents = upstream.usage?.cost !== undefined ? Math.round(upstream.usage.cost * 100) : undefined;
 
-  // Adjust the day-token counter from the speculative max-tokens to
-  // the actual (output_tokens from upstream). The pre-booking was
-  // generous; we refund the difference.
-  quota.adjustTokens(handlerCtx.actorExtensionId, outputTokens - reqMaxTokens);
+  // Reconcile the day-token counter from the speculative max-tokens
+  // pre-booking to the ACTUAL total (input + output). Input tokens were
+  // previously uncounted, letting an extension burn budget via huge
+  // prompts; the cap is a total-token budget, so both sides count.
+  quota.adjustTokens(handlerCtx.actorExtensionId, (inputTokens + outputTokens) - reqMaxTokens);
+  // Record the actual spend so `maxCostCentsPerDay` is enforced on
+  // subsequent calls. Only successful calls add cost.
+  if (estCostCents !== undefined) {
+    quota.addCost(handlerCtx.actorExtensionId, estCostCents);
+  }
 
   const finishReason: LlmCompleteResult["finishReason"] =
     upstream.stopReason === "max_tokens" ? "max_tokens"

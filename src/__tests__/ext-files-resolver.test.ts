@@ -1,7 +1,14 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import {
   ALLOWED_EXTENSIONS,
   MIME_BY_EXT,
@@ -15,7 +22,9 @@ const EXT = "openai-image-gen-2";
 let cwd = "";
 
 beforeEach(() => {
-  cwd = mkdtempSync(join(tmpdir(), "extres-"));
+  // realpathSync: the resolver compares CANONICAL paths, so the test
+  // root must itself be canonical (tmpdir is a symlink on some OSes).
+  cwd = realpathSync(mkdtempSync(join(tmpdir(), "extres-")));
   const dir = join(cwd, ".ezcorp", "extension-data", EXT, "generated");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "pic.png"), "PNGDATA");
@@ -110,41 +119,48 @@ describe("resolveExtFilesPath", () => {
     expect(resolveExtFilesPath(EXT, "/etc/passwd", cwd)).toBeNull();
   });
 
-  test("does not check existence — returns a resolved path for nonexistent files", () => {
-    // Existence is the caller's responsibility; this keeps the resolver
-    // deterministic for path-only tests and avoids redundant stat calls.
-    const out = resolveExtFilesPath(EXT, "generated/nonexistent.png", cwd);
-    expect(out).not.toBeNull();
-    expect(out!.absPath).toContain("nonexistent.png");
+  test("returns null for nonexistent files (realpath containment requires existence)", () => {
+    // F4: containment is asserted on canonical paths, and realpath ENOENTs
+    // for missing files. Both callers already treat null as "missing"
+    // (route → 404, rehydrator → skip), so requiring existence is safe.
+    expect(resolveExtFilesPath(EXT, "generated/nonexistent.png", cwd)).toBeNull();
   });
 
   test("mime type derives from the resolved path's extension", () => {
+    const dir = join(cwd, ".ezcorp", "extension-data", EXT, "generated");
+    for (const f of ["a.jpeg", "a.webp", "a.bin"]) writeFileSync(join(dir, f), "X");
     expect(resolveExtFilesPath(EXT, "generated/a.jpeg", cwd)!.mimeType).toBe("image/jpeg");
     expect(resolveExtFilesPath(EXT, "generated/a.webp", cwd)!.mimeType).toBe("image/webp");
     expect(resolveExtFilesPath(EXT, "generated/a.bin", cwd)!.mimeType).toBe("application/octet-stream");
   });
 
-  test("symlink pointing outside the root is rejected by downstream I/O (resolver itself stays path-based)", () => {
-    // The resolver itself does not resolve symlinks (it only normalises the
-    // path). We verify the shape of its output here; end-to-end symlink
-    // escape protection lives in the HTTP route via fs.stat on the
-    // resolved path. The point is: this resolver never returns a path
-    // whose string form contains `..${sep}` post-normalisation, so the
-    // caller can safely pass it to fs.readFile knowing traversal via
-    // string manipulation was caught.
+  // ── F4: symlink escape ────────────────────────────────────────────
+
+  test("symlink pointing outside the root is rejected (secret stays unreadable)", () => {
     const dir = join(cwd, ".ezcorp", "extension-data", EXT, "generated");
     const target = join(cwd, "outside.png");
-    writeFileSync(target, "OUTSIDE");
-    try {
-      symlinkSync(target, join(dir, "sym.png"));
-    } catch {
-      // Some filesystems reject symlinks; skip the assertion if so.
-      return;
-    }
-    const out = resolveExtFilesPath(EXT, "generated/sym.png", cwd);
-    // The resolver returns the normalised path (still under root). The
-    // decision to follow/reject the symlink is the HTTP route's job via
-    // fs.statSync — which is covered by ext-files-route tests.
-    expect(out!.absPath).toContain(`extension-data${sep}${EXT}${sep}generated${sep}sym.png`);
+    writeFileSync(target, "JWT_SECRET=supersecret");
+    symlinkSync(target, join(dir, "sym.png"));
+    expect(resolveExtFilesPath(EXT, "generated/sym.png", cwd)).toBeNull();
+  });
+
+  test("symlinked DIRECTORY pointing outside the root is rejected", () => {
+    // The realistic attack from the audit: `esc -> <repoRoot>/.ezcorp/data`
+    // (the PGlite DB dir), then read files THROUGH the link.
+    const dir = join(cwd, ".ezcorp", "extension-data", EXT, "generated");
+    const outsideDir = join(cwd, ".ezcorp", "data");
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(outsideDir, "db.png"), "DBBYTES");
+    symlinkSync(outsideDir, join(dir, "esc"));
+    expect(resolveExtFilesPath(EXT, "generated/esc/db.png", cwd)).toBeNull();
+  });
+
+  test("intra-root symlink is allowed and resolves to the canonical path", () => {
+    const dir = join(cwd, ".ezcorp", "extension-data", EXT, "generated");
+    symlinkSync(join(dir, "pic.png"), join(dir, "alias.png"));
+    const out = resolveExtFilesPath(EXT, "generated/alias.png", cwd);
+    expect(out).not.toBeNull();
+    expect(out!.absPath).toBe(join(dir, "pic.png"));
+    expect(out!.mimeType).toBe("image/png");
   });
 });

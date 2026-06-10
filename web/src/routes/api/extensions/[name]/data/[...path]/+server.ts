@@ -1,6 +1,6 @@
 import type { RequestHandler } from "./$types";
 import { resolve, sep } from "node:path";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { ReadableStream } from "node:stream/web";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
@@ -27,6 +27,10 @@ import { RateLimiter } from "$lib/server/security/rate-limiter";
 //     resolved absolute path MUST live under the extension's data
 //     dir. `..` segments / `%2e%2e` survive into the resolved path
 //     and are caught by the prefix check.
+//   - The lexical prefix check is re-asserted on `realpath`s of both
+//     sides (F4) — a symlink planted inside the data dir would
+//     otherwise be followed by `stat`/`createReadStream` and escape
+//     the data root.
 //   - Strict CSP header on every response — blocks the
 //     `<meta http-equiv="refresh" url=javascript:>` exfil class
 //     called out as F5 in the security review by capping `script-src`
@@ -74,6 +78,16 @@ function contentTypeFor(filePath: string): string {
 // extensions can use inline scripts (their drafts are self-contained
 // HTML), but cross-origin loads are blocked. `frame-ancestors 'self'`
 // stops other origins from embedding our iframes.
+//
+// F5 caveat — this CSP does NOT contain a same-origin sandbox escape.
+// The iframe that frames this content uses `sandbox="allow-scripts
+// allow-same-origin"`, so the framed JS keeps the app's real origin:
+// it can reach `window.parent` and drive the PARENT's fetch/DOM, which
+// this (child-document) CSP cannot restrict. Tightening `connect-src`
+// here would only break legitimate relative fetches inside drafts
+// while leaving the `window.parent` path wide open. The real fix is
+// serving extension content from a separate origin/subdomain — tracked
+// in tasks/preview-port-exposure.md.
 const STRICT_CSP =
   "default-src 'none'; " +
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; " +
@@ -137,9 +151,30 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     return errorJson(404, "Not found");
   }
 
+  // F4: the prefix check above is purely LEXICAL — it cannot see
+  // symlinks, and `stat`/`createReadStream` below FOLLOW them. A
+  // malicious extension that plants `link -> <repoRoot>/.ezcorp/data`
+  // inside its own data dir would pass the lexical check and serve
+  // bytes from outside the data root (DB files, JWT secret). So
+  // canonicalize BOTH sides with `realpath` and re-assert containment
+  // on the canonical paths. A symlink whose TARGET resolves inside the
+  // data root still passes — the test is on the realpath, not "is a
+  // symlink". This is a read route, so the file must exist: ENOENT
+  // (missing file, missing data dir, dangling link) → opaque 404.
+  let realTarget: string;
+  try {
+    const realRoot = await realpath(dataDir);
+    realTarget = await realpath(target);
+    if (!realTarget.startsWith(realRoot + sep)) {
+      return errorJson(404, "Not found");
+    }
+  } catch {
+    return errorJson(404, "Not found");
+  }
+
   let info;
   try {
-    info = await stat(target);
+    info = await stat(realTarget);
   } catch {
     return errorJson(404, "Not found");
   }
@@ -155,8 +190,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
   });
 
   // Stream the file rather than buffering. For HTML drafts this is
-  // overkill, but ingested PDFs / images can be large.
-  const nodeStream = createReadStream(target);
+  // overkill, but ingested PDFs / images can be large. Open the
+  // CANONICAL path (not the symlink) so a link re-pointed between the
+  // realpath check and the open can't redirect the read.
+  const nodeStream = createReadStream(realTarget);
   const webStream = Readable.toWeb(nodeStream) as ReadableStream;
   return new Response(webStream as unknown as BodyInit, { status: 200, headers });
 };

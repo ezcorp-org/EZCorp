@@ -7,13 +7,15 @@
  *   - Extension-name regex enforcement.
  *   - Path traversal rejection (`..` segments, absolute paths,
  *     resolved paths escaping the data dir).
+ *   - Symlink escape rejection (F4): links inside the data dir whose
+ *     realpath lands outside it → 404; intra-dir links still serve.
  *   - Empty / unknown paths → 404 (no information leak).
  *   - Successful read returns content + correct MIME + strict CSP.
  *   - All failure modes return the same 404 status (opaque surface).
  */
 
 import { test, expect, describe, beforeEach, afterAll, mock } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -38,7 +40,10 @@ mock.module("$lib/server/http-errors", () => ({
 
 // ── Fake project root with extension data ──────────────────────────
 
-const fakeRoot = mkdtempSync(join(tmpdir(), "ezcorp-data-route-test-"));
+// realpathSync: the route compares CANONICAL paths for the F4 symlink
+// check, so the fake root must itself be canonical (tmpdir is a symlink
+// on some OSes).
+const fakeRoot = realpathSync(mkdtempSync(join(tmpdir(), "ezcorp-data-route-test-")));
 const dataDir = join(fakeRoot, ".ezcorp", "extension-data", "claude-design");
 mkdirSync(join(dataDir, "drafts"), { recursive: true });
 writeFileSync(
@@ -158,6 +163,52 @@ describe("GET /api/extensions/[name]/data/[...path]", () => {
       makeEvent({ name: "claude-design", path: "drafts/missing.html" }) as never,
     );
     expect(res.status).toBe(404);
+  });
+
+  // ── Symlink escape (F4) ─────────────────────────────────────────
+
+  test("symlink to a file OUTSIDE the data dir → 404, secret not leaked", async () => {
+    // The audit scenario: a malicious extension plants a link in its own
+    // data dir at the host's secrets. The lexical prefix check passes;
+    // only the realpath re-assertion stops the read.
+    const secretPath = join(fakeRoot, ".ezcorp", "data", "jwt-secret.txt");
+    mkdirSync(join(fakeRoot, ".ezcorp", "data"), { recursive: true });
+    writeFileSync(secretPath, "JWT_SECRET=supersecret");
+    symlinkSync(secretPath, join(dataDir, "evil.txt"));
+    const res = await GET(
+      makeEvent({ name: "claude-design", path: "evil.txt" }) as never,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("supersecret");
+  });
+
+  test("path THROUGH a symlinked directory pointing outside → 404", async () => {
+    // `esc -> <root>/.ezcorp/data` (the DB dir), then read files through it.
+    mkdirSync(join(fakeRoot, ".ezcorp", "data"), { recursive: true });
+    writeFileSync(join(fakeRoot, ".ezcorp", "data", "db.bin"), "DBBYTES");
+    symlinkSync(join(fakeRoot, ".ezcorp", "data"), join(dataDir, "esc"));
+    const res = await GET(
+      makeEvent({ name: "claude-design", path: "esc/db.bin" }) as never,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("DBBYTES");
+  });
+
+  test("dangling symlink → 404", async () => {
+    symlinkSync(join(fakeRoot, "does-not-exist"), join(dataDir, "dangling.txt"));
+    const res = await GET(
+      makeEvent({ name: "claude-design", path: "dangling.txt" }) as never,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("symlink whose target is INSIDE the data dir still serves (no over-rejection)", async () => {
+    symlinkSync(join(dataDir, "drafts", "d-1.html"), join(dataDir, "alias.html"));
+    const res = await GET(
+      makeEvent({ name: "claude-design", path: "alias.html" }) as never,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("hello draft");
   });
 
   // ── Happy path ──────────────────────────────────────────────────

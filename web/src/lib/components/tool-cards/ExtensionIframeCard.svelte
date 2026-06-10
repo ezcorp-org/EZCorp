@@ -11,6 +11,17 @@
       component does not accept a sandbox prop. Extensions that need
       escape-hatch flags (`allow-popups`, `allow-top-navigation`, etc.)
       should not use this primitive.
+    - ⚠ F5 caveat: because the framed content is SAME-ORIGIN
+      (/api/extensions/[name]/data/*), `allow-scripts` +
+      `allow-same-origin` is not a real boundary — the framed JS keeps
+      the app's origin and can reach `window.parent` / fetch /api/*
+      with the user's cookie. The sandbox attr only blocks the listed
+      escape hatches (popups, top-nav, forms, modals); it does NOT
+      contain a malicious extension. Real containment = separate
+      origin for extension content, tracked in
+      tasks/preview-port-exposure.md. Do not "fix" this by tweaking
+      sandbox flags or the data route's CSP — neither can close the
+      window.parent path.
     - The iframe `src` is validated as a relative path or same-origin
       URL. Cross-origin URLs are refused — extensions serve content
       via /api/extensions/[name]/data/* on the host.
@@ -203,6 +214,8 @@
 					<div class="error-overlay" role="alert">{iframeError}</div>
 				{/if}
 				{#key iframeKey}
+					<!-- F5: src is same-origin, so this sandbox is NOT a trust
+					     boundary (see the security-model note in the header). -->
 					<iframe
 						title={ariaLabel}
 						aria-label={ariaLabel}

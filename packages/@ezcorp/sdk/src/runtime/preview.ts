@@ -30,6 +30,18 @@
 //   - allow-forms: would let content POST cross-origin
 //   - allow-modals: would let content alert/prompt-spam the user
 //
+// ⚠ KNOWN LIMITATION (F5, security audit 2026-06): `allow-scripts` +
+// `allow-same-origin` on SAME-ORIGIN content is NOT a security
+// boundary. The framed document keeps the app's real origin, so its
+// JS can reach `window.parent`, read same-origin storage, and call
+// /api/* with the user's session cookie — the sandbox attribute adds
+// nothing against a malicious extension here. The data route's CSP
+// cannot fix this either (a child document's CSP doesn't constrain
+// what the script does via `window.parent`). The real containment is
+// serving extension content from a SEPARATE origin/subdomain, tracked
+// in tasks/preview-port-exposure.md. Until that lands, treat extension
+// iframe content as trusted-as-the-extension, not sandboxed.
+//
 // Exported as a frozen string so cards can't accidentally append.
 
 /** Default `sandbox=` attribute value for any iframe rendered by an

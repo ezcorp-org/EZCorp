@@ -5,14 +5,18 @@
  * server reads .ezcorp/data off disk").
  *
  * ── Why this exists ──
- * The existing MCP jail (`mcp-launcher.sh`) execs `bwrap --bind / /`:
- * the child sees the WHOLE host filesystem, including
+ * The original MCP jail (`mcp-launcher.sh`) exec'd `bwrap --bind / /`:
+ * the child saw the WHOLE host filesystem, including
  * `<projectRoot>/.ezcorp/data` (the PGlite DB + the encrypted JWT
- * secret). For MCP servers that is tolerated because they are
- * semi-trusted tools gated by the SDK preload + per-host proxy. But a
- * DYNAMIC preview is an arbitrary dev server — raw, untrusted code. With
- * `--bind / /` it can read the DB + secret directly. That hole MUST be
- * closed before any dynamic server runs.
+ * secret). A DYNAMIC preview is an arbitrary dev server — raw, untrusted
+ * code. With `--bind / /` it can read the DB + secret directly. That
+ * hole MUST be closed before any dynamic server runs. MCP servers are
+ * the SAME threat class (arbitrary external binaries — the SDK
+ * module-poisoning does NOT apply to them), so the CRITICAL MCP
+ * filesystem-confinement fix reuses this builder: see
+ * `buildMcpJailBwrapArgs` below + `mcp-sandbox.ts`'s strict
+ * (EZCORP_MCP_REQUIRE_SANDBOX=1) leg, and the always-on
+ * `EZCORP_MCP_DATA_DIR` tmpfs mask in the launcher's default branch.
  *
  * This module builds an EXPLICIT MINIMAL bind set instead:
  *   - the conversation's work dir (rw) — the only writable host path,
@@ -124,23 +128,40 @@ export function canonicalizeJailPath(path: string, label: string): string {
   }
 }
 
+/** Options that differentiate the PREVIEW jail from the MCP jail. */
+interface JailVariantOptions {
+  /** Preview servers get `--unshare-all` (fresh net/ipc/pid/uts/cgroup
+   *  namespaces). MCP jails MUST NOT: the MCP reaches its per-instance
+   *  forward proxy on HOST loopback (so no `--unshare-net` — Phase 7
+   *  fix-pass C2), and the seccomp soak reader matches journalctl
+   *  `pid=` rows against the HOST PID namespace (so no `--unshare-pid`
+   *  — Plan 55 Pitfall 3). The outer `unshare -U -m --map-root-user`
+   *  already provides the user+mount namespaces for both variants. */
+  unshareAll: boolean;
+  /** Directories created (`--dir`) inside the jail AFTER the private
+   *  /tmp tmpfs is mounted. Each MUST live under /tmp — anywhere else
+   *  the mkdir would write through a host bind. Used to re-create the
+   *  per-extension TMPDIR that the tmpfs swap hides. */
+  tmpDirs?: readonly string[];
+}
+
 /**
- * Build the bwrap argv for an untrusted preview process. PURE — returns
- * the full argument vector (excluding the leading `bwrap`); the caller /
- * launcher prepends `bwrap` and execs.
+ * Shared bind-set core for both jail variants. PURE — returns the full
+ * argument vector (excluding the leading `bwrap`); the caller / launcher
+ * prepends `bwrap` and execs.
  *
  * Invariants (also asserted by tests):
  *   - NO `--bind / /` ever appears.
  *   - The work dir is the only `--bind` (rw); everything else is
  *     `--ro-bind` or tmpfs.
  *   - No bound path is the data dir, under it, or an ancestor of it.
- *   - `--unshare-all` drops the child into fresh namespaces; the outer
- *     `unshare -U -m` (launcher) already created the user+mount ns, but
- *     `--unshare-all` here additionally isolates ipc/pid/uts/cgroup.
  *   - `--die-with-parent` so the child can't outlive the host process.
  *   - `--new-session` to defend against TIOCSTI terminal injection.
  */
-export function buildPreviewJailBwrapArgs(input: PreviewJailInput): string[] {
+function buildJailArgsCore(
+  input: PreviewJailInput,
+  variant: JailVariantOptions,
+): string[] {
   if (!input.workDir) throw new Error("preview jail: workDir is required");
   if (!input.projectRoot) throw new Error("preview jail: projectRoot is required");
   if (!input.command) throw new Error("preview jail: command is required");
@@ -160,7 +181,7 @@ export function buildPreviewJailBwrapArgs(input: PreviewJailInput): string[] {
   for (const d of roDirs) assertOutsideDataDir(d, input.projectRoot);
 
   const args: string[] = [
-    "--unshare-all",
+    ...(variant.unshareAll ? ["--unshare-all"] : []),
     "--die-with-parent",
     "--new-session",
     "--proc", "/proc",
@@ -170,6 +191,19 @@ export function buildPreviewJailBwrapArgs(input: PreviewJailInput): string[] {
     "--size", String(input.tmpfsBytes ?? DEFAULT_TMPFS_BYTES),
     "--tmpfs", "/tmp",
   ];
+
+  // `--dir` mkdirs inside the jail — AFTER the /tmp tmpfs so each target
+  // lands on the private tmpfs, never on a host bind. Fail CLOSED on any
+  // path that is not strictly under /tmp.
+  for (const d of variant.tmpDirs ?? []) {
+    const abs = resolve(d);
+    if (!abs.startsWith("/tmp" + sep)) {
+      throw new Error(
+        `preview jail: --dir target must live under the private /tmp tmpfs: ${d}`,
+      );
+    }
+    args.push("--dir", abs);
+  }
 
   // Read-only system dirs.
   for (const d of roDirs) {
@@ -187,6 +221,48 @@ export function buildPreviewJailBwrapArgs(input: PreviewJailInput): string[] {
 
   args.push("--", input.command, ...(input.args ?? []));
   return args;
+}
+
+/**
+ * Build the bwrap argv for an untrusted preview process (dynamic dev
+ * server). Adds `--unshare-all` on top of the shared core: previews
+ * don't need the host network namespace, so they get fresh
+ * net/ipc/pid/uts/cgroup namespaces too.
+ */
+export function buildPreviewJailBwrapArgs(input: PreviewJailInput): string[] {
+  return buildJailArgsCore(input, { unshareAll: true });
+}
+
+export interface McpJailInput extends PreviewJailInput {
+  /** Dirs re-created (`--dir`) inside the private /tmp tmpfs — used for
+   *  the per-extension TMPDIR (`/tmp/ezcorp-ext/<id>`) that the tmpfs
+   *  swap hides. Each MUST be under /tmp (fail-closed otherwise). */
+  tmpDirs?: readonly string[];
+}
+
+/**
+ * Build the bwrap argv for an UNTRUSTED stdio MCP server — the CRITICAL
+ * filesystem-confinement fix replacing the launcher's `--bind / /`
+ * envelope (which exposed the PGlite DB + JWT secret, `~/.ssh`, `.env`,
+ * … to arbitrary external MCP binaries).
+ *
+ * Identical minimal bind set to the preview jail (ONE rw work dir,
+ * ro-bind system dirs, private tmpfs /tmp, NOTHING under `.ezcorp/data`),
+ * with two MCP-specific differences:
+ *   - NO `--unshare-all`: the MCP must share the HOST network namespace
+ *     to reach its loopback forward proxy (Phase 7 fix-pass C2) and the
+ *     HOST PID namespace so the seccomp soak reader's journalctl `pid=`
+ *     filter matches (Plan 55 Pitfall 3). User+mount isolation comes
+ *     from the launcher's outer `unshare -U -m --map-root-user`.
+ *   - optional `tmpDirs` re-created inside the fresh /tmp tmpfs.
+ *
+ * Consumed by `mcp-sandbox.ts` under EZCORP_MCP_REQUIRE_SANDBOX=1; the
+ * launcher execs the result verbatim via its EZCORP_MCP_FS_JAIL=1
+ * branch (same exec-verbatim contract as EZCORP_PREVIEW_JAIL).
+ */
+export function buildMcpJailBwrapArgs(input: McpJailInput): string[] {
+  const { tmpDirs, ...rest } = input;
+  return buildJailArgsCore(rest, { unshareAll: false, tmpDirs });
 }
 
 /**

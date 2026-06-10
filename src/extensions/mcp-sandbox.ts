@@ -20,13 +20,22 @@ import {
 import { createMcpProxy, type McpProxyHandle } from "./mcp-proxy";
 import type { PermissionEngine } from "./permission-engine";
 import { insertAuditEntry } from "../db/queries/audit-log";
+import { getDbDataDir } from "../db/connection";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
 import { parseAndEmitSeccompViolations } from "./runtime/seccomp-soak-reader";
+import {
+  buildMcpJailBwrapArgs,
+  assertJailArgsSafe,
+  forbiddenDataDir,
+  DEFAULT_RO_SYSTEM_DIRS,
+} from "./preview-jail";
 import {
   existsSync as realExistsSync,
   readFileSync as realReadFileSync,
   closeSync,
+  mkdirSync,
 } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 
 /**
  * Audit finding #1 fix: MCP stdio extensions must run under the same
@@ -184,6 +193,66 @@ function readConntrackPressure(): {
 
 function isSandboxRequired(): boolean {
   return process.env.EZCORP_MCP_REQUIRE_SANDBOX === "1";
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CRITICAL security fix — MCP filesystem confinement.
+//
+// The launcher's bwrap branch mapped the WHOLE host filesystem into the
+// jail (`--bind / /`) — only /tmp was swapped out. MCP servers are
+// arbitrary external binaries (Python/Go/Rust — the SDK sandbox-preload
+// module-poisoning does NOT apply to them), so any MCP could read the
+// PGlite data dir (full user DB + JWT secret), `~/.ssh`, `.env`, etc.
+//
+// Two-layer fix, both built here on the host:
+//   - ALWAYS (default posture): `env.EZCORP_MCP_DATA_DIR` threads the
+//     forbidden `<projectRoot>/.ezcorp/data` path so the launcher masks
+//     it with a private tmpfs ON TOP of the back-compat `--bind / /`
+//     envelope. No spawn that works today stops working; the platform's
+//     own DB + JWT secret stop being readable.
+//   - STRICT (EZCORP_MCP_REQUIRE_SANDBOX=1): the complete bwrap argv is
+//     built via `preview-jail.ts:buildMcpJailBwrapArgs` (minimal bind
+//     set — ONE rw extension-data work dir, ro system dirs, private
+//     tmpfs /tmp, NO root bind, nothing under `.ezcorp/data`) and the
+//     launcher execs it verbatim (`EZCORP_MCP_FS_JAIL=1` branch, same
+//     contract as EZCORP_PREVIEW_JAIL). Any failure to build the jail
+//     refuses the spawn through the existing require-sandbox gate.
+//
+// `projectRootOverride` is a test seam (mirrors the conntrack / soak
+// seams above): production resolves the root from `buildAllowedEnv`'s
+// EZCORP_PROJECT_ROOT (host-computed — deliberately NOT overridable by
+// the manifest's `spec.env`).
+// ─────────────────────────────────────────────────────────────────────
+let projectRootOverride: string | null | undefined = undefined;
+
+export function _setProjectRootOverrideForTests(
+  v: string | null | undefined,
+): void {
+  projectRootOverride = v;
+}
+
+/**
+ * RO system dirs for the strict MCP jail: the conventional Linux set
+ * (filtered to dirs that exist on this host) plus runtime prefixes
+ * (/opt, /nix) and the directory of the resolved MCP binary when it
+ * lives outside that set (e.g. `~/.local/bin`). Never "/", "/home",
+ * or $HOME itself — binding those would re-expose user secrets.
+ */
+function computeMcpJailRoDirs(mcpCommand: string): string[] {
+  const dirs = [...DEFAULT_RO_SYSTEM_DIRS, "/opt", "/nix"].filter((d) =>
+    realExistsSync(d),
+  );
+  const resolved = mcpCommand.includes("/")
+    ? resolve(mcpCommand)
+    : Bun.which(mcpCommand);
+  if (resolved) {
+    const binDir = dirname(resolved);
+    const home = process.env.HOME ? resolve(process.env.HOME) : null;
+    const denied = binDir === "/" || binDir === "/home" || binDir === home;
+    const covered = dirs.some((d) => binDir === d || binDir.startsWith(d + "/"));
+    if (!denied && !covered && realExistsSync(binDir)) dirs.push(binDir);
+  }
+  return dirs;
 }
 
 /**
@@ -443,6 +512,71 @@ export async function buildSandboxedMcpSpec(
     }
   }
 
+  // CRITICAL fix — minimal-bind filesystem jail (strict leg). Built
+  // BEFORE the proxy starts so a refusal never leaks a listener (same
+  // placement rationale as the static gate above). See the module-scope
+  // comment at `projectRootOverride` for the full design. The project
+  // root comes from the HOST-resolved EZCORP_PROJECT_ROOT in `baseEnv`
+  // (never from `spec.env` — the manifest must not be able to steer the
+  // data-dir exclusion).
+  const jailProjectRoot =
+    projectRootOverride !== undefined
+      ? projectRootOverride
+      : baseEnv.EZCORP_PROJECT_ROOT ?? null;
+  let strictJailArgs: string[] | null = null;
+  if (sandboxRequired) {
+    if (!jailProjectRoot) {
+      refuseDegradedSpawn({
+        userId: ctx.userId,
+        extensionId,
+        extensionName: manifest.name,
+        capability: "minimal-bind filesystem jail (project root)",
+        reason:
+          "EZCORP_PROJECT_ROOT unresolved (no .git ancestor) — cannot compute the .ezcorp/data exclusion",
+      });
+    }
+    try {
+      // The ONLY writable host path inside the jail: the extension's own
+      // data store (docs/extensions/data-storage.md convention). Created
+      // up front — the builder's canonicalization fails closed on
+      // missing paths.
+      const workDir = join(
+        jailProjectRoot,
+        ".ezcorp",
+        "extension-data",
+        manifest.name,
+      );
+      mkdirSync(workDir, { recursive: true });
+      const extTmpDir = baseEnv.TMPDIR;
+      strictJailArgs = buildMcpJailBwrapArgs({
+        workDir,
+        projectRoot: jailProjectRoot,
+        roSystemDirs: computeMcpJailRoDirs(spec.command),
+        // bwrap reads the BPF blob from FD 3 (the
+        // EZCORP_MCP_BWRAP_SECCOMP_FD convention). A missing blob is
+        // refused by the seccomp gate below before any spawn happens,
+        // so the flag never dangles.
+        seccompFd: 3,
+        // Re-create the per-extension TMPDIR inside the fresh tmpfs so
+        // runtimes that honor TMPDIR keep working.
+        tmpDirs:
+          extTmpDir && extTmpDir.startsWith("/tmp/") ? [extTmpDir] : [],
+        command: prlimitCommand,
+        args: prlimitArgs,
+      });
+      // Runtime guard against a future refactor re-opening the hole.
+      assertJailArgsSafe(strictJailArgs, jailProjectRoot);
+    } catch (err) {
+      refuseDegradedSpawn({
+        userId: ctx.userId,
+        extensionId,
+        extensionName: manifest.name,
+        capability: "minimal-bind filesystem jail (bwrap bind set)",
+        reason: (err as Error).message,
+      });
+    }
+  }
+
   // Proxy always listens on host loopback (post-fix-pass C2 — UDS
   // produces an unparseable `http+unix://...` HTTPS_PROXY URL). The MCP
   // process shares the host's network namespace (unshare drops `-n`)
@@ -503,10 +637,11 @@ export async function buildSandboxedMcpSpec(
   // Build the final command/args. On Linux netns, prepend `unshare -U
   // -n -m -- <launcher.sh> ...`. Otherwise leave the prlimit chain
   // unchanged.
+  const launcherPath = getDefaultLauncherPath();
   const finalSpawn = buildNetnsSpawnArgs({
     origCommand: prlimitCommand,
     origArgs: prlimitArgs,
-    launcherPath: getDefaultLauncherPath(),
+    launcherPath,
   });
 
   // Fail-closed gate (seccomp leg): the static gate above already
@@ -778,6 +913,26 @@ export async function buildSandboxedMcpSpec(
     !finalSpawn.tmpfsKillSwitchActive
   ) {
     env.EZCORP_MCP_BWRAP_ENABLED = "1";
+    // CRITICAL fix — always-on data-dir exclusion (default posture).
+    // The launcher masks these paths with a private tmpfs on top of its
+    // back-compat `--bind / /` envelope, so the PGlite DB + JWT secret
+    // are never visible to the MCP even when the operator has not
+    // opted into the strict minimal-bind jail. Set AFTER the env merge
+    // above so a manifest's `spec.env` cannot override it.
+    //
+    // Mask the REAL DB data dir (resolved from EZCORP_DB_PATH, e.g.
+    // prod's `/app/data` + its `backups/`), NOT just the `.ezcorp/data`
+    // convention path — those differ in production, and masking only the
+    // convention path left the actual DB+JWT readable. Both are masked
+    // (deduped, `:`-joined) to also cover deployments that keep the DB
+    // under the project's `.ezcorp/data`.
+    const masks = new Set<string>();
+    const dbDir = getDbDataDir();
+    if (dbDir) masks.add(dbDir);
+    if (jailProjectRoot) masks.add(forbiddenDataDir(jailProjectRoot));
+    if (masks.size > 0) {
+      env.EZCORP_MCP_DATA_DIR = [...masks].join(":");
+    }
   }
 
   // Plan 55-03 (MCP-03): thread the seccomp FD into the spawned env
@@ -815,6 +970,27 @@ export async function buildSandboxedMcpSpec(
     } catch {
       /* best-effort */
     }
+  }
+
+  // CRITICAL fix — strict-leg activation. Hand the launcher the
+  // pre-built minimal-bind bwrap argv: everything after the launcher
+  // path in the unshare chain is replaced by the jail argv, and
+  // EZCORP_MCP_FS_JAIL=1 routes the launcher to its exec-verbatim
+  // branch. The gates above already guaranteed the full envelope
+  // (netns wrap, bwrap present, kill-switches off, BPF FD open → the
+  // `--seccomp 3` flag in the argv always has a backing FD).
+  // EZCORP_MCP_REQUIRE_SANDBOX is threaded too so the launcher's
+  // raw-exec fallback fails closed even if a future caller bypasses
+  // the host-side gates. Set after the env merge — `spec.env` cannot
+  // override either var.
+  if (sandboxRequired && strictJailArgs !== null && finalSpawn.wrapped) {
+    env.EZCORP_MCP_FS_JAIL = "1";
+    env.EZCORP_MCP_REQUIRE_SANDBOX = "1";
+    const launcherIdx = finalSpawn.args.indexOf(launcherPath);
+    finalSpawn.args = [
+      ...finalSpawn.args.slice(0, launcherIdx + 1),
+      ...strictJailArgs,
+    ];
   }
 
   // Phase 58 / MCP-05: when Stage 2 wired up, thread the launcher env

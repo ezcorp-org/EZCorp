@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   buildPreviewJailBwrapArgs,
+  buildMcpJailBwrapArgs,
   assertJailArgsSafe,
   assertOutsideDataDir,
   forbiddenDataDir,
@@ -224,6 +225,80 @@ describe("buildPreviewJailBwrapArgs", () => {
     expect(() => buildPreviewJailBwrapArgs({ workDir: "", projectRoot: ROOT, command: "bun" })).toThrow(/workDir/);
     expect(() => buildPreviewJailBwrapArgs({ workDir: WORK, projectRoot: "", command: "bun" })).toThrow(/projectRoot/);
     expect(() => buildPreviewJailBwrapArgs({ workDir: WORK, projectRoot: ROOT, command: "" })).toThrow(/command/);
+  });
+});
+
+// CRITICAL MCP filesystem-confinement fix — the strict-leg argv that
+// replaces the launcher's `--bind / /` envelope for MCP spawns. Shares
+// the bind-set core with the preview jail; the variant differences
+// (namespace flags, --dir re-creation inside /tmp) are locked here.
+describe("buildMcpJailBwrapArgs", () => {
+  function buildMcp(over: Partial<Parameters<typeof buildMcpJailBwrapArgs>[0]> = {}) {
+    return buildMcpJailBwrapArgs({
+      workDir: WORK,
+      projectRoot: ROOT,
+      command: "prlimit",
+      args: ["--rss=1", "--as=2", "/usr/bin/python3", "-m", "srv"],
+      roSystemDirs: [RO1, RO2],
+      ...over,
+    });
+  }
+
+  test("NEVER contains a root bind and binds NOTHING under .ezcorp/data", () => {
+    const args = buildMcp();
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--bind" || args[i] === "--ro-bind") {
+        expect(args[i + 1]).not.toBe("/");
+      }
+    }
+    expect(args.join(" ")).not.toContain("--bind / /");
+    expect(() => assertJailArgsSafe(args, ROOT)).not.toThrow();
+  });
+
+  test("shares the HOST net + pid namespaces: no --unshare-* flags (proxy reachability + journalctl pid match)", () => {
+    const args = buildMcp();
+    expect(args.some((a) => a.startsWith("--unshare"))).toBe(false);
+    // Hardening flags from the shared core stay on.
+    expect(args).toContain("--die-with-parent");
+    expect(args).toContain("--new-session");
+  });
+
+  test("work dir is the ONLY rw bind; system dirs are --ro-bind; tmpfs /tmp with --size first", () => {
+    const args = buildMcp();
+    const rwBinds: string[] = [];
+    for (let i = 0; i < args.length; i++) if (args[i] === "--bind") rwBinds.push(args[i + 1]!);
+    expect(rwBinds).toEqual([realpathSync(WORK)]);
+    const sizeIdx = args.indexOf("--size");
+    expect(args[sizeIdx + 2]).toBe("--tmpfs");
+    expect(args[sizeIdx + 3]).toBe("/tmp");
+  });
+
+  test("re-creates tmpDirs via --dir AFTER the /tmp tmpfs (private-tmpfs targets only)", () => {
+    const args = buildMcp({ tmpDirs: ["/tmp/ezcorp-ext/abc123"] });
+    const dirIdx = args.indexOf("--dir");
+    const tmpfsIdx = args.indexOf("--tmpfs");
+    expect(dirIdx).toBeGreaterThan(tmpfsIdx);
+    expect(args[dirIdx + 1]).toBe("/tmp/ezcorp-ext/abc123");
+  });
+
+  test("fails closed on a --dir target outside /tmp (would mkdir through a host bind)", () => {
+    expect(() => buildMcp({ tmpDirs: ["/var/ezcorp-ext/abc"] })).toThrow(/\/tmp/);
+    expect(() => buildMcp({ tmpDirs: ["/tmp"] })).toThrow(/\/tmp/);
+  });
+
+  test("terminates with -- then the inner prlimit chain; --seccomp passthrough", () => {
+    const args = buildMcp({ seccompFd: 3 });
+    const dd = args.indexOf("--");
+    expect(args.slice(dd)).toEqual(["--", "prlimit", "--rss=1", "--as=2", "/usr/bin/python3", "-m", "srv"]);
+    expect(args[args.indexOf("--seccomp") + 1]).toBe("3");
+  });
+
+  test("fails closed on data-dir / ancestor / symlinked-into-data work dirs (same invariants as preview)", () => {
+    expect(() => buildMcp({ workDir: DATA })).toThrow();
+    expect(() => buildMcp({ workDir: ROOT })).toThrow();
+    expect(() => buildMcp({ workDir: "/" })).toThrow();
+    expect(() => buildMcp({ workDir: symlinkIntoData })).toThrow();
+    expect(() => buildMcp({ roSystemDirs: [RO1, DATA] })).toThrow();
   });
 });
 

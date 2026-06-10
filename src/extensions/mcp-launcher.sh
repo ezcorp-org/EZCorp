@@ -133,6 +133,28 @@ if [ "${EZCORP_PREVIEW_JAIL:-0}" = "1" ]; then
   exec bwrap "$@"
 fi
 
+# CRITICAL security fix — minimal-bind MCP filesystem jail (strict leg).
+#
+# MCP servers are arbitrary external binaries (the SDK module-poisoning
+# does NOT apply to them), so the `--bind / /` envelope in the branch
+# below let any MCP read `<projectRoot>/.ezcorp/data` (PGlite DB +
+# encrypted JWT secret), `~/.ssh`, `.env`, etc. Under the operator's
+# fail-closed posture (EZCORP_MCP_REQUIRE_SANDBOX=1) the HOST
+# (`src/extensions/mcp-sandbox.ts` via
+# `preview-jail.ts:buildMcpJailBwrapArgs`) now builds the COMPLETE bwrap
+# argv with an explicit minimal bind set (extension-data work dir rw +
+# ro system dirs + private tmpfs /tmp + `--seccomp 3`; NO root bind;
+# nothing under `.ezcorp/data`) and passes it as "$@" with
+# EZCORP_MCP_FS_JAIL=1. Exec it verbatim — same contract as the preview
+# branch above; the launcher does NOT re-derive the bind set (the TS
+# builder is the single, unit-tested source of truth). bwrap presence
+# was verified host-side (the require-sandbox static gate refuses the
+# spawn when bwrap is missing); if it vanished since, exec fails and the
+# launch aborts — fail-closed either way.
+if [ "${EZCORP_MCP_FS_JAIL:-0}" = "1" ]; then
+  exec bwrap "$@"
+fi
+
 # Plan 55-02 (MCP-02): optional bubblewrap wrap with a private 64 MB
 # tmpfs at /tmp. Closes the host-/tmp side-channel leak: without this
 # wrap one MCP can read another's scratch files and an MCP can read
@@ -164,30 +186,64 @@ fi
 #     existing MCP_NETNS_CREATED audit semantics.
 #   - `--bind / /` so the MCP sees the host's filesystem layout (its
 #     own binaries, libs, the per-extension data dir) — only /tmp is
-#     swapped out for the private tmpfs.
+#     swapped out for the private tmpfs. CRITICAL security fix: when the
+#     host threads EZCORP_MCP_DATA_DIR (= `<projectRoot>/.ezcorp/data`,
+#     the PGlite DB + encrypted JWT secret), that path is masked with a
+#     small private tmpfs mounted AFTER the root bind (bwrap is a
+#     sequential state machine — the later tmpfs shadows the earlier
+#     bind), so the default posture never exposes the platform's own
+#     data dir. Full minimal-bind confinement (no root bind at all) is
+#     the EZCORP_MCP_FS_JAIL branch above.
 #   - When seccomp is active, `--seccomp <fd>` is appended AFTER the
 #     tmpfs flags and BEFORE the `--` argv terminator. The FD value is
 #     whatever the caller put in EZCORP_MCP_BWRAP_SECCOMP_FD (always 3
 #     in production — the conventional FD slot we copy into).
+#
+# The trailing argv is composed right-to-left with `set --` so the two
+# optional legs (seccomp FD, data-dir mask) combine without duplicating
+# four exec lines.
 if [ "${EZCORP_MCP_BWRAP_ENABLED:-0}" = "1" ]; then
   if [ -n "${EZCORP_MCP_BWRAP_SECCOMP_FD:-}" ]; then
-    exec bwrap \
-      --proc /proc \
-      --dev /dev \
-      --bind / / \
-      --size 67108864 \
-      --tmpfs /tmp \
-      --seccomp "$EZCORP_MCP_BWRAP_SECCOMP_FD" \
-      -- "$@"
+    set -- --seccomp "$EZCORP_MCP_BWRAP_SECCOMP_FD" -- "$@"
   else
-    exec bwrap \
-      --proc /proc \
-      --dev /dev \
-      --bind / / \
-      --size 67108864 \
-      --tmpfs /tmp \
-      -- "$@"
+    set -- -- "$@"
   fi
+  set -- --size 67108864 --tmpfs /tmp "$@"
+  if [ -n "${EZCORP_MCP_DATA_DIR:-}" ]; then
+    # EZCORP_MCP_DATA_DIR is a `:`-separated list (host-computed: the
+    # real PGlite data dir + the `.ezcorp/data` convention path). Mask
+    # each with a private 1 MiB tmpfs (cap so a misbehaving MCP can't
+    # balloon RAM by scribbling into the jail-private, discarded mount).
+    # Mounted AFTER `--bind / /` below so they shadow the host dirs
+    # (bwrap is a sequential state machine).
+    _saved_ifs=$IFS
+    IFS=:
+    for _mask_dir in $EZCORP_MCP_DATA_DIR; do
+      [ -n "$_mask_dir" ] && set -- --size 1048576 --tmpfs "$_mask_dir" "$@"
+    done
+    IFS=$_saved_ifs
+  fi
+  exec bwrap \
+    --proc /proc \
+    --dev /dev \
+    --bind / / \
+    "$@"
+fi
+
+# CRITICAL security fix — fail-closed raw-exec guard.
+#
+# Reaching this point means NONE of the bwrap branches above ran (bwrap
+# missing, or the tmpfs kill-switch disabled the wrap): the MCP would
+# exec below with NO filesystem isolation at all. Under the operator's
+# fail-closed posture (EZCORP_MCP_REQUIRE_SANDBOX=1, threaded into our
+# env by mcp-sandbox.ts) refuse instead of silently degrading.
+# Belt-and-suspenders: the host-side static gate already refuses these
+# spawns before the launcher ever runs; this guard keeps the contract
+# even if a future caller bypasses that gate. Default posture (flag
+# unset) keeps the existing audited fail-open degrade unchanged.
+if [ "${EZCORP_MCP_REQUIRE_SANDBOX:-0}" = "1" ]; then
+  echo "mcp-launcher: EZCORP_MCP_REQUIRE_SANDBOX=1 but bwrap filesystem confinement is unavailable; refusing raw exec" >&2
+  exit 94
 fi
 
 # Step 1: drop capabilities — best-effort.

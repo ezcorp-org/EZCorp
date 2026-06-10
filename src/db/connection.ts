@@ -1,7 +1,7 @@
 import * as schema from "./schema";
 import { migrate } from "./migrate";
 import { mkdirSync, renameSync, existsSync, cpSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { logger } from "../logger";
 import { setReadiness } from "../readiness";
 import {
@@ -19,6 +19,26 @@ const DEFAULT_DB_DIR = `${process.env.HOME}/ez-corp/.data`;
 const DB_PATH = process.env.EZCORP_DB_PATH ?? `${DEFAULT_DB_DIR}/ez-corp-db`;
 const IS_MEMORY = DB_PATH === ":memory:";
 const DATABASE_URL = process.env.DATABASE_URL;
+
+/**
+ * Absolute directory that CONTAINS the local PGlite data dir (and thus
+ * the encrypted JWT secret stored in the `settings` table, plus DB
+ * snapshots under `backups/`). Returns `null` when there is no on-disk
+ * DB to protect — external Postgres (`DATABASE_URL`) or in-memory.
+ *
+ * The MCP sandbox masks this directory with a private tmpfs so untrusted
+ * MCP processes can't read the platform's own database off disk. It is
+ * resolved from the SAME `DB_PATH` logic above so the mask tracks the
+ * real location (e.g. prod's `/app/data` from `EZCORP_DB_PATH`), not a
+ * hard-coded convention path. `PGlite(DB_PATH)` uses `DB_PATH` as the
+ * data dir itself, so the parent (`dirname`) is the dir to mask — that
+ * also covers sibling `backups/` snapshots.
+ */
+export function getDbDataDir(): string | null {
+  if (DATABASE_URL) return null;
+  if (IS_MEMORY) return null;
+  return dirname(DB_PATH);
+}
 
 /**
  * Drizzle adapter handle. Either a `PgliteDatabase` or a `BunSQLDatabase` at

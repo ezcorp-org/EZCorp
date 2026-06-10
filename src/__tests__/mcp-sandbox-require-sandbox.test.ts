@@ -28,7 +28,16 @@
  */
 
 import { test, expect, describe, beforeEach, afterAll, mock, spyOn } from "bun:test";
-import { openSync, closeSync } from "node:fs";
+import {
+  openSync,
+  closeSync,
+  mkdtempSync,
+  existsSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
 
 // ── Audit mock — captures rows written by buildSandboxedMcpSpec ────
@@ -140,8 +149,26 @@ mock.module("../extensions/mcp-netns", () => ({
 import {
   buildSandboxedMcpSpec,
   _setConntrackOverridesForTests,
+  _setProjectRootOverrideForTests,
 } from "../extensions/mcp-sandbox";
+import {
+  assertJailArgsSafe,
+  forbiddenDataDir,
+} from "../extensions/preview-jail";
+import { getDbDataDir } from "../db/connection";
 import { EXT_AUDIT_ACTIONS } from "../extensions/audit-actions";
+
+/** Reproduce the host's mask resolution: the real PGlite data dir
+ *  (`getDbDataDir()`, independent of the project root) plus the
+ *  `.ezcorp/data` convention path (only when a project root is known),
+ *  deduped and `:`-joined. `undefined` when nothing is maskable. */
+function expectedDataDirMask(jailRoot: string | null): string | undefined {
+  const set = new Set<string>();
+  const db = getDbDataDir();
+  if (db) set.add(db);
+  if (jailRoot) set.add(forbiddenDataDir(jailRoot));
+  return set.size > 0 ? [...set].join(":") : undefined;
+}
 import type {
   ExtensionManifestV2,
   McpServerDefinition,
@@ -161,12 +188,18 @@ const ENV_KEYS = [
 const savedEnv: Record<string, string | undefined> = {};
 for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
 
+// Throwaway project root for the strict minimal-bind jail leg — keeps
+// the `.ezcorp/extension-data/<name>` mkdir side effect out of the real
+// repo working tree.
+const JAIL_ROOT = realpathSync(mkdtempSync(join(tmpdir(), "ez-rs-jail-")));
+
 beforeEach(() => {
   auditCalls.length = 0;
   resetState();
   for (const k of ENV_KEYS) delete process.env[k];
   // Skip the conntrack pressure pre-check deterministically.
   _setConntrackOverridesForTests({ exists: () => false });
+  _setProjectRootOverrideForTests(JAIL_ROOT);
 });
 
 afterAll(() => {
@@ -175,6 +208,8 @@ afterAll(() => {
     else process.env[k] = savedEnv[k];
   }
   _setConntrackOverridesForTests(null);
+  _setProjectRootOverrideForTests(undefined);
+  rmSync(JAIL_ROOT, { recursive: true, force: true });
   restoreModuleMocks();
 });
 
@@ -419,6 +454,48 @@ describe("flag on — degraded host is refused", () => {
     expect(refusalRows()).toHaveLength(1);
   });
 
+  test("project root unresolved → refused naming the filesystem jail (no data-dir exclusion possible)", async () => {
+    _setProjectRootOverrideForTests(null);
+    await expect(build("ext-rs-noroot")).rejects.toThrow(
+      /minimal-bind filesystem jail \(project root\).*EZCORP_PROJECT_ROOT unresolved/,
+    );
+    const rows = refusalRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.metadata?.requiredCapability).toBe(
+      "minimal-bind filesystem jail (project root)",
+    );
+    // Refusal short-circuits BEFORE the proxy start + netns audit row.
+    expect(
+      auditCalls.find((c) => c.action === EXT_AUDIT_ACTIONS.MCP_NETNS_CREATED),
+    ).toBeUndefined();
+  });
+
+  test("jail bind-set build failure (work dir inside .ezcorp/data) → refused with the builder's reason", async () => {
+    // Force the builder to fail closed: a manifest name crafted so the
+    // extension-data work dir would be an ANCESTOR trick is impossible
+    // (paths are joined under extension-data), so drive the failure via
+    // a project root whose extension-data path collides with the data
+    // dir through a symlink.
+    const { symlinkSync, mkdirSync } = await import("node:fs");
+    const evilRoot = realpathSync(mkdtempSync(join(tmpdir(), "ez-rs-evil-")));
+    mkdirSync(join(evilRoot, ".ezcorp", "data"), { recursive: true });
+    // `.ezcorp/extension-data` → symlink into `.ezcorp/data`: the
+    // canonicalize-before-assert step must reject the realpath.
+    symlinkSync(
+      join(evilRoot, ".ezcorp", "data"),
+      join(evilRoot, ".ezcorp", "extension-data"),
+    );
+    _setProjectRootOverrideForTests(evilRoot);
+    try {
+      await expect(build("ext-rs-evil-workdir")).rejects.toThrow(
+        /minimal-bind filesystem jail \(bwrap bind set\)/,
+      );
+      expect(refusalRows()).toHaveLength(1);
+    } finally {
+      rmSync(evilRoot, { recursive: true, force: true });
+    }
+  });
+
   test("bridge attach fails at runtime → refused naming the bridge", async () => {
     const fd = openSync("/dev/null", "r");
     state.seccompFd = fd;
@@ -445,6 +522,59 @@ describe("flag on — degraded host is refused", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// CRITICAL fs-confinement fix — default posture (flag OFF). The strict
+// minimal-bind jail must NOT activate (back-compat: `--bind / /`
+// envelope stays), but the data-dir tmpfs mask env var is ALWAYS
+// threaded whenever the bwrap branch is on and the project root is
+// known — the PGlite DB + JWT secret stop being readable without any
+// opt-in.
+describe("flag off — data-dir exclusion is always on; strict jail is not", () => {
+  test("capable host → EZCORP_MCP_DATA_DIR threaded, no FS_JAIL, launcher payload unchanged", async () => {
+    const spy = fakeIpSpawnSync(() => ({ success: true, exitCode: 0 }));
+    try {
+      const { spec, proxyHandle } = await build("ext-rs-off-datadir");
+      const wrapped = spec as McpServerStdio;
+
+      expect(wrapped.env?.EZCORP_MCP_BWRAP_ENABLED).toBe("1");
+      expect(wrapped.env?.EZCORP_MCP_DATA_DIR).toBe(expectedDataDirMask(JAIL_ROOT));
+      // The mask covers the REAL DB data dir (not just `.ezcorp/data`).
+      expect(wrapped.env?.EZCORP_MCP_DATA_DIR).toContain(forbiddenDataDir(JAIL_ROOT));
+      // Strict leg stays off: no FS_JAIL routing, no REQUIRE_SANDBOX
+      // threading, and the launcher payload is the original prlimit
+      // chain (NOT a pre-built bwrap argv).
+      expect(wrapped.env?.EZCORP_MCP_FS_JAIL).toBeUndefined();
+      expect(wrapped.env?.EZCORP_MCP_REQUIRE_SANDBOX).toBeUndefined();
+      const launcherIdx = wrapped.args!.indexOf("/fake/mcp-launcher.sh");
+      expect(wrapped.args!.slice(launcherIdx + 1, launcherIdx + 2)).toEqual(["prlimit"]);
+      expect(refusalRows()).toHaveLength(0);
+
+      await proxyHandle?.stop();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("project root unresolved → spawn proceeds; DB-dir mask still applies (only the .ezcorp/data convention part drops)", async () => {
+    _setProjectRootOverrideForTests(null);
+    const spy = fakeIpSpawnSync(() => ({ success: true, exitCode: 0 }));
+    try {
+      const { spec, proxyHandle } = await build("ext-rs-off-noroot");
+      const wrapped = spec as McpServerStdio;
+
+      expect(wrapped.env?.EZCORP_MCP_BWRAP_ENABLED).toBe("1");
+      // The real DB data dir is resolved independently of the project
+      // root, so it is masked even when the root is unknown.
+      expect(wrapped.env?.EZCORP_MCP_DATA_DIR).toBe(expectedDataDirMask(null));
+      expect(refusalRows()).toHaveLength(0);
+
+      await proxyHandle?.stop();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 describe("flag on — fully capable host spawns normally", () => {
   test("all isolation legs available → spec built, no refusal row", async () => {
     process.env.EZCORP_MCP_REQUIRE_SANDBOX = "1";
@@ -461,6 +591,39 @@ describe("flag on — fully capable host spawns normally", () => {
       expect(wrapped.env?.EZCORP_MCP_STAGE2_VETH_ENABLED).toBe("1");
       expect(wrapped.seccompFd).toBe(fd);
       expect(wrapped._internal_vethSetup).not.toBeNull();
+
+      // CRITICAL fs-confinement fix — strict leg: the launcher payload
+      // (everything after the launcher path) is the COMPLETE minimal-bind
+      // bwrap argv, exec'd verbatim via EZCORP_MCP_FS_JAIL=1.
+      expect(wrapped.env?.EZCORP_MCP_FS_JAIL).toBe("1");
+      expect(wrapped.env?.EZCORP_MCP_REQUIRE_SANDBOX).toBe("1");
+      expect(wrapped.env?.EZCORP_MCP_DATA_DIR).toBe(expectedDataDirMask(JAIL_ROOT));
+      const launcherIdx = wrapped.args!.indexOf("/fake/mcp-launcher.sh");
+      expect(launcherIdx).toBeGreaterThan(0);
+      const jailArgv = wrapped.args!.slice(launcherIdx + 1);
+      // No root bind, nothing under .ezcorp/data — the unit-tested
+      // invariant guard accepts the argv.
+      expect(jailArgv.join(" ")).not.toContain("--bind / /");
+      expect(() => assertJailArgsSafe(jailArgv, JAIL_ROOT)).not.toThrow();
+      // Minimal-bind shape: ro system binds, private tmpfs, seccomp FD 3,
+      // host net/pid namespaces shared (no --unshare-*), and the inner
+      // prlimit chain after the `--` terminator.
+      expect(jailArgv).toContain("--ro-bind");
+      expect(jailArgv).toContain("--tmpfs");
+      expect(jailArgv[jailArgv.indexOf("--seccomp") + 1]).toBe("3");
+      expect(jailArgv.some((a) => a.startsWith("--unshare"))).toBe(false);
+      const dd = jailArgv.indexOf("--");
+      expect(jailArgv.slice(dd, dd + 2)).toEqual(["--", "prlimit"]);
+      expect(jailArgv.slice(-3)).toEqual(["/usr/bin/python3", "-m", "my_mcp_server"]);
+      // The ONLY rw bind is the extension-data work dir (created on
+      // demand under the project root).
+      const workDir = join(JAIL_ROOT, ".ezcorp", "extension-data", "require-sandbox-probe");
+      expect(existsSync(workDir)).toBe(true);
+      const rwBinds: string[] = [];
+      for (let i = 0; i < jailArgv.length; i++) {
+        if (jailArgv[i] === "--bind") rwBinds.push(jailArgv[i + 1]!);
+      }
+      expect(rwBinds).toEqual([workDir]);
 
       expect(refusalRows()).toHaveLength(0);
       expect(

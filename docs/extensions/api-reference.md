@@ -691,6 +691,7 @@ The `ezcorp/storage` reverse RPC channel provides persistent, isolated key-value
 - **Fully isolated** — each extension has its own namespace. Extension A cannot read or write Extension B's data, ever.
 - **Server-authoritative identity** — the extension ID is assigned by the server from the registry, not from the request payload. Extensions cannot impersonate each other.
 - **Scoped access** — conversation-scoped storage requires the extension to be wired to that conversation.
+- **`global` scope is install-wide, not per-user** — isolation is per *extension* only. Every user of the extension (and every ownerless cron fire) shares the same `global` bucket. Per-user data and secrets belong in `user` scope; the server rejects `encrypted: true` writes to `global` scope with `-32602`.
 - **Encrypted at rest** — values can be stored with AES-256-GCM encryption (the extension sends plaintext; the server encrypts before writing to the database).
 - **Quota-enforced** — default 5MB per extension (configurable via `resources.storage`, max 100MB).
 - **Rate-limited** — 50 operations per second per extension.
@@ -699,9 +700,11 @@ The `ezcorp/storage` reverse RPC channel provides persistent, isolated key-value
 
 | Scope | `scopeId` | Use case |
 |-------|-----------|----------|
-| `global` | (none) | Extension-wide settings, caches |
+| `global` | (none — one install-wide bucket) | Extension-wide caches, cron-reachable state. **Shared across ALL users.** |
 | `conversation` | Current conversation ID | Per-conversation state, task data |
-| `user` | Current user ID | Per-user preferences |
+| `user` | Current user ID | Per-user preferences, secrets |
+
+> **Warning — `global` is shared, and it is the default.** A `global` row is keyed on the extension alone (`scopeId` is `NULL`), so every user of the extension reads and writes the *same* bucket — user B can read and overwrite what user A stored there. This is deliberate: `global` is the only *ownerless* scope, which is what makes it reachable from scheduled cron fires (they carry no user or conversation — see the substack-engagement example). Use it only for state that is genuinely extension-wide (caches, poll cursors, shared queues). Never store per-user data there, and note that `global` is the **default** when `scope` is omitted (and the SDK `Storage` class default). Secrets must use `user` scope: the server rejects `encrypted: true` writes to `global` scope with `-32602`.
 
 ### Request Format
 
@@ -750,6 +753,8 @@ Send a `JsonRpcRequest` on stdout with `method: "ezcorp/storage"`:
 // Response
 { ok: true, sizeBytes: 1234 }
 ```
+
+`encrypted: true` requires an owner-bound scope (`user` or `conversation`) — encrypted writes to the install-wide `global` scope are rejected with `-32602` (see the scope warning above).
 
 #### `delete` — Remove a key
 

@@ -673,15 +673,17 @@ describe("storage-handler encrypted round-trip", () => {
     await insertExtension(ext, m);
     const ctx = makeCtx(m);
 
+    // `user` scope: encrypted writes to the install-wide `global` scope are
+    // rejected (locked in by sb1-storage-rpc-security.test.ts).
     const plaintext = "plaintext";
     const setResp = await handleStorageRpc(
       ext,
-      rpc("set", { key: "secret", value: plaintext, encrypted: true }),
+      rpc("set", { key: "secret", value: plaintext, encrypted: true, scope: "user" }),
       ctx,
     );
     expect(setResp.error).toBeUndefined();
 
-    const getResp = await handleStorageRpc(ext, rpc("get", { key: "secret" }), ctx);
+    const getResp = await handleStorageRpc(ext, rpc("get", { key: "secret", scope: "user" }), ctx);
     expect(getResp.error).toBeUndefined();
     expect((getResp.result as any).exists).toBe(true);
     expect((getResp.result as any).value).toBe(plaintext);

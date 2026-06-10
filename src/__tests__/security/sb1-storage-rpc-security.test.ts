@@ -13,7 +13,11 @@
 //       are rejected;
 //   (6) batch operation limit — at most 100 ops per `batch` request;
 //   (7) encryption flag — when `encrypted: true`, the ciphertext is what
-//       lands in the DB, never the plaintext.
+//       lands in the DB, never the plaintext;
+//   (8) global-scope semantics — `global` is ONE install-wide bucket
+//       shared across all users (deliberately ownerless so cron fires can
+//       reach it), therefore encrypted writes — the API's "this is a
+//       secret" signal — are rejected for that scope.
 //
 // Every item above is already implemented in `storage-handler.ts`; these
 // tests lock that behavior in so future refactors can't quietly break it.
@@ -374,10 +378,12 @@ describe("sec-SB1: storage RPC quota, rate-limiting, key validation, batch, encr
     const encManifest = makeManifest(encExt, "1MB");
     await insertExtension(encExt, encManifest);
 
+    // `user` scope: encrypted writes must target an owner-bound scope —
+    // the install-wide `global` scope rejects them (locked in below).
     const plaintext = "hunter2-super-secret-token";
     const setResp = await handleStorageRpc(
       encExt,
-      rpc("set", { key: "api-token", value: plaintext, encrypted: true }),
+      rpc("set", { key: "api-token", value: plaintext, encrypted: true, scope: "user" }),
       makeCtx(encManifest),
     );
     expect(setResp.error).toBeUndefined();
@@ -401,11 +407,148 @@ describe("sec-SB1: storage RPC quota, rate-limiting, key validation, batch, encr
     // And the handler still round-trips the plaintext back out via decrypt.
     const getResp = await handleStorageRpc(
       encExt,
-      rpc("get", { key: "api-token" }),
+      rpc("get", { key: "api-token", scope: "user" }),
       makeCtx(encManifest),
     );
     expect(getResp.error).toBeUndefined();
     expect((getResp.result as any).exists).toBe(true);
     expect((getResp.result as any).value).toBe(plaintext);
+  });
+});
+
+describe("sec-SB1: 'global' scope is install-wide — shared by design, never for secrets", () => {
+  // Why the cross-user sharing is locked in rather than "fixed": `global`
+  // is the API's only OWNERLESS scope (resolveScopeId → NULL scopeId).
+  // Schedule-daemon cron fires carry no user or conversation
+  // (schedule-daemon.ts: "Cron fires have NO conversation or user"), so
+  // cron-written state (queues, poll cursors, pacing) must live in a
+  // bucket the user-driven tools can also reach — see
+  // docs/extensions/examples/substack-engagement/index.ts, locked
+  // decision #4. Folding the acting user into the global scopeId would
+  // orphan that state (there is no user to fold in on a cron fire).
+  // The secret-leak half of the finding is instead closed write-side:
+  // encrypted values — the documented way to store secrets
+  // (docs/extensions/settings.md) — may not target the shared bucket.
+
+  test("plaintext global state is shared across user contexts (intended ownerless semantics)", async () => {
+    const ext = uniqueExtId("ext-glob-shared");
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+
+    const setResp = await handleStorageRpc(
+      ext,
+      rpc("set", { key: "poll-cursor", value: 42, scope: "global" }),
+      makeCtx(m, { userId: "user-A" }),
+    );
+    expect(setResp.error).toBeUndefined();
+
+    // A different user context (same extension identity) sees the value —
+    // that is the documented install-wide semantics, not a leak.
+    const getResp = await handleStorageRpc(
+      ext,
+      rpc("get", { key: "poll-cursor", scope: "global" }),
+      makeCtx(m, { userId: "user-B" }),
+    );
+    expect(getResp.error).toBeUndefined();
+    expect((getResp.result as any).value).toBe(42);
+  });
+
+  test("encrypted set to global scope is rejected with -32602", async () => {
+    const ext = uniqueExtId("ext-glob-enc");
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+
+    const resp = await handleStorageRpc(
+      ext,
+      rpc("set", { key: "api-token", value: "s3cret", encrypted: true, scope: "global" }),
+      makeCtx(m, { userId: "user-A" }),
+    );
+    expect(resp.error).toBeDefined();
+    expect(resp.error!.code).toBe(-32602);
+    expect(resp.error!.message).toMatch(/global.*shared across all users/i);
+
+    // Nothing must have landed in the DB.
+    const rows = await getDb()
+      .select()
+      .from(extensionStorage)
+      .where(and(eq(extensionStorage.extensionId, ext), eq(extensionStorage.key, "api-token")));
+    expect(rows.length).toBe(0);
+  });
+
+  test("encrypted set with scope omitted (defaults to global) is rejected", async () => {
+    const ext = uniqueExtId("ext-glob-enc-default");
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+
+    const resp = await handleStorageRpc(
+      ext,
+      rpc("set", { key: "api-token", value: "s3cret", encrypted: true }),
+      makeCtx(m),
+    );
+    expect(resp.error).toBeDefined();
+    expect(resp.error!.code).toBe(-32602);
+  });
+
+  test("batch set with encrypted:true under global scope is rejected per-op", async () => {
+    const ext = uniqueExtId("ext-glob-enc-batch");
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+
+    const resp = await handleStorageRpc(
+      ext,
+      rpc("batch", {
+        scope: "global",
+        operations: [
+          { action: "set", key: "plain", value: "ok" },
+          { action: "set", key: "secret", value: "s3cret", encrypted: true },
+        ],
+      }),
+      makeCtx(m),
+    );
+    expect(resp.error).toBeUndefined();
+    const results = (resp.result as any).results as any[];
+    expect(results[0]).toEqual({ ok: true, sizeBytes: expect.any(Number) });
+    expect(results[1].code).toBe(-32602);
+  });
+
+  test("encrypted set to user scope succeeds and is invisible to another user", async () => {
+    const ext = uniqueExtId("ext-glob-enc-user");
+    const m = makeManifest(ext);
+    await insertExtension(ext, m);
+
+    const setResp = await handleStorageRpc(
+      ext,
+      rpc("set", { key: "api-token", value: "s3cret", encrypted: true, scope: "user" }),
+      makeCtx(m, { userId: "user-A" }),
+    );
+    expect(setResp.error).toBeUndefined();
+
+    // Same extension identity, different user — must not see the secret.
+    const otherResp = await handleStorageRpc(
+      ext,
+      rpc("get", { key: "api-token", scope: "user" }),
+      makeCtx(m, { userId: "user-B" }),
+    );
+    expect(otherResp.error).toBeUndefined();
+    expect((otherResp.result as any).exists).toBe(false);
+
+    // Owner reads it back.
+    const ownResp = await handleStorageRpc(
+      ext,
+      rpc("get", { key: "api-token", scope: "user" }),
+      makeCtx(m, { userId: "user-A" }),
+    );
+    expect((ownResp.result as any).value).toBe("s3cret");
+  });
+
+  test("builtin may still write encrypted global (host-internal exemption)", async () => {
+    // Migrations seed the "builtin" extension row, so the FK holds.
+    const m = makeManifest("builtin-enc-global");
+    const resp = await handleStorageRpc(
+      "builtin",
+      rpc("set", { key: "host-secret", value: "host-only", encrypted: true, scope: "global" }),
+      makeCtx(m),
+    );
+    expect(resp.error).toBeUndefined();
   });
 });

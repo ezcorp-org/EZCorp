@@ -65,6 +65,14 @@ type Scope = "global" | "conversation" | "user";
 
 function resolveScopeId(scope: Scope, ctx: StorageContext): string | null {
   switch (scope) {
+    // "global" is deliberately OWNERLESS: one install-wide bucket per
+    // extension (scopeId NULL), shared across ALL users. That is what
+    // makes it reachable from ownerless cron fires (schedule-daemon
+    // fires carry no user or conversation) — see
+    // docs/extensions/examples/substack-engagement/index.ts, locked
+    // decision #4. Never put per-user data here; `handleSet` rejects
+    // encrypted writes to this scope so secrets can't land in the
+    // shared bucket.
     case "global": return null;
     case "conversation": return ctx.conversationId;
     case "user": return ctx.userId;
@@ -222,6 +230,21 @@ async function handleSet(
   if (pre) return pre;
 
   const shouldEncrypt = params.encrypted === true;
+
+  // Security: "global" scope is install-wide — one bucket shared by every
+  // user of this extension (resolveScopeId → NULL). `encrypted: true` is
+  // the API's "this is a secret" signal (docs/extensions/settings.md), and
+  // per-user secrets must never land in a cross-user bucket, so encrypted
+  // writes require an owner-bound scope. Builtin keeps the exemption it
+  // has everywhere else (host-internal storage, never user-controlled).
+  if (shouldEncrypt && scope === "global" && !isBuiltin) {
+    return rpcError(
+      id,
+      -32602,
+      "Encrypted values cannot use 'global' scope — it is shared across all users; use scope 'user' (or 'conversation') for secrets",
+    );
+  }
+
   let valueToStore: unknown = params.value;
   const serialized = JSON.stringify(valueToStore);
   const sizeBytes = Buffer.byteLength(serialized, "utf-8");

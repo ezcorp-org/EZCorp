@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -72,6 +73,10 @@ describe("config", () => {
 });
 
 // ── Publish Workflow Tests ──────────────────────────────────────
+
+// Tokens are stored hashed at rest (sha256 hex, matching hashApiKey in
+// web/src/lib/server/security/api-keys.ts) -- never the raw token.
+const sha256 = (raw: string) => createHash("sha256").update(raw).digest("hex");
 
 // Re-mock manifest with real validation logic to prevent leaking always-valid
 // mocks from ext-dev/ext-test-runner tests (Bun mock.module is global/process-wide)
@@ -166,11 +171,11 @@ describe("ezcorp ext publish", () => {
 
     // Default happy-path mocks
     mockGetSetting.mockImplementation(((key: string) => {
-      if (key === "publish:token:user-1") return Promise.resolve({ token: "valid-token-abc", createdAt: 1 });
+      if (key === "publish:token:user-1") return Promise.resolve({ tokenHash: sha256("valid-token-abc"), createdAt: 1 });
       return Promise.resolve(undefined);
     }) as any);
     mockGetAllSettings.mockImplementation(() => Promise.resolve({
-      "publish:token:user-1": { token: "valid-token-abc", createdAt: 1 },
+      "publish:token:user-1": { tokenHash: sha256("valid-token-abc"), createdAt: 1 },
     }));
     mockCreateListing.mockImplementation(() => Promise.resolve({ id: "listing-1", name: "test-ext", slug: "test-ext" }));
     mockGetListingBySlug.mockImplementation(() => Promise.resolve(undefined));
@@ -206,15 +211,43 @@ describe("ezcorp ext publish", () => {
     const { publishExtension } = await import("../extensions/sdk/publish");
     writeManifest();
     writeEntrypoint();
-    // Stored tokens exist (one publish:token:* entry) but NONE equal the
-    // token we pass — verifyToken scans them, finds no match, and throws.
+    // Stored token hashes exist (one publish:token:* entry) but NONE match the
+    // token we pass — verifyToken hash-compares each, finds no match, and throws.
     mockGetAllSettings.mockImplementation(() => Promise.resolve({
-      "publish:token:user-1": { token: "some-other-token", createdAt: 1 },
+      "publish:token:user-1": { tokenHash: sha256("some-other-token"), createdAt: 1 },
       // a non-token setting is skipped by the `publish:token:` prefix guard
       "unrelated:setting": { foo: "bar" },
     }));
 
     await expect(publishExtension({ extDir: tempDir, token: "no-such-token", skipTests: true }))
+      .rejects.toThrow("Invalid publish token");
+  });
+
+  test("rejects legacy plaintext rows even when the raw token matches (forces re-issue)", async () => {
+    const { publishExtension } = await import("../extensions/sdk/publish");
+    writeManifest();
+    writeEntrypoint();
+    // Pre-hash row shape ({ token }) — there is no plaintext-acceptance
+    // fallback; the row is invalid until the user re-issues a token.
+    mockGetAllSettings.mockImplementation(() => Promise.resolve({
+      "publish:token:user-1": { token: "valid-token-abc", createdAt: 1 },
+    }));
+
+    await expect(publishExtension({ extDir: tempDir, token: "valid-token-abc", skipTests: true }))
+      .rejects.toThrow("Invalid publish token");
+  });
+
+  test("rejects a malformed stored hash via the length guard (no timingSafeEqual throw)", async () => {
+    const { publishExtension } = await import("../extensions/sdk/publish");
+    writeManifest();
+    writeEntrypoint();
+    // timingSafeEqual throws on unequal buffer lengths; the length guard must
+    // skip this row instead, so we get the clean "Invalid publish token" error.
+    mockGetAllSettings.mockImplementation(() => Promise.resolve({
+      "publish:token:user-1": { tokenHash: "abc123", createdAt: 1 },
+    }));
+
+    await expect(publishExtension({ extDir: tempDir, token: "valid-token-abc", skipTests: true }))
       .rejects.toThrow("Invalid publish token");
   });
 
@@ -264,6 +297,9 @@ describe("ezcorp ext publish", () => {
 
     expect(mockCreateListing).toHaveBeenCalledTimes(1);
     expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+    // The hash-only stored row (no raw token) resolved the owning userId.
+    const listingArg = (mockCreateListing.mock.calls[0] as unknown as any[])[0] as Record<string, unknown>;
+    expect(listingArg.authorId).toBe("user-1");
   });
 
   test("computes and includes package checksums", async () => {

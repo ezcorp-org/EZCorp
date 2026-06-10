@@ -4,6 +4,7 @@
  */
 import { test, expect, describe, beforeEach, afterEach, mock, afterAll } from "bun:test";
 import { restoreModuleMocks } from "./helpers/mock-cleanup";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -46,8 +47,10 @@ mock.module("../extensions/manifest", () => ({
 }));
 
 const mockInitDb = mock(() => Promise.resolve());
+// Publish tokens are stored hashed at rest (sha256 hex), never as plaintext.
+const VALID_TOKEN_HASH = createHash("sha256").update("valid-token").digest("hex");
 const mockGetAllSettings = mock(() => Promise.resolve({
-  "publish:token:user-1": { token: "valid-token", createdAt: 1 },
+  "publish:token:user-1": { tokenHash: VALID_TOKEN_HASH, createdAt: 1 },
 }));
 const mockCreateListing = mock(() => Promise.resolve({ id: "lst-1", name: "sdk-gap-ext", slug: "sdk-gap-ext" }));
 const mockGetListingBySlug = mock(() => Promise.resolve(undefined));
@@ -100,7 +103,7 @@ beforeEach(() => {
   mockGetVersion.mockImplementation(() => Promise.resolve(undefined));
   mockCreateListing.mockImplementation(() => Promise.resolve({ id: "lst-1", name: "sdk-gap-ext", slug: "sdk-gap-ext" }));
   mockGetAllSettings.mockImplementation(() => Promise.resolve({
-    "publish:token:user-1": { token: "valid-token", createdAt: 1 },
+    "publish:token:user-1": { tokenHash: VALID_TOKEN_HASH, createdAt: 1 },
   }));
 });
 

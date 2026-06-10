@@ -3,6 +3,7 @@
  * extensions to the marketplace from the CLI.
  */
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import { getPublishToken } from "./config";
 import { generateSlug } from "../manifest";
@@ -101,21 +102,39 @@ export async function publishExtension(opts?: PublishOptions): Promise<void> {
 }
 
 /**
- * Verify a publish token against stored tokens in settings.
+ * SHA-256 hex digest of a publish token.
+ * Must stay in sync with `hashApiKey` in
+ * web/src/lib/server/security/api-keys.ts (not importable here -- it depends
+ * on SvelteKit's $server alias), which the settings/developer route uses to
+ * hash the token at rest.
+ */
+function hashPublishToken(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * Verify a publish token against stored token hashes in settings.
  * Returns the userId associated with the token.
  */
 async function verifyToken(token: string): Promise<string> {
-  // Tokens are stored as publish:token:{userId} -> { token, createdAt }
+  // Tokens are stored hashed as publish:token:{userId} -> { tokenHash, createdAt }.
   // We need to scan settings for a matching token. Since we don't have a
   // reverse index, we check all publish:token:* settings.
   // In practice this is a small set (one per developer user).
   const { getAllSettings } = await import("../../db/queries/settings");
   const allSettings = await getAllSettings();
 
+  const presentedHash = Buffer.from(hashPublishToken(token), "hex");
+
   for (const [key, value] of Object.entries(allSettings)) {
     if (!key.startsWith("publish:token:")) continue;
-    const stored = value as { token: string; createdAt: number };
-    if (stored.token === token) {
+    const stored = value as { tokenHash?: unknown; createdAt?: number };
+    // Legacy plaintext rows ({ token }) have no tokenHash and are treated as
+    // invalid -- re-issue the token at Settings > Developer.
+    if (typeof stored.tokenHash !== "string") continue;
+    const storedHash = Buffer.from(stored.tokenHash, "hex");
+    if (storedHash.length !== presentedHash.length) continue;
+    if (timingSafeEqual(storedHash, presentedHash)) {
       return key.replace("publish:token:", "");
     }
   }

@@ -33,10 +33,15 @@ cp .env.prod.example .env.prod && chmod 600 .env.prod
 #   EZCORP_JWT_SECRET         →  openssl rand -base64 32
 #   EZCORP_PUBLIC_URL         →  e.g. http://localhost:4000 (or your TLS-fronted URL)
 
+# One-time: pre-create the data dir with the right owner. Docker auto-creates
+# a missing bind-mount source as root, and the unprivileged uid-1000 `bun`
+# runtime can't write it — PGlite then fails to open on first boot.
+mkdir -p .ezcorp/data && sudo chown -R 1000:1000 .ezcorp/data
+
 docker compose -f compose.prod.yml --env-file .env.prod up -d --build
 ```
 
-The first `up` builds the image locally (a couple of minutes); subsequent ups reuse the Docker layer cache. When build is done, open [http://localhost:4000](http://localhost:4000), create your admin account, and start chatting. Your data lives in a named Docker volume and survives `docker compose down` (only `down -v` destroys it).
+The first `up` builds the image locally (a couple of minutes); subsequent ups reuse the Docker layer cache. When build is done, open [http://localhost:4000](http://localhost:4000), create your admin account, and start chatting. Your data lives in `./.ezcorp/data/` in the working tree (a host bind mount, not a docker-managed volume), so it survives `docker compose down`, `down -v`, and image upgrades — backing up is just backing up that host directory. See [Data persistence](#data-persistence) below.
 
 For HTTPS, backups, external Postgres, and auto-updates, see the **[production guide](docs/production-guide.md)**.
 

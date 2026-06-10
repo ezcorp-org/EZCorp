@@ -51,7 +51,8 @@ export function clone(
   const args = ["clone"];
   if (opts?.depth) args.push("--depth", String(opts.depth));
   if (opts?.branch) args.push("--branch", opts.branch);
-  args.push(url, dest);
+  // End-of-options separator: url/dest can never be parsed as git options.
+  args.push("--", url, dest);
 
   return gitExec(args, { timeout: CLONE_TIMEOUT_MS });
 }

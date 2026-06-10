@@ -133,6 +133,34 @@ describe("validateDependencies", () => {
     });
     expect(result.valid).toBe(true);
   });
+
+  test("rejects malformed source (not a recognized format)", () => {
+    const result = validateDependencies({
+      foo: { source: "not-a-valid-source", version: "1.0.0" },
+    });
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((e) => e.includes("dependencies.foo.source is invalid")),
+    ).toBe(true);
+  });
+
+  test("rejects source with option-injection ref (F2: dependency confusion)", () => {
+    const result = validateDependencies({
+      foo: {
+        source: "github:user/repo@--upload-pack=/tmp/evil",
+        version: "1.0.0",
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("Invalid git ref"))).toBe(true);
+  });
+
+  test("accepts valid source with ref", () => {
+    const result = validateDependencies({
+      foo: { source: "github:user/repo@v1.2.3", version: "1.0.0" },
+    });
+    expect(result.valid).toBe(true);
+  });
 });
 
 // ── detectCycles ────────────────────────────────────────────────────

@@ -17,6 +17,22 @@ export interface ParsedSource {
   original: string;
 }
 
+// Git refs (branches/tags/commits) legitimately only contain these chars.
+// Anything else — and anything starting with "-" — is rejected so an
+// attacker-influenced ref can never reach `git clone --branch <ref>` as
+// an option-shaped argument (e.g. `--upload-pack=...`).
+const SAFE_REF_REGEX = /^[A-Za-z0-9._/-]+$/;
+
+function validateRef(ref: string | undefined, source: string): string | undefined {
+  if (!ref) return undefined;
+  if (ref.startsWith("-") || !SAFE_REF_REGEX.test(ref)) {
+    throw new Error(
+      `Invalid git ref "${ref}" in source "${source}": refs may only contain letters, digits, ".", "_", "/", "-" and must not start with "-"`,
+    );
+  }
+  return ref;
+}
+
 export function parseSource(source: string): ParsedSource {
   if (!source) {
     throw new Error("Source string is required");
@@ -30,7 +46,7 @@ export function parseSource(source: string): ParsedSource {
       type: "github",
       cloneUrl: `https://github.com/${userRepo}.git`,
       displayName: userRepo!,
-      ref: ref || undefined,
+      ref: validateRef(ref, source),
       original: source,
     };
   }
@@ -43,7 +59,7 @@ export function parseSource(source: string): ParsedSource {
       type: "gitlab",
       cloneUrl: `https://gitlab.com/${orgProject}.git`,
       displayName: orgProject!,
-      ref: ref || undefined,
+      ref: validateRef(ref, source),
       original: source,
     };
   }
@@ -60,7 +76,7 @@ export function parseSource(source: string): ParsedSource {
       type: "ssh",
       cloneUrl: cloneUrl!,
       displayName,
-      ref: ref || undefined,
+      ref: validateRef(ref, source),
       original: source,
     };
   }
@@ -74,7 +90,7 @@ export function parseSource(source: string): ParsedSource {
       type: "file",
       cloneUrl: cloneUrl!,
       displayName: pathPart,
-      ref: ref || undefined,
+      ref: validateRef(ref, source),
       original: source,
     };
   }
@@ -91,7 +107,7 @@ export function parseSource(source: string): ParsedSource {
       type: "https",
       cloneUrl: cloneUrl!,
       displayName,
-      ref: ref || undefined,
+      ref: validateRef(ref, source),
       original: source,
     };
   }

@@ -8,6 +8,7 @@ import type {
   ToolDefinition,
 } from "./types";
 import { validateEntitiesArray } from "./entities/clamp";
+import { parseSource } from "./source-parser";
 export { inferPackageType };
 
 const SEMVER_REGEX = /^\d+\.\d+\.\d+$/;
@@ -869,6 +870,18 @@ export function validateDependencies(
 
     if (!s.source || typeof s.source !== "string") {
       errors.push(`dependencies.${name}.source is required and must be a string`);
+    } else {
+      // Dependency sources drive `git clone` directly (and dependencies
+      // inherit the root install's permission grants), so reject anything
+      // the source parser wouldn't accept — including option-shaped or
+      // metacharacter-laden refs — at manifest-validation time.
+      try {
+        parseSource(s.source);
+      } catch (err) {
+        errors.push(
+          `dependencies.${name}.source is invalid: ${(err as Error).message}`,
+        );
+      }
     }
 
     if (!s.version || typeof s.version !== "string") {

@@ -124,6 +124,47 @@ describe("parseSource", () => {
   });
 });
 
+// ── 1b. ref validation (F1: git argument injection) ───────────────────
+
+describe("parseSource ref validation", () => {
+  test("rejects ref with leading dash (option injection)", () => {
+    expect(() =>
+      parseSource("github:user/repo@--upload-pack=/tmp/evil"),
+    ).toThrow(/Invalid git ref/);
+  });
+
+  test("rejects ref with leading dash on ssh source", () => {
+    expect(() =>
+      parseSource("git@github.com:user/repo.git@--mirror"),
+    ).toThrow(/Invalid git ref/);
+  });
+
+  test("rejects ref with shell metacharacters", () => {
+    expect(() => parseSource("github:user/repo@v1.0.0;rm -rf ~")).toThrow(
+      /Invalid git ref/,
+    );
+    expect(() => parseSource("github:user/repo@$(whoami)")).toThrow(
+      /Invalid git ref/,
+    );
+    expect(() => parseSource("github:user/repo@main branch")).toThrow(
+      /Invalid git ref/,
+    );
+  });
+
+  test("rejects option-shaped ref on https source", () => {
+    expect(() =>
+      parseSource("https://example.com/repo.git@--config=core.fsmonitor=x"),
+    ).toThrow(/Invalid git ref/);
+  });
+
+  test("accepts valid tag, branch, slash-branch, and sha refs", () => {
+    expect(parseSource("github:user/repo@v1.2.3").ref).toBe("v1.2.3");
+    expect(parseSource("github:user/repo@main").ref).toBe("main");
+    expect(parseSource("github:user/repo@feature/x").ref).toBe("feature/x");
+    expect(parseSource("github:user/repo@a1b2c3d").ref).toBe("a1b2c3d");
+  });
+});
+
 // ── 2. Git wrapper function tests ─────────────────────────────────────
 
 describe("git operations", () => {
@@ -223,6 +264,15 @@ describe("git operations", () => {
     );
     expect(result.ok).toBe(false);
     expect(result.stderr.length).toBeGreaterThan(0);
+  });
+
+  test("clone treats option-shaped url as a path, not a git option", () => {
+    const dest = join(tempBase, "clone-option-url");
+    // With the `--` end-of-options separator, an option-shaped positional
+    // arg must be interpreted literally as a (nonexistent) repo path.
+    const result = clone("--upload-pack=/bin/true", dest);
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toMatch(/does not exist/);
   });
 
   test("lsRemoteTags with no tags returns empty array", () => {

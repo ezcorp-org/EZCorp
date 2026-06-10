@@ -15,6 +15,7 @@
  * remain inline at the route level — no behavior change.
  */
 import type { ExtensionManifestV2, ExtensionPermissions } from "./types";
+import { parseCron, type CronInstance } from "./cron";
 
 /** Pi-AI provider allowlist. Manifest cannot grant any provider not
  *  in this set; clamp drops unknown providers silently. */
@@ -185,12 +186,6 @@ export function clampLessonsPermission(
   };
 }
 
-// Min 5-minute interval — reject `* * * * *`, `*\/1`, `*\/2`, `*\/3`, `*\/4`.
-const SUB_5_MIN_PATTERNS = [
-  /^\*\s+\*\s+\*\s+\*\s+\*\s*$/,
-  /^\*\/[1-4]\s+\*\s+\*\s+\*\s+\*\s*$/,
-];
-
 function isFiveFieldCron(expr: string): boolean {
   const trimmed = expr.trim();
   // Reject @every/@hourly etc and anything with seconds (6-field).
@@ -199,9 +194,44 @@ function isFiveFieldCron(expr: string): boolean {
   return parts.length === 5;
 }
 
+const MIN_INTERVAL_MS = 5 * 60_000;
+// Number of consecutive fires to inspect. A sub-5-minute gap always
+// shows up as adjacent fires, so a modest window is enough to surface
+// any dense cluster (`0-59 * * * *`, `1,2,3 * * * *`, `0/1 * * * *`).
+const MIN_INTERVAL_SAMPLES = 48;
+// Fixed reference instant — NOT `Date.now()`, so the gate is
+// deterministic and reproducible regardless of when it runs.
+const MIN_INTERVAL_REFERENCE = new Date(Date.UTC(2024, 0, 1, 0, 0, 0));
+
+/**
+ * Enforce the 5-minute floor by WALKING actual fire times rather than
+ * pattern-matching a handful of string forms. The old regex blocklist
+ * (`* * * * *`, `*\/1..4`) let trivially-equivalent expressions through
+ * — `0-59 * * * *`, `1,2,3 * * * *`, `0/1 * * * *` all fire at
+ * minute resolution. Here we parse with the production cron engine and
+ * require every consecutive gap to be >= 5 minutes.
+ */
 function passesMinIntervalGate(expr: string): boolean {
-  for (const re of SUB_5_MIN_PATTERNS) {
-    if (re.test(expr)) return false;
+  let cron: CronInstance;
+  try {
+    cron = parseCron(expr, "UTC");
+  } catch {
+    // Unparseable → reject. (isFiveFieldCron already ran, so this is a
+    // defensive backstop for range/step errors validateCron catches.)
+    return false;
+  }
+  let prev = MIN_INTERVAL_REFERENCE;
+  for (let i = 0; i < MIN_INTERVAL_SAMPLES; i++) {
+    let next: Date;
+    try {
+      next = cron.next(prev);
+    } catch {
+      // No further fire within the engine's 4-year horizon → an
+      // impossible/sparse schedule that can't violate the floor.
+      return true;
+    }
+    if (next.getTime() - prev.getTime() < MIN_INTERVAL_MS) return false;
+    prev = next;
   }
   return true;
 }

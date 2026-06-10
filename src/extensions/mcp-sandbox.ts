@@ -20,7 +20,7 @@ import {
 import { createMcpProxy, type McpProxyHandle } from "./mcp-proxy";
 import type { PermissionEngine } from "./permission-engine";
 import { insertAuditEntry } from "../db/queries/audit-log";
-import { getDbDataDir } from "../db/connection";
+import { getDbMaskDirs } from "../db/connection";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
 import { parseAndEmitSeccompViolations } from "./runtime/seccomp-soak-reader";
 import {
@@ -920,15 +920,14 @@ export async function buildSandboxedMcpSpec(
     // opted into the strict minimal-bind jail. Set AFTER the env merge
     // above so a manifest's `spec.env` cannot override it.
     //
-    // Mask the REAL DB data dir (resolved from EZCORP_DB_PATH, e.g.
-    // prod's `/app/data` + its `backups/`), NOT just the `.ezcorp/data`
-    // convention path — those differ in production, and masking only the
-    // convention path left the actual DB+JWT readable. Both are masked
-    // (deduped, `:`-joined) to also cover deployments that keep the DB
-    // under the project's `.ezcorp/data`.
-    const masks = new Set<string>();
-    const dbDir = getDbDataDir();
-    if (dbDir) masks.add(dbDir);
+    // Mask the REAL DB dir + backups (resolved from EZCORP_DB_PATH, e.g.
+    // prod's `/app/data/ezcorp` + `/app/data/backups`), NOT the parent
+    // and NOT just the `.ezcorp/data` convention path. Masking the parent
+    // would hide `/app/data/extensions` (the MCP install base); masking
+    // only the convention path left the actual DB+JWT readable in prod.
+    // Also mask the project `.ezcorp/data` convention path for
+    // deployments that keep the DB there. Deduped, `:`-joined.
+    const masks = new Set<string>(getDbMaskDirs());
     if (jailProjectRoot) masks.add(forbiddenDataDir(jailProjectRoot));
     if (masks.size > 0) {
       env.EZCORP_MCP_DATA_DIR = [...masks].join(":");

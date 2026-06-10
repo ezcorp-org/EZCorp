@@ -155,17 +155,15 @@ import {
   assertJailArgsSafe,
   forbiddenDataDir,
 } from "../extensions/preview-jail";
-import { getDbDataDir } from "../db/connection";
+import { getDbMaskDirs } from "../db/connection";
 import { EXT_AUDIT_ACTIONS } from "../extensions/audit-actions";
 
-/** Reproduce the host's mask resolution: the real PGlite data dir
- *  (`getDbDataDir()`, independent of the project root) plus the
+/** Reproduce the host's mask resolution: the real DB dir + backups
+ *  (`getDbMaskDirs()`, independent of the project root) plus the
  *  `.ezcorp/data` convention path (only when a project root is known),
  *  deduped and `:`-joined. `undefined` when nothing is maskable. */
 function expectedDataDirMask(jailRoot: string | null): string | undefined {
-  const set = new Set<string>();
-  const db = getDbDataDir();
-  if (db) set.add(db);
+  const set = new Set<string>(getDbMaskDirs());
   if (jailRoot) set.add(forbiddenDataDir(jailRoot));
   return set.size > 0 ? [...set].join(":") : undefined;
 }

@@ -21,23 +21,30 @@ const IS_MEMORY = DB_PATH === ":memory:";
 const DATABASE_URL = process.env.DATABASE_URL;
 
 /**
- * Absolute directory that CONTAINS the local PGlite data dir (and thus
- * the encrypted JWT secret stored in the `settings` table, plus DB
- * snapshots under `backups/`). Returns `null` when there is no on-disk
- * DB to protect — external Postgres (`DATABASE_URL`) or in-memory.
+ * Absolute paths the MCP sandbox must mask (private tmpfs) so untrusted
+ * MCP processes can't read the platform's own database — and thus the
+ * JWT secret stored in the `settings` table + DB snapshots — off disk.
+ * Empty when there is no on-disk DB to protect (external Postgres or
+ * in-memory).
  *
- * The MCP sandbox masks this directory with a private tmpfs so untrusted
- * MCP processes can't read the platform's own database off disk. It is
- * resolved from the SAME `DB_PATH` logic above so the mask tracks the
- * real location (e.g. prod's `/app/data` from `EZCORP_DB_PATH`), not a
- * hard-coded convention path. `PGlite(DB_PATH)` uses `DB_PATH` as the
- * data dir itself, so the parent (`dirname`) is the dir to mask — that
- * also covers sibling `backups/` snapshots.
+ * We mask the SPECIFIC sensitive dirs, NOT `dirname(DB_PATH)`: in
+ * production `EZCORP_DB_PATH=/app/data/ezcorp`, so the parent `/app/data`
+ * also contains `/app/data/extensions` (the MCP install base) — masking
+ * the parent would hide every MCP's own code. `PGlite(DB_PATH)` uses
+ * `DB_PATH` as the data dir itself, so masking `DB_PATH` covers the DB;
+ * the backups dir (resolved like `src/db/backup.ts`) covers snapshots.
+ * Both are siblings of `extensions/`, so masking them is safe.
+ *
+ * Residual (default posture only): encryption key files
+ * (`.pi-secret`/`.pi-salt`) under the parent stay visible, but they're
+ * low-value without the now-masked DB ciphertext. The strict
+ * minimal-bind jail (`EZCORP_MCP_REQUIRE_SANDBOX=1`) binds nothing here.
  */
-export function getDbDataDir(): string | null {
-  if (DATABASE_URL) return null;
-  if (IS_MEMORY) return null;
-  return dirname(DB_PATH);
+export function getDbMaskDirs(): string[] {
+  if (DATABASE_URL) return [];
+  if (IS_MEMORY) return [];
+  const backups = process.env.EZCORP_BACKUP_DIR ?? join(dirname(DB_PATH), "backups");
+  return [DB_PATH, backups];
 }
 
 /**

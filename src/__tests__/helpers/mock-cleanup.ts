@@ -130,6 +130,11 @@ const MODULE_PATHS = [
   // which imports the REAL EmbedWorker).
   "../../extensions/embed-worker",
   "../../extensions/mcp-sandbox",
+  // mcp-sandbox-require-sandbox.test.ts (EZCORP_MCP_REQUIRE_SANDBOX
+  // fail-closed gate) and preview-netns.test.ts mock the kernel-probe
+  // module to drive capability branches deterministically. Snapshot so
+  // restoreModuleMocks() re-registers the real probes in afterAll.
+  "../../extensions/mcp-netns",
   "../../extensions/permission-engine",
   "../../db/queries/sdk-capability-calls",
   "../../providers/llm",

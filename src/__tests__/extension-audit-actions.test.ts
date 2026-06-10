@@ -74,6 +74,7 @@ describe("extension audit action constants", () => {
       "MCP_VETH_CREATED",
       "MCP_VETH_ORPHAN_SWEPT",
       "MCP_CONNTRACK_HIGH",
+      "MCP_SANDBOX_REQUIRED_REFUSAL",
       // Phase 50 — SDK capability tier (audit-actions for Phase 51 handlers)
       "SDK_LLM_CALL",
       "SDK_LLM_REJECTED",

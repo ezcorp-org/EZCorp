@@ -88,6 +88,7 @@ actions:
 | `ext:mcp:netns-fallback`        | Less-strict mode OR Stage 1 kill-switch active         | Investigate `metadata.reason` |
 | `ext:mcp:host-blocked`          | Proxy denied a CONNECT (auth/host/rebind/quota)        | Investigate `metadata.reason` |
 | `ext:mcp:seccomp-violation`     | Kernel logged a syscall via SCMP_ACT_LOG (Phase 55)    | Triage; see soak signal below |
+| `ext:mcp:sandbox-required-refusal` | Spawn refused: `EZCORP_MCP_REQUIRE_SANDBOX=1` + degraded host | Fix `metadata.requiredCapability` / `metadata.reason` |
 
 A spike in `ext:mcp:netns-fallback` across a fleet usually means a
 config-management drift on the kernel knob or a base-image change.
@@ -270,6 +271,65 @@ env vars. Same boot-time-only semantics as the Stage 1 switches.
 
 Existing Plan 55 kill-switches (`EZCORP_MCP_STAGE1_DNS_RECHECK`,
 `EZCORP_MCP_STAGE1_TMPFS`, `EZCORP_MCP_STAGE1_SECCOMP`) are unchanged.
+
+## Fail-closed sandbox enforcement (`EZCORP_MCP_REQUIRE_SANDBOX`)
+
+By default, every isolation fallback above **fails open**: when the
+host can't deliver an isolation layer, the MCP spawn proceeds at a
+weaker stage and the only signal is a fire-and-forget
+`ext:mcp:netns-fallback` audit row. On many real Docker hosts the
+netns/veth stack cannot be set up even with `--privileged`, which
+means untrusted MCP extensions silently run **without kernel network
+isolation** — outbound traffic is gated only by the `HTTPS_PROXY`
+env-var convention, which raw-socket binaries can bypass.
+
+### Host kernel requirements for full isolation
+
+A spawn runs at *full isolation* only when ALL of these hold:
+
+- **Stage 1 userns wrap** — unprivileged user+mount namespaces enabled
+  (`unshare` on PATH, `kernel.unprivileged_userns_clone` permits it,
+  `max_user_namespaces > 0`; see "MCP isolation — kernel + capabilities"
+  above).
+- **bubblewrap tmpfs** — `bwrap` installed and a minimal probe
+  invocation succeeds.
+- **seccomp BPF profile** — the compiled blob
+  (`/app/src/extensions/mcp-seccomp.bpf`) present in the image (built
+  by the Docker compile stage; absent on plain source-tree dev hosts).
+- **Stage 2 veth network isolation** — `ip` + `nft` on PATH,
+  `CAP_NET_ADMIN` granted, the `br-ezcorp-mcp` bridge up
+  (see "Stage 2 prerequisites" above), a free veth slot (60 concurrent
+  MCP cap), and the per-spawn veth create/attach succeeding.
+- **No Stage 1/2 kill-switch active** (`EZCORP_MCP_STAGE1_TMPFS=0`,
+  `EZCORP_MCP_STAGE1_SECCOMP=0`, `EZCORP_MCP_STAGE2_VETH=0` each
+  disable a layer and therefore count as degraded).
+
+### What degradation means
+
+When any requirement is missing and the flag is unset, the spawn
+*degrades*: it still runs, but in a weaker envelope (in the worst case
+prlimit + `HTTPS_PROXY` only — no namespace, no tmpfs, no seccomp, no
+kernel-level network isolation). The degrade is recorded as
+`ext:mcp:netns-fallback`, but nothing stops the spawn.
+
+### The fail-closed switch
+
+Set `EZCORP_MCP_REQUIRE_SANDBOX=1` to refuse any spawn that would
+degrade below full isolation. The spawn fails with an error naming the
+missing capability and this flag (surfaced through the same path as
+any other MCP spawn failure, e.g. tool-call errors), and one
+`ext:mcp:sandbox-required-refusal` audit row is written per refusal
+with `metadata.requiredCapability` + `metadata.reason` identifying
+exactly which leg to fix.
+
+- Unset, or any value other than `"1"`: fail-open degrade, exactly as
+  before the flag existed.
+- The flag is read per spawn; like the kill-switches, treat it as a
+  deploy-time setting and restart the container after changing it.
+- Recommended for production fleets that treat MCP extensions as
+  untrusted: pair it with the Stage 2 prerequisites above, and watch
+  `ext:mcp:sandbox-required-refusal` instead of grepping
+  `ext:mcp:netns-fallback` spikes.
 
 ## 24h conntrack soak — manual verification (RC#2 fallback)
 

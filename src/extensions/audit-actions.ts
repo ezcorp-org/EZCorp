@@ -291,6 +291,25 @@ export const EXT_AUDIT_ACTIONS = {
    * }
    */
   MCP_CONNTRACK_HIGH: "ext:mcp:conntrack-high",
+  /**
+   * Fail-closed sandbox enforcement — emitted per spawn refusal when
+   * `EZCORP_MCP_REQUIRE_SANDBOX=1` is set and the spawn would have
+   * degraded below full isolation (Stage 1 userns/unshare wrap, bwrap
+   * tmpfs, seccomp BPF profile, or Stage 2 veth network isolation —
+   * including the Stage 1/2 kill-switches, which contradict the
+   * require-sandbox flag). With the flag unset the same condition
+   * silently degrades to a weaker stage and emits MCP_NETNS_FALLBACK
+   * instead; this action is the fail-closed counterpart.
+   *
+   * Metadata: {
+   *   permission: "network", oldValue: null, newValue: null, actor: "system",
+   *   extensionName: string,
+   *   requiredCapability: string, // which isolation leg was missing
+   *   reason: string,             // verbatim probe reason / kill-switch / setup failure
+   *   platform: string,           // process.platform
+   * }
+   */
+  MCP_SANDBOX_REQUIRED_REFUSAL: "ext:mcp:sandbox-required-refusal",
   // ── Phase 50: SDK capability tier (Phase 51 handlers write these) ──
   // These rows accompany the high-volume sdk_capability_calls table:
   // every SDK call writes a row to sdk_capability_calls AND a row

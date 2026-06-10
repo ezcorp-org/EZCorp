@@ -8,19 +8,25 @@ import { buildAllowedEnv } from "./registry";
 import { parseMemoryLimit, DEFAULT_MEMORY_LIMIT_MB } from "./subprocess";
 import {
   probeNetnsAvailability,
+  probeBwrapAvailability,
   buildNetnsSpawnArgs,
   getDefaultLauncherPath,
   probeVethCapability,
   allocVethSlot,
   releaseVethSlot,
   computeVethMcpIp,
+  type NetnsCapabilities,
 } from "./mcp-netns";
 import { createMcpProxy, type McpProxyHandle } from "./mcp-proxy";
 import type { PermissionEngine } from "./permission-engine";
 import { insertAuditEntry } from "../db/queries/audit-log";
 import { EXT_AUDIT_ACTIONS } from "./audit-actions";
 import { parseAndEmitSeccompViolations } from "./runtime/seccomp-soak-reader";
-import { existsSync as realExistsSync, readFileSync as realReadFileSync } from "node:fs";
+import {
+  existsSync as realExistsSync,
+  readFileSync as realReadFileSync,
+  closeSync,
+} from "node:fs";
 
 /**
  * Audit finding #1 fix: MCP stdio extensions must run under the same
@@ -153,6 +159,131 @@ function readConntrackPressure(): {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// EZCORP_MCP_REQUIRE_SANDBOX — fail-closed sandbox enforcement.
+//
+// Pre-launch security finding: every fallback point below (netns probe
+// failure, missing bwrap, Stage 2 veth/nft setup failure, Stage 1/2
+// kill-switches) FAILS OPEN — the spawn proceeds at a weaker isolation
+// stage with only a fire-and-forget MCP_NETNS_FALLBACK audit row. On
+// many real Docker hosts netns/veth cannot be set up even with
+// --privileged, so untrusted MCP extensions silently run without
+// kernel network isolation.
+//
+// When the operator sets `EZCORP_MCP_REQUIRE_SANDBOX=1`, ANY spawn
+// that would degrade below full isolation (Stage 1 userns wrap + bwrap
+// tmpfs + seccomp BPF profile + Stage 2 veth network isolation) is
+// REFUSED instead: the spawn throws an operator-actionable error
+// (propagated through `registry.getMcpClient`, the same surface as
+// the conntrack-pressure refusal above) and emits one
+// MCP_SANDBOX_REQUIRED_REFUSAL audit row per refusal.
+//
+// Default (flag unset / any value other than "1"): behavior is exactly
+// the pre-flag fail-open degrade — existing stage detection, fallback
+// logic, and audit rows are untouched.
+// ─────────────────────────────────────────────────────────────────────
+
+function isSandboxRequired(): boolean {
+  return process.env.EZCORP_MCP_REQUIRE_SANDBOX === "1";
+}
+
+/**
+ * Emit the refusal audit row (fire-and-forget, matching every other
+ * audit row in this file) and throw the operator-actionable spawn
+ * error. Single helper so all degrade points share one row shape and
+ * one message format.
+ */
+function refuseDegradedSpawn(opts: {
+  userId: string | null;
+  extensionId: string;
+  extensionName: string;
+  capability: string;
+  reason: string;
+}): never {
+  void insertAuditEntry(
+    opts.userId,
+    EXT_AUDIT_ACTIONS.MCP_SANDBOX_REQUIRED_REFUSAL,
+    opts.extensionId,
+    {
+      permission: "network",
+      oldValue: null,
+      newValue: null,
+      actor: "system",
+      extensionName: opts.extensionName,
+      requiredCapability: opts.capability,
+      reason: opts.reason,
+      platform: process.platform,
+    },
+  ).catch(() => {
+    // Fire-and-forget — the throw below is the load-bearing refusal;
+    // a DB blip in the audit writer must not mask it.
+  });
+  throw new Error(
+    `MCP spawn refused: EZCORP_MCP_REQUIRE_SANDBOX=1 requires full sandbox isolation, ` +
+      `but ${opts.capability} is unavailable on this host (${opts.reason}). ` +
+      `Provision the missing capability (see docs/deployment.md § "Fail-closed sandbox ` +
+      `enforcement") or unset EZCORP_MCP_REQUIRE_SANDBOX to allow degraded spawns.`,
+  );
+}
+
+/**
+ * Statically-detectable degradations, checked BEFORE the per-MCP proxy
+ * is started so a refusal never leaks a listener. Covers: netns probe
+ * failure, bwrap probe failure, the Stage 1 tmpfs + seccomp and Stage 2
+ * veth kill-switches (deliberately disabling an isolation layer
+ * contradicts the require-sandbox flag), and the veth capability probe
+ * (Linux + ip + nft + CAP_NET_ADMIN, incl. stage2-degraded-at-boot).
+ *
+ * The two remaining degrade points — seccomp BPF blob missing and the
+ * runtime veth slot/create/attach failures — are only observable
+ * mid-flow and are guarded inline in `buildSandboxedMcpSpec`.
+ *
+ * Returns `null` when the host can deliver full isolation.
+ */
+function detectStaticSandboxDegradation(
+  netns: NetnsCapabilities,
+): { capability: string; reason: string } | null {
+  if (!netns.available) {
+    return {
+      capability: "user+mount namespace isolation (unshare)",
+      reason: netns.reason ?? "netns probe failed",
+    };
+  }
+  const bwrap = probeBwrapAvailability();
+  if (!bwrap.available) {
+    return {
+      capability: "bubblewrap tmpfs sandbox (bwrap)",
+      reason: bwrap.reason ?? "bwrap probe failed",
+    };
+  }
+  if (process.env.EZCORP_MCP_STAGE1_TMPFS === "0") {
+    return {
+      capability: "bubblewrap tmpfs sandbox (bwrap)",
+      reason: "kill-switch active: EZCORP_MCP_STAGE1_TMPFS=0",
+    };
+  }
+  if (process.env.EZCORP_MCP_STAGE1_SECCOMP === "0") {
+    return {
+      capability: "seccomp BPF syscall filter",
+      reason: "kill-switch active: EZCORP_MCP_STAGE1_SECCOMP=0",
+    };
+  }
+  if (process.env.EZCORP_MCP_STAGE2_VETH === "0") {
+    return {
+      capability: "Stage 2 veth network isolation",
+      reason: "kill-switch active: EZCORP_MCP_STAGE2_VETH=0",
+    };
+  }
+  const veth = probeVethCapability();
+  if (!veth.available) {
+    return {
+      capability: "Stage 2 veth network isolation (ip/nft/CAP_NET_ADMIN)",
+      reason: veth.reason ?? "veth probe failed",
+    };
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Plan 55-03 — post-shutdown soak reader injection seam.
 //
 // Tests inject a fake journalctl runner so the spawn-time wiring can
@@ -199,6 +330,10 @@ export async function buildSandboxedMcpSpec(
   ctx?: BuildSandboxedMcpCtx,
 ): Promise<BuildSandboxedMcpResult> {
   if (spec.transport !== "stdio") return { spec, proxyHandle: null };
+
+  // Fail-closed switch — read once per spawn so tests (and operators
+  // restarting the host process) see a consistent decision per call.
+  const sandboxRequired = isSandboxRequired();
 
   // Phase 58 / MCP-05 — Plan 58-03 — pre-spawn conntrack pressure check.
   // Short-circuits BEFORE any proxy or Stage 2 setup work: if the kernel
@@ -260,6 +395,20 @@ export async function buildSandboxedMcpSpec(
     ...(spec.args ?? []),
   ];
 
+  // Fail-closed gate (no-ctx leg): the back-compat branch below builds
+  // a prlimit-only spec — no namespace, no proxy, no bwrap. Under
+  // EZCORP_MCP_REQUIRE_SANDBOX=1 that is far below full isolation, so
+  // refuse rather than silently producing the weakest possible spec.
+  if (sandboxRequired && !ctx) {
+    refuseDegradedSpawn({
+      userId: null,
+      extensionId,
+      extensionName: manifest.name,
+      capability: "sandbox wiring (PermissionEngine ctx)",
+      reason: "buildSandboxedMcpSpec called without ctx — prlimit-only spec",
+    });
+  }
+
   // Back-compat path: when `ctx` is omitted, skip Phase-7 wrap. Existing
   // unit tests covering only the prlimit + bounded-env invariants land
   // here and behave identically to their pre-Phase-7 expectations.
@@ -277,6 +426,22 @@ export async function buildSandboxedMcpSpec(
 
   // Phase 7 — production wiring path.
   const netns = probeNetnsAvailability();
+
+  // Fail-closed gate (static legs): netns, bwrap, kill-switches, and
+  // the veth capability probe are all knowable BEFORE any setup work,
+  // so a refusal here never leaks a proxy listener or a veth slot.
+  if (sandboxRequired) {
+    const degraded = detectStaticSandboxDegradation(netns);
+    if (degraded) {
+      refuseDegradedSpawn({
+        userId: ctx.userId,
+        extensionId,
+        extensionName: manifest.name,
+        capability: degraded.capability,
+        reason: degraded.reason,
+      });
+    }
+  }
 
   // Proxy always listens on host loopback (post-fix-pass C2 — UDS
   // produces an unparseable `http+unix://...` HTTPS_PROXY URL). The MCP
@@ -343,6 +508,26 @@ export async function buildSandboxedMcpSpec(
     origArgs: prlimitArgs,
     launcherPath: getDefaultLauncherPath(),
   });
+
+  // Fail-closed gate (seccomp leg): the static gate above already
+  // guaranteed bwrap is present and both Stage 1 kill-switches are off,
+  // so a null `seccompFd` here means the compiled BPF blob itself is
+  // missing — the spawn would run without the syscall filter. Stop the
+  // proxy we just started before refusing (no listener leak).
+  if (sandboxRequired && finalSpawn.seccompFd == null) {
+    try {
+      await proxyHandle.stop();
+    } catch {
+      /* best-effort teardown */
+    }
+    refuseDegradedSpawn({
+      userId: ctx.userId,
+      extensionId,
+      extensionName: manifest.name,
+      capability: "seccomp BPF syscall filter",
+      reason: "compiled BPF profile missing (mcp-seccomp.bpf absent or unreadable)",
+    });
+  }
 
   // Plan 55-02 (MCP-02): emit one extra MCP_NETNS_FALLBACK row when
   // bwrap is missing on a Linux host so /audit shows "tmpfs absent" as
@@ -474,6 +659,9 @@ export async function buildSandboxedMcpSpec(
     nsSideName: string;
     vethIpv4: string;
   } | null = null;
+  // Captured for the fail-closed gate below — names which runtime step
+  // degraded the spawn to Stage 1 (slot exhaustion / create / attach).
+  let vethDegradeReason: string | null = null;
 
   if (vethCap.available && !stage2KillSwitchActive && netns.available) {
     const slot = allocVethSlot();
@@ -516,11 +704,47 @@ export async function buildSandboxedMcpSpec(
             stderr: "ignore",
           });
           releaseVethSlot(slot);
+          vethDegradeReason =
+            "veth bridge attach/up failed (br-ezcorp-mcp missing or down)";
         }
       } else {
         releaseVethSlot(slot);
+        const createStderr = create.stderr
+          ? new TextDecoder().decode(create.stderr).trim()
+          : "";
+        vethDegradeReason = `veth pair create failed${createStderr ? `: ${createStderr}` : ""}`;
+      }
+    } else {
+      vethDegradeReason = "veth slot exhausted (60 concurrent MCP cap)";
+    }
+  }
+
+  // Fail-closed gate (Stage 2 runtime leg): under the require-sandbox
+  // flag the static gate already guaranteed the veth CAPABILITY, so a
+  // null `vethSetup` here means a runtime step failed (slot exhaustion,
+  // veth create, or bridge attach). Tear down everything built so far
+  // (proxy listener + seccomp FD — the veth/slot were already cleaned
+  // up by the branches above) before refusing.
+  if (sandboxRequired && vethSetup === null) {
+    if (finalSpawn.seccompFd != null) {
+      try {
+        closeSync(finalSpawn.seccompFd);
+      } catch {
+        /* best-effort */
       }
     }
+    try {
+      await proxyHandle.stop();
+    } catch {
+      /* best-effort teardown */
+    }
+    refuseDegradedSpawn({
+      userId: ctx.userId,
+      extensionId,
+      extensionName: manifest.name,
+      capability: "Stage 2 veth network isolation",
+      reason: vethDegradeReason ?? "veth setup failed",
+    });
   }
 
   // Emit MCP_VETH_CREATED on Stage 2 success — operator-visible signal

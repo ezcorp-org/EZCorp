@@ -220,14 +220,24 @@ function passesMinIntervalGate(expr: string): boolean {
     // defensive backstop for range/step errors validateCron catches.)
     return false;
   }
-  let prev = MIN_INTERVAL_REFERENCE;
+  // Seed `prev` with the FIRST fire, not the reference instant — the
+  // reference is arbitrary and almost never a fire time, so measuring
+  // reference→first-fire would falsely reject e.g. `2 * * * *` (a 2-min
+  // offset from midnight, but a real 60-min cadence). We only care about
+  // the gap BETWEEN consecutive fires.
+  let prev: Date;
+  try {
+    prev = cron.next(MIN_INTERVAL_REFERENCE);
+  } catch {
+    // No fire within the engine's 4-year horizon → impossible/sparse
+    // schedule that can't violate the floor.
+    return true;
+  }
   for (let i = 0; i < MIN_INTERVAL_SAMPLES; i++) {
     let next: Date;
     try {
       next = cron.next(prev);
     } catch {
-      // No further fire within the engine's 4-year horizon → an
-      // impossible/sparse schedule that can't violate the floor.
       return true;
     }
     if (next.getTime() - prev.getTime() < MIN_INTERVAL_MS) return false;
@@ -253,9 +263,14 @@ export function clampSchedulePermission(
 
   // Manifest is source of truth for crons (extension cannot smuggle
   // in extra schedules at activate time).
+  // Cap the candidate list BEFORE the per-cron interval walk — the walk
+  // can be expensive for impossible expressions (a 4-year no-match
+  // search), so bound how many we evaluate rather than walking an
+  // unbounded manifest array.
   const crons = (manifest.crons ?? [])
-    .filter((c) => typeof c === "string" && isFiveFieldCron(c) && passesMinIntervalGate(c))
-    .slice(0, 8);
+    .filter((c) => typeof c === "string" && isFiveFieldCron(c))
+    .slice(0, 8)
+    .filter((c) => passesMinIntervalGate(c));
   if (crons.length === 0) return undefined;
 
   const policyChoices = new Set(["skip", "fire-once", "fire-all"]);

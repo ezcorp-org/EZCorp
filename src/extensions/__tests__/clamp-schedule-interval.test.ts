@@ -54,9 +54,13 @@ describe("schedule interval gate — >= 5-min schedules pass", () => {
     "*/5 * * * *",      // exactly 5 minutes — the floor
     "*/15 * * * *",
     "0,5,10 * * * *",   // 5-min spacing
-    "0 * * * *",        // hourly
+    "0 * * * *",        // hourly (minute 0)
+    "2 * * * *",        // hourly at :02 — offset from the gate reference
+    "1 0 * * *",        // daily at 00:01 — offset minute (regression guard)
+    "1-59/5 * * * *",   // true 5-min cadence, offset by 1 (regression guard)
     "30 2 * * *",       // daily
     "0 0 1 * *",        // monthly
+    "3 0 1 * *",        // monthly, offset minute
     "0 0 1 1 *",        // yearly (sparse — must not hang or false-reject)
     // `N/step` with a bare number is a SINGLE value in this engine
     // (not Vixie's N-max/step), so `0/1` is minute=[0] == hourly. The

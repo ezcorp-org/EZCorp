@@ -39,7 +39,9 @@
 		modifiable?: boolean;
 		isBundled?: boolean;
 		manifest: {
-			author?: string;
+			// Manifest schema defines author as an object; old installs may
+			// still carry a bare string.
+			author?: string | { name: string; id?: string };
 			entrypoint: string;
 			persistent?: boolean;
 			// MCP-kind extensions carry a connection config (mcpServers[0]) and
@@ -141,6 +143,10 @@
 	let settingsError = $state("");
 
 	const hasSchema = $derived(Object.keys(settingsSchema).length > 0);
+
+	function authorName(author?: string | { name: string; id?: string }): string {
+		return typeof author === "string" ? author : (author?.name ?? "");
+	}
 
 	async function loadSettings() {
 		try {
@@ -611,7 +617,7 @@
 		<div class="flex items-start justify-between">
 			<div>
 				<h2 class="text-xl font-semibold text-[var(--color-text-primary)]">{ext.name}</h2>
-				<p class="text-sm text-[var(--color-text-secondary)]">v{ext.version}{ext.manifest.author ? ` by ${ext.manifest.author}` : ""}</p>
+				<p class="text-sm text-[var(--color-text-secondary)]">v{ext.version}{authorName(ext.manifest.author) ? ` by ${authorName(ext.manifest.author)}` : ""}</p>
 				<p class="mt-1 text-sm text-[var(--color-text-secondary)]">{ext.description}</p>
 			</div>
 			<div class="flex items-center gap-3">
